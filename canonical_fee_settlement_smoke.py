@@ -43,6 +43,7 @@ DEFAULT_BACKEND_ENV_PATH = Path(__file__).resolve().parent / "backend" / ".env"
 DEFAULT_WALLET_BALANCE = 1000.0
 DEFAULT_TOKEN_AMOUNT = 5.0
 DEFAULT_WEPO_AMOUNT = 100.0
+DEFAULT_DEPLETED_SETTLEMENT_ADDRESS = "wepo1deadbeefdeadbeefdeadbeefdeadbeefdeadbe"
 DEFAULT_CONFIRM_TIMEOUT_SECONDS = 90
 DEFAULT_POLL_INTERVAL_SECONDS = 2
 POW_ARGON2_TIME_COST = 3
@@ -58,6 +59,7 @@ class SmokeContext:
     wallet_address: str
     wallet_username: str
     token_id: str
+    settlement_address: Optional[str] = None
     idempotency_key: Optional[str] = None
     trade_id: Optional[str] = None
     settlement_txid: Optional[str] = None
@@ -125,6 +127,8 @@ def verify_settlement_wallet(
     node_base_url: str,
     settlement_address: Optional[str],
     required_fee: float,
+    *,
+    expect_depletion: bool = False,
 ) -> None:
     if not settlement_address:
         print_step(
@@ -140,6 +144,15 @@ def verify_settlement_wallet(
     )
     payload = response.json()
     balance = float(payload.get("balance", 0.0))
+    if expect_depletion:
+        require(
+            balance < required_fee,
+            f"Settlement wallet {settlement_address} balance {balance:.8f} unexpectedly covers required fee {required_fee:.8f}",
+        )
+        print_step(
+            f"Settlement wallet {settlement_address} is intentionally depleted at {balance:.8f} WEPO"
+        )
+        return
     require(
         balance >= required_fee,
         f"Settlement wallet {settlement_address} balance {balance:.8f} is below required fee {required_fee:.8f}",
@@ -379,6 +392,32 @@ def verify_trade_response(
     return trade_id, settlement_txid
 
 
+def verify_depleted_settlement_response(
+    payload: Dict[str, Any],
+    expected_fee: float,
+) -> str:
+    observed_fee = round(float(payload.get("trade_fee", -1)), 8)
+    require(
+        observed_fee == round(expected_fee, 8),
+        f"Unexpected trade fee {observed_fee:.8f}; expected {expected_fee:.8f}",
+    )
+    require(payload.get("fee_applied_on_chain") is False, f"Trade unexpectedly settled on-chain: {payload}")
+    require(
+        payload.get("fee_settlement_policy") == "canonical_wallet_depleted",
+        f"Unexpected depleted-wallet settlement policy: {payload}",
+    )
+    require(
+        payload.get("fee_manual_review_required") is True,
+        f"Expected manual review flag for depleted settlement wallet: {payload}",
+    )
+    require(
+        not payload.get("fee_settlement_txid"),
+        f"Depleted settlement wallet should not produce a settlement txid: {payload}",
+    )
+    require(bool(payload.get("trade_id")), f"Trade response missing trade_id: {payload}")
+    return payload["trade_id"]
+
+
 def verify_idempotent_replay(
     initial_payload: Dict[str, Any],
     replay_payload: Dict[str, Any],
@@ -468,6 +507,8 @@ def verify_database_state(
     initial_wallet_balance: float,
     token_amount: float,
     wepo_amount: float,
+    *,
+    expect_settlement_depletion: bool = False,
 ) -> None:
     expected_fee = round(wepo_amount * 0.001, 8)
     expected_wallet_balance = round(initial_wallet_balance - wepo_amount - expected_fee, 8)
@@ -492,33 +533,67 @@ def verify_database_state(
 
     trade_doc = db.rwa_trades.find_one({"trade_id": context.trade_id})
     require(trade_doc is not None, f"Trade record {context.trade_id} missing from Mongo")
-    require(
-        trade_doc.get("fee_settlement", {}).get("settlement_txid") == context.settlement_txid,
-        f"Trade record settlement txid mismatch: {trade_doc}",
-    )
-    require(
-        trade_doc.get("fee_settlement", {}).get("settlement_policy") == "canonical_on_chain",
-        f"Trade record settlement policy mismatch: {trade_doc}",
-    )
+    if expect_settlement_depletion:
+        require(
+            trade_doc.get("fee_settlement", {}).get("settlement_policy") == "canonical_wallet_depleted",
+            f"Trade record settlement policy mismatch for depleted wallet: {trade_doc}",
+        )
+        require(
+            trade_doc.get("fee_settlement", {}).get("applied_on_chain") is False,
+            f"Trade record should not be marked on-chain after depletion: {trade_doc}",
+        )
+        require(
+            trade_doc.get("fee_settlement", {}).get("manual_review_required") is True,
+            f"Trade record missing manual review flag for depleted wallet: {trade_doc}",
+        )
+        ledger_doc = db.application_fee_ledger.find_one(
+            {
+                "fee_type": "rwa_trade",
+                "timestamp": {"$gte": max(0, int(time.time()) - 300)},
+                "settlement_policy": "canonical_wallet_depleted",
+                "settlement_address": context.settlement_address,
+            }
+        )
+        require(
+            ledger_doc is not None,
+            "Application fee ledger missing depleted-wallet record",
+        )
+        require(
+            ledger_doc.get("applied_on_chain") is False,
+            f"Ledger should not be marked on-chain after depletion: {ledger_doc}",
+        )
+        require(
+            ledger_doc.get("manual_review_required") is True,
+            f"Ledger missing manual review flag for depleted wallet: {ledger_doc}",
+        )
+    else:
+        require(
+            trade_doc.get("fee_settlement", {}).get("settlement_txid") == context.settlement_txid,
+            f"Trade record settlement txid mismatch: {trade_doc}",
+        )
+        require(
+            trade_doc.get("fee_settlement", {}).get("settlement_policy") == "canonical_on_chain",
+            f"Trade record settlement policy mismatch: {trade_doc}",
+        )
 
-    ledger_doc = db.application_fee_ledger.find_one(
-        {
-            "fee_type": "rwa_trade",
-            "settlement_txid": context.settlement_txid,
-        }
-    )
-    require(
-        ledger_doc is not None,
-        f"Application fee ledger record missing for settlement tx {context.settlement_txid}",
-    )
-    require(
-        ledger_doc.get("settlement_policy") == "canonical_on_chain",
-        f"Ledger settlement policy mismatch: {ledger_doc}",
-    )
-    require(
-        ledger_doc.get("applied_on_chain") is True,
-        f"Ledger applied_on_chain mismatch: {ledger_doc}",
-    )
+        ledger_doc = db.application_fee_ledger.find_one(
+            {
+                "fee_type": "rwa_trade",
+                "settlement_txid": context.settlement_txid,
+            }
+        )
+        require(
+            ledger_doc is not None,
+            f"Application fee ledger record missing for settlement tx {context.settlement_txid}",
+        )
+        require(
+            ledger_doc.get("settlement_policy") == "canonical_on_chain",
+            f"Ledger settlement policy mismatch: {ledger_doc}",
+        )
+        require(
+            ledger_doc.get("applied_on_chain") is True,
+            f"Ledger applied_on_chain mismatch: {ledger_doc}",
+        )
     observed_ledger_fee = round(float(ledger_doc.get("fee_amount", 0.0)), 8)
     require(
         observed_ledger_fee == expected_fee,
@@ -533,7 +608,13 @@ def verify_database_state(
         )
 
 
-def cleanup_artifacts(db: Any, context: SmokeContext) -> None:
+def cleanup_artifacts(
+    db: Any,
+    context: SmokeContext,
+    *,
+    expected_fee: Optional[float] = None,
+    expect_settlement_depletion: bool = False,
+) -> None:
     db.rwa_balances.delete_many(
         {"token_id": context.token_id, "address": context.wallet_address}
     )
@@ -545,6 +626,16 @@ def cleanup_artifacts(db: Any, context: SmokeContext) -> None:
 
     if context.settlement_txid:
         db.application_fee_ledger.delete_many({"settlement_txid": context.settlement_txid})
+    elif expect_settlement_depletion and expected_fee is not None:
+        db.application_fee_ledger.delete_many(
+            {
+                "fee_type": "rwa_trade",
+                "settlement_policy": "canonical_wallet_depleted",
+                "settlement_address": context.settlement_address,
+                "fee_amount": round(expected_fee, 8),
+                "timestamp": {"$gte": max(0, int(time.time()) - 300)},
+            }
+        )
 
 
 def build_context() -> SmokeContext:
@@ -647,6 +738,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Submit two same-key trade requests concurrently and verify duplicate handling remains single-settlement and single-balance-application",
     )
+    parser.add_argument(
+        "--expect-settlement-depletion",
+        action="store_true",
+        help="Expect canonical settlement to fail because the settlement wallet is unfunded, and verify the backend records a degraded but reviewable result",
+    )
     return parser.parse_args()
 
 
@@ -674,6 +770,9 @@ def main() -> int:
     try:
         if args.verify_idempotent_replay or args.verify_concurrent_idempotency:
             context.idempotency_key = f"idem_{context.smoke_id}"
+        if args.expect_settlement_depletion and not args.settlement_address:
+            args.settlement_address = DEFAULT_DEPLETED_SETTLEMENT_ADDRESS
+        context.settlement_address = args.settlement_address
 
         preflight_http(session, args.backend_base_url, args.node_base_url)
         verify_settlement_wallet(
@@ -681,6 +780,7 @@ def main() -> int:
             args.node_base_url,
             args.settlement_address,
             expected_fee,
+            expect_depletion=args.expect_settlement_depletion,
         )
 
         mongo_client = MongoClient(mongo_url, serverSelectionTimeoutMS=5000)
@@ -714,10 +814,17 @@ def main() -> int:
                 args.token_amount,
                 args.wepo_amount,
             )
-            context.trade_id, context.settlement_txid = verify_trade_response(
-                trade_payload,
-                expected_fee,
-            )
+            if args.expect_settlement_depletion:
+                context.trade_id = verify_depleted_settlement_response(
+                    trade_payload,
+                    expected_fee,
+                )
+                context.settlement_txid = None
+            else:
+                context.trade_id, context.settlement_txid = verify_trade_response(
+                    trade_payload,
+                    expected_fee,
+                )
             print_step(
                 f"Trade executed trade_id={context.trade_id} settlement_txid={context.settlement_txid}"
             )
@@ -733,7 +840,7 @@ def main() -> int:
             verify_idempotent_replay(trade_payload, replay_payload)
             print_step("Idempotent replay returned the original trade result without a second settlement")
 
-        if not args.disable_force_confirm:
+        if not args.disable_force_confirm and not args.expect_settlement_depletion:
             force_confirmation_block(
                 session,
                 args.node_base_url,
@@ -741,18 +848,21 @@ def main() -> int:
                 args.mine_timeout,
             )
 
-        tx_payload = wait_for_confirmed_tx(
-            session,
-            args.node_base_url,
-            context.settlement_txid,
-            args.confirm_timeout,
-            args.poll_interval,
-        )
-        print_step(
-            "Settlement tx confirmed"
-            f" block_height={tx_payload.get('block_height')}"
-            f" confirmations={tx_payload.get('confirmations')}"
-        )
+        if not args.expect_settlement_depletion:
+            tx_payload = wait_for_confirmed_tx(
+                session,
+                args.node_base_url,
+                context.settlement_txid,
+                args.confirm_timeout,
+                args.poll_interval,
+            )
+            print_step(
+                "Settlement tx confirmed"
+                f" block_height={tx_payload.get('block_height')}"
+                f" confirmations={tx_payload.get('confirmations')}"
+            )
+        else:
+            print_step("Settlement wallet depletion verified; no settlement tx confirmation expected")
 
         verify_database_state(
             db,
@@ -760,11 +870,17 @@ def main() -> int:
             args.wallet_balance,
             args.token_amount,
             args.wepo_amount,
+            expect_settlement_depletion=args.expect_settlement_depletion,
         )
         print_step("Mongo verification passed for wallet, rwa_trades, rwa_balances, and application_fee_ledger")
 
         if not args.keep_artifacts:
-            cleanup_artifacts(db, context)
+            cleanup_artifacts(
+                db,
+                context,
+                expected_fee=expected_fee,
+                expect_settlement_depletion=args.expect_settlement_depletion,
+            )
             print_step("Temporary Mongo artifacts cleaned up")
 
         print_step("PASS canonical fee settlement smoke test completed successfully")
@@ -773,7 +889,12 @@ def main() -> int:
         print_step(f"FAIL {exc}")
         if mongo_client is not None and not args.keep_artifacts:
             try:
-                cleanup_artifacts(mongo_client[db_name], context)
+                cleanup_artifacts(
+                    mongo_client[db_name],
+                    context,
+                    expected_fee=expected_fee,
+                    expect_settlement_depletion=args.expect_settlement_depletion,
+                )
             except Exception:
                 pass
         return 1

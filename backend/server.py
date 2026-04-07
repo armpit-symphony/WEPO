@@ -1216,6 +1216,8 @@ async def execute_market_swap(request: dict):
                 "applied_on_chain": fee_settlement["applied_on_chain"],
                 "settlement_policy": fee_settlement["settlement_policy"],
                 "settlement_txid": fee_settlement.get("settlement_txid"),
+                "manual_review_required": fee_settlement.get("manual_review_required", False),
+                "settlement_error": fee_settlement.get("settlement_error"),
             },
             "price": swap_result["new_price"],
             "status": "completed",
@@ -1236,6 +1238,8 @@ async def execute_market_swap(request: dict):
             "fee_applied_on_chain": fee_settlement["applied_on_chain"],
             "fee_settlement_policy": fee_settlement["settlement_policy"],
             "fee_settlement_txid": fee_settlement.get("settlement_txid"),
+            "fee_manual_review_required": fee_settlement.get("manual_review_required", False),
+            "fee_settlement_error": fee_settlement.get("settlement_error"),
             "market_price": swap_result["new_price"],
             "btc_reserve": swap_result["btc_reserve"],
             "wepo_reserve": swap_result["wepo_reserve"],
@@ -2056,6 +2060,8 @@ async def execute_rwa_trade(request: dict):
                 "applied_on_chain": fee_settlement["applied_on_chain"],
                 "settlement_policy": fee_settlement["settlement_policy"],
                 "settlement_txid": fee_settlement.get("settlement_txid"),
+                "manual_review_required": fee_settlement.get("manual_review_required", False),
+                "settlement_error": fee_settlement.get("settlement_error"),
             },
             "privacy_enhanced": privacy_enhanced,
             "timestamp": trade_timestamp,
@@ -2782,6 +2788,8 @@ def build_rwa_trade_response(
         "fee_applied_on_chain": fee_settlement.get("applied_on_chain"),
         "fee_settlement_policy": fee_settlement.get("settlement_policy"),
         "fee_settlement_txid": fee_settlement.get("settlement_txid"),
+        "fee_manual_review_required": fee_settlement.get("manual_review_required", False),
+        "fee_settlement_error": fee_settlement.get("settlement_error"),
         "privacy_enhanced": trade_record.get("privacy_enhanced", False),
         "status": trade_record.get("status", "completed"),
         "timestamp": trade_record.get("timestamp"),
@@ -2852,6 +2860,24 @@ async def mark_rwa_trade_attempt_failed(
 
     await db.rwa_trades.delete_one({"trade_id": trade_id, "status": "processing"})
 
+
+def classify_fee_settlement_failure(response: requests.Response) -> Dict[str, Any]:
+    error_text = response.text[:500]
+    normalized_error = error_text.lower()
+    if response.status_code == 400 and "insufficient balance" in normalized_error:
+        return {
+            "settlement_policy": "canonical_wallet_depleted",
+            "manual_review_required": True,
+            "settlement_error": error_text,
+        }
+
+    return {
+        "settlement_policy": "canonical_on_chain_failed",
+        "manual_review_required": True,
+        "settlement_error": error_text,
+    }
+
+
 async def settle_application_fee(fee_amount: float, fee_type: str) -> dict:
     """Settle product fees canonically on-chain when configured, and always record the result."""
     normalized_fee = round(float(fee_amount), 8)
@@ -2898,10 +2924,10 @@ async def settle_application_fee(fee_amount: float, fee_type: str) -> dict:
                     }
                 )
             else:
+                failure_metadata = classify_fee_settlement_failure(response)
                 fee_record.update(
                     {
-                        "settlement_policy": "canonical_on_chain_failed",
-                        "settlement_error": response.text[:500],
+                        **failure_metadata,
                         "node_url": WEPO_NODE_API_URL,
                         "settlement_address": WEPO_APP_FEE_SETTLEMENT_ADDRESS,
                     }

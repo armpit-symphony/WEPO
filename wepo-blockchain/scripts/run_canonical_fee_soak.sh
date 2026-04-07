@@ -14,6 +14,7 @@ BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
 BACKEND_PORT="${BACKEND_PORT:-8011}"
 NODE_DATA_DIR="${NODE_DATA_DIR:-/tmp/wepo-fee-smoke-fast}"
 SETTLEMENT_ADDRESS="${SETTLEMENT_ADDRESS:-wepo1208a6064a35231e174df1750f0d983d1}"
+DEPLETED_SETTLEMENT_ADDRESS="${DEPLETED_SETTLEMENT_ADDRESS:-wepo1deadbeefdeadbeefdeadbeefdeadbeefdeadbe}"
 DIFFICULTY_OVERRIDE="${DIFFICULTY_OVERRIDE:-1}"
 READY_TIMEOUT_SECONDS="${READY_TIMEOUT_SECONDS:-30}"
 SMOKE_TIMEOUT_SECONDS="${SMOKE_TIMEOUT_SECONDS:-20}"
@@ -23,6 +24,11 @@ MAX_FAILURES="${MAX_FAILURES:-1}"
 SOAK_LOG_DIR="${SOAK_LOG_DIR:-/tmp/wepo-canonical-fee-soak-logs}"
 VERIFY_IDEMPOTENT_REPLAY="${VERIFY_IDEMPOTENT_REPLAY:-false}"
 VERIFY_CONCURRENT_IDEMPOTENCY="${VERIFY_CONCURRENT_IDEMPOTENCY:-false}"
+EXPECT_SETTLEMENT_DEPLETION="${EXPECT_SETTLEMENT_DEPLETION:-false}"
+
+if [[ "${EXPECT_SETTLEMENT_DEPLETION}" == "true" ]]; then
+    SETTLEMENT_ADDRESS="${DEPLETED_SETTLEMENT_ADDRESS}"
+fi
 
 NODE_BASE_URL="http://${NODE_HOST}:${NODE_API_PORT}"
 BACKEND_BASE_URL="http://${BACKEND_HOST}:${BACKEND_PORT}"
@@ -117,6 +123,10 @@ run_iteration() {
 
     if [[ "${VERIFY_CONCURRENT_IDEMPOTENCY}" == "true" ]]; then
         smoke_args+=(--verify-concurrent-idempotency)
+    fi
+
+    if [[ "${EXPECT_SETTLEMENT_DEPLETION}" == "true" ]]; then
+        smoke_args+=(--expect-settlement-depletion)
     fi
 
     print_step "Starting iteration ${iteration}/${SOAK_ITERATIONS}"
