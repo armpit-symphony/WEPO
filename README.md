@@ -107,6 +107,9 @@ Useful env overrides:
 - `VERIFY_IDEMPOTENT_REPLAY=true`
 - `VERIFY_CONCURRENT_IDEMPOTENCY=true`
 - `EXPECT_SETTLEMENT_DEPLETION=true`
+- `BACKEND_RESTART_ITERATION=<n>`
+- `NODE_RESTART_ITERATION=<n>`
+- `RESTART_SETTLE_SECONDS=<n>`
 
 The active backend/frontend runtime files no longer carry a built-in preview-host
 default. Set explicit allowlists through env when needed:

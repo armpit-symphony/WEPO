@@ -59,6 +59,7 @@ class SmokeContext:
     wallet_address: str
     wallet_username: str
     token_id: str
+    client_ip: str
     settlement_address: Optional[str] = None
     idempotency_key: Optional[str] = None
     trade_id: Optional[str] = None
@@ -640,11 +641,13 @@ def cleanup_artifacts(
 
 def build_context() -> SmokeContext:
     smoke_id = f"smoke_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+    ip_octets = uuid.uuid4().bytes[:3]
     return SmokeContext(
         smoke_id=smoke_id,
         wallet_address=make_wepo_address(smoke_id),
         wallet_username=smoke_id,
         token_id=f"rwa_{smoke_id}",
+        client_ip=f"198.{ip_octets[0]}.{ip_octets[1]}.{max(1, ip_octets[2])}",
     )
 
 
@@ -766,6 +769,14 @@ def main() -> int:
     print_step(f"node={args.node_base_url}")
     print_step(f"mongo={mongo_url} db={db_name}")
     print_step(f"smoke_id={context.smoke_id}")
+    print_step(f"client_ip={context.client_ip}")
+
+    session.headers.update(
+        {
+            "X-Forwarded-For": context.client_ip,
+            "X-Real-IP": context.client_ip,
+        }
+    )
 
     try:
         if args.verify_idempotent_replay or args.verify_concurrent_idempotency:

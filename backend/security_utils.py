@@ -205,6 +205,37 @@ class SecurityManager:
         except Exception as e:
             logger.error(f"Rate limiting error: {e}")
             return False  # Fail open for availability
+
+    @staticmethod
+    def get_rate_limit_reset_seconds(client_id: str, endpoint: str) -> int:
+        """Return seconds until the current rate-limit window resets"""
+        current_time = time.time()
+        key = f"rate_limit:{client_id}:{endpoint}"
+
+        try:
+            if redis_client:
+                ttl = redis_client.ttl(key)
+                return max(0, int(ttl)) if ttl and ttl > 0 else 0
+
+            timestamps = rate_limit_storage.get(key, [])
+            if not timestamps:
+                return 0
+
+            valid_timestamps = [
+                timestamp for timestamp in timestamps
+                if current_time - timestamp < SecurityManager.RATE_LIMIT_WINDOW
+            ]
+            rate_limit_storage[key] = valid_timestamps
+
+            if not valid_timestamps:
+                return 0
+
+            oldest_timestamp = min(valid_timestamps)
+            remaining = SecurityManager.RATE_LIMIT_WINDOW - (current_time - oldest_timestamp)
+            return max(0, int(remaining))
+        except Exception as e:
+            logger.error(f"Rate limit reset lookup error: {e}")
+            return 0
     
     @staticmethod
     def record_failed_login(username: str) -> Dict[str, Any]:

@@ -25,6 +25,9 @@ SOAK_LOG_DIR="${SOAK_LOG_DIR:-/tmp/wepo-canonical-fee-soak-logs}"
 VERIFY_IDEMPOTENT_REPLAY="${VERIFY_IDEMPOTENT_REPLAY:-false}"
 VERIFY_CONCURRENT_IDEMPOTENCY="${VERIFY_CONCURRENT_IDEMPOTENCY:-false}"
 EXPECT_SETTLEMENT_DEPLETION="${EXPECT_SETTLEMENT_DEPLETION:-false}"
+BACKEND_RESTART_ITERATION="${BACKEND_RESTART_ITERATION:-0}"
+NODE_RESTART_ITERATION="${NODE_RESTART_ITERATION:-0}"
+RESTART_SETTLE_SECONDS="${RESTART_SETTLE_SECONDS:-1}"
 
 if [[ "${EXPECT_SETTLEMENT_DEPLETION}" == "true" ]]; then
     SETTLEMENT_ADDRESS="${DEPLETED_SETTLEMENT_ADDRESS}"
@@ -39,6 +42,8 @@ BACKEND_PID=""
 TOTAL_RUNS=0
 PASSED_RUNS=0
 FAILED_RUNS=0
+BACKEND_RESTARTS=0
+NODE_RESTARTS=0
 
 mkdir -p "${SOAK_LOG_DIR}"
 NODE_LOG="${SOAK_LOG_DIR}/node.log"
@@ -57,20 +62,15 @@ fail() {
 cleanup() {
     local exit_code=$?
 
-    if [[ -n "${BACKEND_PID}" ]] && kill -0 "${BACKEND_PID}" 2>/dev/null; then
-        kill "${BACKEND_PID}" 2>/dev/null || true
-        wait "${BACKEND_PID}" 2>/dev/null || true
-    fi
-
-    if [[ -n "${NODE_PID}" ]] && kill -0 "${NODE_PID}" 2>/dev/null; then
-        kill "${NODE_PID}" 2>/dev/null || true
-        wait "${NODE_PID}" 2>/dev/null || true
-    fi
+    stop_backend
+    stop_node
 
     {
         printf 'total_runs=%s\n' "${TOTAL_RUNS}"
         printf 'passed_runs=%s\n' "${PASSED_RUNS}"
         printf 'failed_runs=%s\n' "${FAILED_RUNS}"
+        printf 'backend_restarts=%s\n' "${BACKEND_RESTARTS}"
+        printf 'node_restarts=%s\n' "${NODE_RESTARTS}"
         printf 'node_log=%s\n' "${NODE_LOG}"
         printf 'backend_log=%s\n' "${BACKEND_LOG}"
     } >>"${SUMMARY_LOG}"
@@ -104,6 +104,81 @@ wait_for_http() {
     done
 
     return 1
+}
+
+stop_backend() {
+    if [[ -n "${BACKEND_PID}" ]] && kill -0 "${BACKEND_PID}" 2>/dev/null; then
+        kill "${BACKEND_PID}" 2>/dev/null || true
+        wait "${BACKEND_PID}" 2>/dev/null || true
+    fi
+    BACKEND_PID=""
+}
+
+stop_node() {
+    if [[ -n "${NODE_PID}" ]] && kill -0 "${NODE_PID}" 2>/dev/null; then
+        kill "${NODE_PID}" 2>/dev/null || true
+        wait "${NODE_PID}" 2>/dev/null || true
+    fi
+    NODE_PID=""
+}
+
+start_node() {
+    local mode="${1:-start}"
+    print_step "${mode^}ing node at ${NODE_BASE_URL}"
+    python3 "${NODE_SCRIPT}" \
+        --data-dir "${NODE_DATA_DIR}" \
+        --p2p-port "${NODE_P2P_PORT}" \
+        --api-port "${NODE_API_PORT}" \
+        --miner-address "${SETTLEMENT_ADDRESS}" \
+        --difficulty-override "${DIFFICULTY_OVERRIDE}" \
+        --no-background-mining \
+        >>"${NODE_LOG}" 2>&1 &
+    NODE_PID=$!
+
+    if ! wait_for_http "${NODE_BASE_URL}/api/network/status" "${READY_TIMEOUT_SECONDS}"; then
+        fail "Node did not become ready; see ${NODE_LOG}"
+    fi
+}
+
+start_backend() {
+    local mode="${1:-start}"
+    print_step "${mode^}ing backend at ${BACKEND_BASE_URL}"
+    (
+        cd "${BACKEND_DIR}"
+        WEPO_NODE_API_URL="${NODE_BASE_URL}" \
+        WEPO_CANONICAL_APPLICATION_FEES_ENABLED=true \
+        WEPO_APP_FEE_SETTLEMENT_ADDRESS="${SETTLEMENT_ADDRESS}" \
+        python3 -m uvicorn server:app --host "${BACKEND_HOST}" --port "${BACKEND_PORT}"
+    ) >>"${BACKEND_LOG}" 2>&1 &
+    BACKEND_PID=$!
+
+    if ! wait_for_http "${BACKEND_BASE_URL}/api/" "${READY_TIMEOUT_SECONDS}"; then
+        fail "Backend did not become ready; see ${BACKEND_LOG}"
+    fi
+}
+
+restart_backend() {
+    local iteration="$1"
+    BACKEND_RESTARTS=$((BACKEND_RESTARTS + 1))
+    print_step "Restarting backend after iteration ${iteration}"
+    printf 'event=backend_restart iteration=%s\n' "${iteration}" >>"${SUMMARY_LOG}"
+    stop_backend
+    if (( RESTART_SETTLE_SECONDS > 0 )); then
+        sleep "${RESTART_SETTLE_SECONDS}"
+    fi
+    start_backend "restart"
+}
+
+restart_node() {
+    local iteration="$1"
+    NODE_RESTARTS=$((NODE_RESTARTS + 1))
+    print_step "Restarting node after iteration ${iteration}"
+    printf 'event=node_restart iteration=%s\n' "${iteration}" >>"${SUMMARY_LOG}"
+    stop_node
+    if (( RESTART_SETTLE_SECONDS > 0 )); then
+        sleep "${RESTART_SETTLE_SECONDS}"
+    fi
+    start_node "restart"
 }
 
 run_iteration() {
@@ -149,36 +224,11 @@ print_step "Checking ports"
 check_port_free "${NODE_API_PORT}"
 check_port_free "${BACKEND_PORT}"
 
-print_step "Starting node at ${NODE_BASE_URL}"
-python3 "${NODE_SCRIPT}" \
-    --data-dir "${NODE_DATA_DIR}" \
-    --p2p-port "${NODE_P2P_PORT}" \
-    --api-port "${NODE_API_PORT}" \
-    --miner-address "${SETTLEMENT_ADDRESS}" \
-    --difficulty-override "${DIFFICULTY_OVERRIDE}" \
-    --no-background-mining \
-    >"${NODE_LOG}" 2>&1 &
-NODE_PID=$!
-
-if ! wait_for_http "${NODE_BASE_URL}/api/network/status" "${READY_TIMEOUT_SECONDS}"; then
-    fail "Node did not become ready; see ${NODE_LOG}"
-fi
-
-print_step "Starting backend at ${BACKEND_BASE_URL}"
-(
-    cd "${BACKEND_DIR}"
-    WEPO_NODE_API_URL="${NODE_BASE_URL}" \
-    WEPO_CANONICAL_APPLICATION_FEES_ENABLED=true \
-    WEPO_APP_FEE_SETTLEMENT_ADDRESS="${SETTLEMENT_ADDRESS}" \
-    python3 -m uvicorn server:app --host "${BACKEND_HOST}" --port "${BACKEND_PORT}"
-) >"${BACKEND_LOG}" 2>&1 &
-BACKEND_PID=$!
-
-if ! wait_for_http "${BACKEND_BASE_URL}/api/" "${READY_TIMEOUT_SECONDS}"; then
-    fail "Backend did not become ready; see ${BACKEND_LOG}"
-fi
-
+: >"${NODE_LOG}"
+: >"${BACKEND_LOG}"
 : >"${SUMMARY_LOG}"
+start_node "start"
+start_backend "start"
 print_step "Beginning soak: iterations=${SOAK_ITERATIONS} max_failures=${MAX_FAILURES} pause=${SOAK_PAUSE_SECONDS}s"
 
 for (( iteration=1; iteration<=SOAK_ITERATIONS; iteration++ )); do
@@ -186,6 +236,14 @@ for (( iteration=1; iteration<=SOAK_ITERATIONS; iteration++ )); do
 
     if ! run_iteration "${iteration}" && (( FAILED_RUNS >= MAX_FAILURES )); then
         fail "Reached max failures (${MAX_FAILURES}) during soak"
+    fi
+
+    if (( iteration == BACKEND_RESTART_ITERATION )) && (( iteration < SOAK_ITERATIONS )); then
+        restart_backend "${iteration}"
+    fi
+
+    if (( iteration == NODE_RESTART_ITERATION )) && (( iteration < SOAK_ITERATIONS )); then
+        restart_node "${iteration}"
     fi
 
     if (( iteration < SOAK_ITERATIONS )) && (( SOAK_PAUSE_SECONDS > 0 )); then
