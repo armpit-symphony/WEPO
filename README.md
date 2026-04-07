@@ -90,6 +90,7 @@ For manual or deeper local work, the authoritative scripts are:
 - `/home/sparky/WEPO/canonical_fee_settlement_smoke.py`
 - `/home/sparky/WEPO/wepo-blockchain/scripts/run_canonical_fee_smoke.sh`
 - `/home/sparky/WEPO/wepo-blockchain/scripts/run_canonical_fee_soak.sh`
+- `/home/sparky/WEPO/wepo-production-deployment/run-canonical-release-gate.sh`
 - `/home/sparky/WEPO/wepo-blockchain/scripts/wepo_accelerated_simulation.py`
 
 For repeated local backend/node verification under load, use:
@@ -145,9 +146,18 @@ The production path for this repo is:
 
 1. stable protocol and chain rules
 2. stable backend and API behavior
-3. real deployment and secrets handling
-4. observability, backup, and rollback procedures
-5. accurate public documentation
+3. canonical release-gate passes in local and staging environments
+4. real deployment and secrets handling
+5. observability, backup, and rollback procedures
+6. accurate public documentation
+
+The current pre-release operator gate lives at:
+
+- `wepo-production-deployment/run-canonical-release-gate.sh`
+
+See also:
+
+- `wepo-production-deployment/CANONICAL_RELEASE_GATE.md`
 
 ## Related Repositories
 

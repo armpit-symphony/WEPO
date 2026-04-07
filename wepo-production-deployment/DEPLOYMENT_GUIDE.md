@@ -14,6 +14,18 @@ Before using any deployment instructions here, verify the current canonical loca
 
 That is the current authoritative local verification path for canonical backend-originated fee settlement.
 
+For actual pre-release signoff, use the canonical release gate:
+
+```bash
+/home/sparky/WEPO/wepo-production-deployment/run-canonical-release-gate.sh
+```
+
+Runbook:
+
+```text
+/home/sparky/WEPO/wepo-production-deployment/CANONICAL_RELEASE_GATE.md
+```
+
 ## 🎯 Complete Deployment in 30 Minutes
 
 This guide will get your WEPO blockchain network live on the internet in about 30 minutes.
