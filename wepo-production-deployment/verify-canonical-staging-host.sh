@@ -15,6 +15,7 @@ SOAK_ITERATIONS="${SOAK_ITERATIONS:-5}"
 SOAK_PAUSE_SECONDS="${SOAK_PAUSE_SECONDS:-1}"
 MAX_FAILURES="${MAX_FAILURES:-1}"
 RELEASE_GATE_LOG_DIR="${RELEASE_GATE_LOG_DIR:-${WEPO_LOG_DIR}/release-gate-$(date +%Y%m%d-%H%M%S)}"
+PYTHON_BIN="${PYTHON_BIN:-${INSTALL_ROOT}/.venv/bin/python}"
 
 MONGO_URL_VALUE=""
 DB_NAME_VALUE=""
@@ -102,6 +103,7 @@ run_release_gate() {
     mkdir -p "${RELEASE_GATE_LOG_DIR}"
     print_step "Running canonical release gate logs=${RELEASE_GATE_LOG_DIR}"
     GATE_MODE=assume-running \
+    PYTHON_BIN="${PYTHON_BIN}" \
     BACKEND_BASE_URL="${BACKEND_BASE_URL}" \
     NODE_BASE_URL="${NODE_BASE_URL}" \
     BACKEND_ENV_PATH="${BACKEND_ENV_PATH}" \

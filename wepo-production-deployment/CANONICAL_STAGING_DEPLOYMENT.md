@@ -13,6 +13,7 @@ Use a single staging host or a tightly controlled private network with:
 - nginx terminating TLS and proxying public traffic to the backend
 - Mongo reachable privately by the backend
 - Redis optional for rate limiting, with in-memory fallback if Redis is absent
+- node mining RPC enabled, but background mining disabled for deterministic gate runs
 
 Recommended public DNS split:
 
@@ -73,6 +74,13 @@ Then adjust:
 - repo checkout path under `/opt/wepo`
 - node miner address placeholder in `wepo-node.service`
 - any user/group names if the service user is not `wepo`
+
+The staging node template intentionally uses:
+
+- `--difficulty-override 1`
+- `--no-background-mining`
+
+That is a deterministic staging/test profile so the canonical release gate can confirm transactions quickly and repeatably. It is not the intended long-term public production mining profile.
 
 The bootstrap script can pre-install these files for you, but it intentionally does not start the services.
 

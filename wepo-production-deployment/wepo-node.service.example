@@ -9,7 +9,7 @@ User=wepo
 Group=wepo
 WorkingDirectory=/opt/wepo
 Environment=PYTHONDONTWRITEBYTECODE=1
-ExecStart=/opt/wepo/.venv/bin/python /opt/wepo/wepo-blockchain/core/wepo_node.py --data-dir /var/lib/wepo/node --p2p-port 22567 --api-port 8122 --miner-address wepo1replacewithfundedstagingaddress
+ExecStart=/opt/wepo/.venv/bin/python /opt/wepo/wepo-blockchain/core/wepo_node.py --data-dir /var/lib/wepo/node --p2p-port 22567 --api-port 8122 --miner-address wepo1replacewithfundedstagingaddress --difficulty-override 1 --no-background-mining
 Restart=always
 RestartSec=5
 NoNewPrivileges=true

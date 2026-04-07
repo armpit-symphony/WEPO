@@ -6,6 +6,7 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 LOCAL_SMOKE_LAUNCHER="${PROJECT_ROOT}/wepo-blockchain/scripts/run_canonical_fee_smoke.sh"
 LOCAL_SOAK_LAUNCHER="${PROJECT_ROOT}/wepo-blockchain/scripts/run_canonical_fee_soak.sh"
 SMOKE_SCRIPT="${PROJECT_ROOT}/canonical_fee_settlement_smoke.py"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 GATE_MODE="${GATE_MODE:-assume-running}"
 RELEASE_GATE_LOG_DIR="${RELEASE_GATE_LOG_DIR:-/tmp/wepo-canonical-release-gate}"
@@ -210,7 +211,7 @@ run_assumed_stack_smoke_case() {
     append_smoke_connection_args smoke_args
     smoke_args+=(--mine-timeout "${SMOKE_TIMEOUT_SECONDS}")
     smoke_args+=("$@")
-    run_case "${case_name}" python3 "${smoke_args[@]}"
+    run_case "${case_name}" "${PYTHON_BIN}" "${smoke_args[@]}"
 }
 
 run_local_soak_case() {
@@ -272,7 +273,7 @@ run_assumed_stack_soak_case() {
         smoke_args+=(--mine-timeout "${SMOKE_TIMEOUT_SECONDS}")
         total_runs=$((total_runs + 1))
 
-        if python3 "${smoke_args[@]}" >"${iteration_log}" 2>&1; then
+        if "${PYTHON_BIN}" "${smoke_args[@]}" >"${iteration_log}" 2>&1; then
             passed_runs=$((passed_runs + 1))
             printf '%s\tpass\t%s\n' "${iteration}" "${iteration_log}" >>"${soak_dir}/iterations.tsv"
             printf 'iteration=%s status=pass log=%s\n' "${iteration}" "${iteration_log}" >>"${case_summary}"
