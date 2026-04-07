@@ -22,6 +22,7 @@ SOAK_PAUSE_SECONDS="${SOAK_PAUSE_SECONDS:-1}"
 MAX_FAILURES="${MAX_FAILURES:-1}"
 SOAK_LOG_DIR="${SOAK_LOG_DIR:-/tmp/wepo-canonical-fee-soak-logs}"
 VERIFY_IDEMPOTENT_REPLAY="${VERIFY_IDEMPOTENT_REPLAY:-false}"
+VERIFY_CONCURRENT_IDEMPOTENCY="${VERIFY_CONCURRENT_IDEMPOTENCY:-false}"
 
 NODE_BASE_URL="http://${NODE_HOST}:${NODE_API_PORT}"
 BACKEND_BASE_URL="http://${BACKEND_HOST}:${BACKEND_PORT}"
@@ -112,6 +113,10 @@ run_iteration() {
 
     if [[ "${VERIFY_IDEMPOTENT_REPLAY}" == "true" ]]; then
         smoke_args+=(--verify-idempotent-replay)
+    fi
+
+    if [[ "${VERIFY_CONCURRENT_IDEMPOTENCY}" == "true" ]]; then
+        smoke_args+=(--verify-concurrent-idempotency)
     fi
 
     print_step "Starting iteration ${iteration}/${SOAK_ITERATIONS}"

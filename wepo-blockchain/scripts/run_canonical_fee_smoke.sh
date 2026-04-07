@@ -19,6 +19,7 @@ READY_TIMEOUT_SECONDS="${READY_TIMEOUT_SECONDS:-30}"
 SMOKE_TIMEOUT_SECONDS="${SMOKE_TIMEOUT_SECONDS:-20}"
 LOG_DIR="${LOG_DIR:-/tmp/wepo-canonical-fee-smoke-logs}"
 VERIFY_IDEMPOTENT_REPLAY="${VERIFY_IDEMPOTENT_REPLAY:-false}"
+VERIFY_CONCURRENT_IDEMPOTENCY="${VERIFY_CONCURRENT_IDEMPOTENCY:-false}"
 
 NODE_BASE_URL="http://${NODE_HOST}:${NODE_API_PORT}"
 BACKEND_BASE_URL="http://${BACKEND_HOST}:${BACKEND_PORT}"
@@ -128,6 +129,10 @@ SMOKE_ARGS=(
 
 if [[ "${VERIFY_IDEMPOTENT_REPLAY}" == "true" ]]; then
     SMOKE_ARGS+=(--verify-idempotent-replay)
+fi
+
+if [[ "${VERIFY_CONCURRENT_IDEMPOTENCY}" == "true" ]]; then
+    SMOKE_ARGS+=(--verify-concurrent-idempotency)
 fi
 
 python3 "${SMOKE_SCRIPT}" \

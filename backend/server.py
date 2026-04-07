@@ -5,6 +5,7 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 import os
 import logging
 import math
@@ -1953,6 +1954,7 @@ async def execute_rwa_trade(request: dict):
     reserved_trade_id: Optional[str] = None
     trade_timestamp: Optional[int] = None
     trade_effects_applied = False
+    created_idempotency_reservation = False
     try:
         token_id = request.get('token_id')
         trade_type = request.get('trade_type')  # 'buy' or 'sell'
@@ -1972,11 +1974,12 @@ async def execute_rwa_trade(request: dict):
         wepo_amount = float(wepo_amount)
 
         if idempotency_key:
-            reservation, reserved_trade_id, trade_timestamp = await reserve_rwa_trade_idempotency(
+            reservation, reserved_trade_id, trade_timestamp, created_new = await reserve_rwa_trade_idempotency(
                 user_address,
                 idempotency_key,
             )
-            if reservation.get("trade_id") != reserved_trade_id:
+            created_idempotency_reservation = created_new
+            if not created_new:
                 if reservation.get("status") == "completed":
                     return build_rwa_trade_response(reservation, idempotent_replay=True)
                 if reservation.get("status") == "failed":
@@ -2073,19 +2076,21 @@ async def execute_rwa_trade(request: dict):
         return build_rwa_trade_response(trade_record)
         
     except HTTPException as exc:
-        await mark_rwa_trade_attempt_failed(
-            reserved_trade_id,
-            str(exc.detail),
-            trade_effects_applied=trade_effects_applied,
-        )
+        if trade_effects_applied or created_idempotency_reservation or not idempotency_key:
+            await mark_rwa_trade_attempt_failed(
+                reserved_trade_id,
+                str(exc.detail),
+                trade_effects_applied=trade_effects_applied,
+            )
         raise
     except Exception as e:
         logger.error(f"Error executing RWA trade: {str(e)}")
-        await mark_rwa_trade_attempt_failed(
-            reserved_trade_id,
-            str(e),
-            trade_effects_applied=trade_effects_applied,
-        )
+        if trade_effects_applied or created_idempotency_reservation or not idempotency_key:
+            await mark_rwa_trade_attempt_failed(
+                reserved_trade_id,
+                str(e),
+                trade_effects_applied=trade_effects_applied,
+            )
         raise HTTPException(status_code=500, detail=str(e))
 
 # ===== QUANTUM VAULT ENDPOINTS =====
@@ -2790,25 +2795,35 @@ def build_rwa_trade_response(
 async def reserve_rwa_trade_idempotency(
     user_address: str,
     idempotency_key: str,
-) -> Tuple[Dict[str, Any], str, int]:
+) -> Tuple[Dict[str, Any], str, int, bool]:
     trade_id = f"rwa_trade_{int(time.time())}_{secrets.token_hex(4)}"
     timestamp = int(time.time())
-    reservation = await db.rwa_trades.find_one_and_update(
-        {"user_address": user_address, "idempotency_key": idempotency_key},
-        {
-            "$setOnInsert": {
-                "trade_id": trade_id,
-                "user_address": user_address,
-                "idempotency_key": idempotency_key,
-                "status": "processing",
-                "timestamp": timestamp,
-                "processing_started_at": timestamp,
-            }
-        },
-        upsert=True,
-        return_document=ReturnDocument.AFTER,
-    )
-    return reservation, trade_id, timestamp
+    try:
+        reservation = await db.rwa_trades.find_one_and_update(
+            {"user_address": user_address, "idempotency_key": idempotency_key},
+            {
+                "$setOnInsert": {
+                    "trade_id": trade_id,
+                    "user_address": user_address,
+                    "idempotency_key": idempotency_key,
+                    "status": "processing",
+                    "timestamp": timestamp,
+                    "processing_started_at": timestamp,
+                }
+            },
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+    except DuplicateKeyError:
+        reservation = await db.rwa_trades.find_one(
+            {"user_address": user_address, "idempotency_key": idempotency_key}
+        )
+        if not reservation:
+            raise
+        return reservation, reservation["trade_id"], int(reservation.get("timestamp", timestamp)), False
+
+    created_new = reservation.get("trade_id") == trade_id and reservation.get("status") == "processing"
+    return reservation, reservation["trade_id"], int(reservation.get("timestamp", timestamp)), created_new
 
 
 async def mark_rwa_trade_attempt_failed(

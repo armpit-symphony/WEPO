@@ -15,6 +15,7 @@ checks the persisted Mongo records, and exits non-zero on failure.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import hashlib
 import os
 import struct
@@ -23,7 +24,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import argon2
 import requests
@@ -174,9 +175,7 @@ def seed_token(rwa_tokens: Collection, context: SmokeContext) -> None:
     rwa_tokens.insert_one(token_doc)
 
 
-def execute_trade(
-    session: requests.Session,
-    backend_base_url: str,
+def build_trade_request_body(
     context: SmokeContext,
     token_amount: float,
     wepo_amount: float,
@@ -191,6 +190,34 @@ def execute_trade(
     }
     if context.idempotency_key:
         request_body["idempotency_key"] = context.idempotency_key
+    return request_body
+
+
+def execute_trade_http(
+    backend_base_url: str,
+    request_body: Dict[str, Any],
+) -> Tuple[int, Any]:
+    with requests.Session() as session:
+        response = session.post(
+            api_url(backend_base_url, "/api/dex/rwa-trade"),
+            json=request_body,
+            timeout=20,
+        )
+    try:
+        payload: Any = response.json()
+    except ValueError:
+        payload = response.text
+    return response.status_code, payload
+
+
+def execute_trade(
+    session: requests.Session,
+    backend_base_url: str,
+    context: SmokeContext,
+    token_amount: float,
+    wepo_amount: float,
+) -> Dict[str, Any]:
+    request_body = build_trade_request_body(context, token_amount, wepo_amount)
     response = session.post(api_url(backend_base_url, "/api/dex/rwa-trade"), json=request_body, timeout=20)
     require(
         response.ok,
@@ -374,6 +401,67 @@ def verify_idempotent_replay(
     )
 
 
+def execute_concurrent_idempotent_trade(
+    backend_base_url: str,
+    context: SmokeContext,
+    token_amount: float,
+    wepo_amount: float,
+    expected_fee: float,
+) -> Dict[str, Any]:
+    request_body = build_trade_request_body(context, token_amount, wepo_amount)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(execute_trade_http, backend_base_url, request_body),
+            executor.submit(execute_trade_http, backend_base_url, request_body),
+        ]
+        results = [future.result() for future in futures]
+
+    success_payloads: List[Dict[str, Any]] = []
+    processing_conflicts = 0
+
+    for status_code, payload in results:
+        if status_code == 200:
+            require(isinstance(payload, dict), f"Expected JSON payload for successful trade, got {payload}")
+            require(payload.get("success") is True, f"Concurrent trade did not report success: {payload}")
+            success_payloads.append(payload)
+            continue
+
+        require(status_code == 409, f"Unexpected concurrent duplicate status {status_code}: {payload}")
+        require(isinstance(payload, dict), f"Expected JSON payload for 409 response, got {payload}")
+        require(
+            "already processing" in str(payload.get("detail", "")),
+            f"Unexpected 409 duplicate payload: {payload}",
+        )
+        processing_conflicts += 1
+
+    require(success_payloads, f"Concurrent duplicate requests produced no successful trade result: {results}")
+    primary_payload = next(
+        (payload for payload in success_payloads if payload.get("idempotent_replay") is not True),
+        success_payloads[0],
+    )
+    trade_id, settlement_txid = verify_trade_response(primary_payload, expected_fee)
+
+    for payload in success_payloads:
+        if payload is primary_payload:
+            continue
+        verify_idempotent_replay(primary_payload, payload)
+
+    replay_status, replay_payload = execute_trade_http(backend_base_url, request_body)
+    require(replay_status == 200, f"Replay after concurrent duplicate returned HTTP {replay_status}: {replay_payload}")
+    require(isinstance(replay_payload, dict), f"Expected replay JSON payload, got {replay_payload}")
+    verify_idempotent_replay(primary_payload, replay_payload)
+
+    print_step(
+        "Concurrent duplicate requests resolved safely"
+        f" successes={len(success_payloads)} processing_conflicts={processing_conflicts}"
+    )
+    return {
+        "trade_id": trade_id,
+        "settlement_txid": settlement_txid,
+    }
+
+
 def verify_database_state(
     db: Any,
     context: SmokeContext,
@@ -554,6 +642,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Replay the same trade request with an idempotency key and verify the backend returns the original trade result without applying effects twice",
     )
+    parser.add_argument(
+        "--verify-concurrent-idempotency",
+        action="store_true",
+        help="Submit two same-key trade requests concurrently and verify duplicate handling remains single-settlement and single-balance-application",
+    )
     return parser.parse_args()
 
 
@@ -579,7 +672,7 @@ def main() -> int:
     print_step(f"smoke_id={context.smoke_id}")
 
     try:
-        if args.verify_idempotent_replay:
+        if args.verify_idempotent_replay or args.verify_concurrent_idempotency:
             context.idempotency_key = f"idem_{context.smoke_id}"
 
         preflight_http(session, args.backend_base_url, args.node_base_url)
@@ -600,22 +693,36 @@ def main() -> int:
             f"Seeded disposable wallet {context.wallet_address} and token {context.token_id}"
         )
 
-        trade_payload = execute_trade(
-            session,
-            args.backend_base_url,
-            context,
-            args.token_amount,
-            args.wepo_amount,
-        )
-        context.trade_id, context.settlement_txid = verify_trade_response(
-            trade_payload,
-            expected_fee,
-        )
-        print_step(
-            f"Trade executed trade_id={context.trade_id} settlement_txid={context.settlement_txid}"
-        )
+        if args.verify_concurrent_idempotency:
+            trade_result = execute_concurrent_idempotent_trade(
+                args.backend_base_url,
+                context,
+                args.token_amount,
+                args.wepo_amount,
+                expected_fee,
+            )
+            context.trade_id = trade_result["trade_id"]
+            context.settlement_txid = trade_result["settlement_txid"]
+            print_step(
+                f"Trade executed trade_id={context.trade_id} settlement_txid={context.settlement_txid}"
+            )
+        else:
+            trade_payload = execute_trade(
+                session,
+                args.backend_base_url,
+                context,
+                args.token_amount,
+                args.wepo_amount,
+            )
+            context.trade_id, context.settlement_txid = verify_trade_response(
+                trade_payload,
+                expected_fee,
+            )
+            print_step(
+                f"Trade executed trade_id={context.trade_id} settlement_txid={context.settlement_txid}"
+            )
 
-        if args.verify_idempotent_replay:
+        if args.verify_idempotent_replay and not args.verify_concurrent_idempotency:
             replay_payload = execute_trade(
                 session,
                 args.backend_base_url,
