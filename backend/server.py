@@ -14,6 +14,7 @@ import uuid
 import hashlib
 import time
 import json
+import requests
 from datetime import datetime, timedelta
 from enum import Enum
 import secrets
@@ -36,6 +37,26 @@ init_redis()  # Initialize Redis for rate limiting (fallback to in-memory if Red
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
+WEPO_NODE_API_URL = os.getenv("WEPO_NODE_API_URL", "http://127.0.0.1:8122")
+WEPO_CANONICAL_APPLICATION_FEES_ENABLED = os.getenv(
+    "WEPO_CANONICAL_APPLICATION_FEES_ENABLED",
+    "false",
+).lower() in {"1", "true", "yes", "on"}
+WEPO_APP_FEE_SETTLEMENT_ADDRESS = os.getenv("WEPO_APP_FEE_SETTLEMENT_ADDRESS", "").strip()
+
+
+def parse_csv_env(env_name: str, default_values: List[str]) -> List[str]:
+    raw_value = os.getenv(env_name, "")
+    if not raw_value.strip():
+        return list(default_values)
+    return [value.strip() for value in raw_value.split(",") if value.strip()]
+
+
+DEFAULT_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+WEPO_ALLOWED_ORIGINS = parse_csv_env("WEPO_ALLOWED_ORIGINS", DEFAULT_ALLOWED_ORIGINS)
 
 # Create the main app with enhanced security
 app = FastAPI(
@@ -899,6 +920,17 @@ async def btc_tx_info(txid: str):
         logger.error(f"Esplora tx error: {e}")
         raise HTTPException(status_code=500, detail="Failed to query tx")
 
+@api_router.get("/bitcoin/tx/{txid}/hex")
+async def btc_tx_hex(txid: str):
+    try:
+        tx_hex = _esplora_get(f"/tx/{txid}/hex")
+        return {"success": True, "data": tx_hex}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Esplora tx hex error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to query transaction hex")
+
 @api_router.get("/bitcoin/fee-estimates")
 async def btc_fee_estimates():
     try:
@@ -1164,11 +1196,10 @@ async def execute_market_swap(request: dict):
         input_is_btc = (from_currency == "BTC")
         swap_result = btc_wepo_pool.execute_swap(input_amount, input_is_btc)
         
-        # Calculate fee redistribution (goes to existing 3-way system)
+        # Application-level swap fee. Mirror it into canonical chain fees when configured.
         fee_amount = swap_result["fee_amount"]
         
-        # Add to redistribution pool (integrate with existing system)
-        await add_fee_to_redistribution_pool(fee_amount, "swap_fee")
+        fee_settlement = await settle_application_fee(fee_amount, "swap_fee")
         
         # Record swap transaction
         swap_record = {
@@ -1179,6 +1210,11 @@ async def execute_market_swap(request: dict):
             "input_amount": input_amount,
             "output_amount": swap_result["output_amount"],
             "fee_amount": fee_amount,
+            "fee_settlement": {
+                "applied_on_chain": fee_settlement["applied_on_chain"],
+                "settlement_policy": fee_settlement["settlement_policy"],
+                "settlement_txid": fee_settlement.get("settlement_txid"),
+            },
             "price": swap_result["new_price"],
             "status": "completed",
             "timestamp": int(time.time()),
@@ -1195,6 +1231,9 @@ async def execute_market_swap(request: dict):
             "input_amount": input_amount,
             "output_amount": swap_result["output_amount"],
             "fee_amount": fee_amount,
+            "fee_applied_on_chain": fee_settlement["applied_on_chain"],
+            "fee_settlement_policy": fee_settlement["settlement_policy"],
+            "fee_settlement_txid": fee_settlement.get("settlement_txid"),
             "market_price": swap_result["new_price"],
             "btc_reserve": swap_result["btc_reserve"],
             "wepo_reserve": swap_result["wepo_reserve"],
@@ -1386,7 +1425,7 @@ class WalletMiner:
                 "target_difficulty": 1.0,
                 "reward": 0,  # Genesis block has no reward
                 "algorithm": "argon2",
-                "message": "🎄 WEPO Genesis Block - December 25, 2025"
+                "message": "WEPO Genesis Block"
             }
         
         # Regular PoW block
@@ -1970,8 +2009,7 @@ async def execute_rwa_trade(request: dict):
             # Add WEPO to user (minus fee)
             await update_wallet_balance(user_address, wepo_amount - trade_fee)
         
-        # Add fee to redistribution pool
-        await add_fee_to_redistribution_pool(trade_fee, "rwa_trade")
+        fee_settlement = await settle_application_fee(trade_fee, "rwa_trade")
         
         # Record trade
         trade_record = {
@@ -1983,6 +2021,11 @@ async def execute_rwa_trade(request: dict):
             "token_amount": token_amount,
             "wepo_amount": wepo_amount,
             "trade_fee": trade_fee,
+            "fee_settlement": {
+                "applied_on_chain": fee_settlement["applied_on_chain"],
+                "settlement_policy": fee_settlement["settlement_policy"],
+                "settlement_txid": fee_settlement.get("settlement_txid"),
+            },
             "privacy_enhanced": privacy_enhanced,
             "timestamp": int(time.time()),
             "status": "completed"
@@ -1998,6 +2041,9 @@ async def execute_rwa_trade(request: dict):
             "token_amount": token_amount,
             "wepo_amount": wepo_amount,
             "trade_fee": trade_fee,
+            "fee_applied_on_chain": fee_settlement["applied_on_chain"],
+            "fee_settlement_policy": fee_settlement["settlement_policy"],
+            "fee_settlement_txid": fee_settlement.get("settlement_txid"),
             "privacy_enhanced": privacy_enhanced,
             "status": "completed",
             "timestamp": trade_record["timestamp"]
@@ -2681,26 +2727,69 @@ async def update_wallet_balance(address: str, amount_change: float):
         upsert=True
     )
 
-async def add_fee_to_redistribution_pool(fee_amount: float, fee_type: str):
-    """Integrate swap fees with existing 3-way redistribution system"""
+async def settle_application_fee(fee_amount: float, fee_type: str) -> dict:
+    """Settle product fees canonically on-chain when configured, and always record the result."""
+    normalized_fee = round(float(fee_amount), 8)
+    fee_record = {
+        "fee_amount": normalized_fee,
+        "fee_type": fee_type,
+        "fee_scope": "application",
+        "timestamp": int(time.time()),
+        "applied_on_chain": False,
+        "settlement_policy": "off_chain_pending_policy",
+        "created_at": datetime.now(),
+    }
+
     try:
-        # This integrates with the existing fee redistribution system
-        # All swap fees go to the same pool as RWA fees
-        redistribution_record = {
-            "fee_amount": fee_amount,
-            "fee_type": fee_type,
-            "timestamp": int(time.time()),
-            "redistributed": False,
-            "created_at": datetime.now()
-        }
-        
-        await db.fee_redistribution_pool.insert_one(redistribution_record)
-        
-        # Fees will be distributed by existing system:
-        # 60% to masternodes, 25% to miners, 15% to stakers
-        
+        if normalized_fee <= 0:
+            fee_record["settlement_policy"] = "ignored_non_positive_fee"
+        elif not WEPO_CANONICAL_APPLICATION_FEES_ENABLED:
+            fee_record["settlement_policy"] = "canonical_fee_settlement_disabled"
+        elif not WEPO_APP_FEE_SETTLEMENT_ADDRESS:
+            fee_record["settlement_policy"] = "canonical_fee_wallet_unconfigured"
+        else:
+            response = requests.post(
+                f"{WEPO_NODE_API_URL}/api/transaction/send",
+                json={
+                    "from_address": WEPO_APP_FEE_SETTLEMENT_ADDRESS,
+                    "to_address": WEPO_APP_FEE_SETTLEMENT_ADDRESS,
+                    "amount": 0,
+                    "fee": normalized_fee,
+                    "fee_mode": "canonical_settlement",
+                    "privacy_level": "standard",
+                },
+                timeout=10,
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                fee_record.update(
+                    {
+                        "applied_on_chain": True,
+                        "settlement_policy": "canonical_on_chain",
+                        "settlement_txid": result.get("tx_hash") or result.get("transaction_id"),
+                        "node_url": WEPO_NODE_API_URL,
+                        "settlement_address": WEPO_APP_FEE_SETTLEMENT_ADDRESS,
+                    }
+                )
+            else:
+                fee_record.update(
+                    {
+                        "settlement_policy": "canonical_on_chain_failed",
+                        "settlement_error": response.text[:500],
+                        "node_url": WEPO_NODE_API_URL,
+                        "settlement_address": WEPO_APP_FEE_SETTLEMENT_ADDRESS,
+                    }
+                )
+
+        await db.application_fee_ledger.insert_one(fee_record)
+
     except Exception as e:
-        logger.error(f"Error adding fee to redistribution pool: {str(e)}")
+        logger.error(f"Error recording application fee: {str(e)}")
+        fee_record["settlement_policy"] = "canonical_on_chain_exception"
+        fee_record["settlement_error"] = str(e)
+
+    return fee_record
 
 # Include the router in the main app
 app.include_router(api_router)
@@ -2708,11 +2797,7 @@ app.include_router(api_router)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=[
-        "https://blockchain-sectest.preview.emergentagent.com",  # Production frontend
-        "http://localhost:3000",  # Development frontend
-        "http://127.0.0.1:3000",  # Alternative localhost
-    ],
+    allow_origins=WEPO_ALLOWED_ORIGINS,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )

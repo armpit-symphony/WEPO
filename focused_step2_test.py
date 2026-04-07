@@ -11,6 +11,8 @@ import time
 import json
 from pathlib import Path
 
+OUTPUT_PATH = Path(__file__).resolve().parent / "legacy" / "step2-results" / "step2_test_results.json"
+
 # Load backend URL
 def load_backend_url():
     frontend_env = Path("/app/frontend/.env")
@@ -205,9 +207,10 @@ def main():
         print("❌ POOR - Input validation needs improvement")
     
     # Save detailed results
-    with open("/app/step2_test_results.json", "w") as f:
+    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with OUTPUT_PATH.open("w") as f:
         json.dump(test_results, f, indent=2)
-    print(f"\n📝 Detailed results saved to /app/step2_test_results.json")
+    print(f"\n📝 Detailed results saved to {OUTPUT_PATH}")
 
 if __name__ == "__main__":
     main()

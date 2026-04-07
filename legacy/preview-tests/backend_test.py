@@ -2,6 +2,13 @@
 """
 WEPO FOCUSED BACKEND TESTING - PRIORITY ISSUES
 
+LEGACY NOTICE:
+- This script is preview-era and is not the canonical local verification path.
+- It should not be used as the primary backend acceptance test.
+- Use the canonical backend/node smoke path instead:
+  - /home/sparky/WEPO/wepo-blockchain/scripts/run_canonical_fee_smoke.sh
+  - /home/sparky/WEPO/canonical_fee_settlement_smoke.py
+
 **REVIEW REQUEST FOCUS:**
 Run focused testing on the specific issues that were identified as failing in the previous comprehensive backend test:
 
@@ -54,12 +61,13 @@ import base64
 import hashlib
 import re
 
-# Use preview backend URL from frontend/.env
-BACKEND_URL = "https://blockchain-sectest.preview.emergentagent.com"
+# Legacy preview target. Override explicitly if you still need this script.
+BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8011")
 API_URL = f"{BACKEND_URL}/api"
 
+print("⚠️ LEGACY SCRIPT: use wepo-blockchain/scripts/run_canonical_fee_smoke.sh for the canonical path")
 print(f"🎯 WEPO FOCUSED BACKEND TESTING - PRIORITY ISSUES")
-print(f"Preview Backend API URL: {API_URL}")
+print(f"Backend API URL: {API_URL}")
 print(f"Focus: Mining System, Network Status, Staking System, Database Testing")
 print("=" * 80)
 
@@ -690,6 +698,7 @@ def run_focused_backend_testing():
     }
 
 if __name__ == "__main__":
+    print("⚠️ LEGACY SCRIPT: canonical path is wepo-blockchain/scripts/run_canonical_fee_smoke.sh")
     # Run focused backend testing
     results = run_focused_backend_testing()
     
@@ -729,7 +738,7 @@ if __name__ == "__main__":
     
     print(f"\n🔧 NEXT STEPS:")
     if results['success_rate'] >= 85:
-        print("• System ready for production use")
+        print("• System not approved for production use")
         print("• Monitor for any edge cases")
         print("• Continue with frontend integration")
     else:

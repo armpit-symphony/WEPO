@@ -10,6 +10,7 @@ import threading
 import signal
 import sys
 import argparse
+import secrets
 from typing import Optional, Dict, Any
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -19,7 +20,7 @@ import os
 import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from blockchain import WepoBlockchain, Transaction, Block
+from blockchain import WepoBlockchain, Transaction, Block, COIN
 from p2p_network import WepoP2PNode
 from privacy import privacy_engine, create_privacy_proof, verify_privacy_proof, ZK_STARK_PROOF_SIZE, RING_SIGNATURE_SIZE, CONFIDENTIAL_PROOF_SIZE
 from atomic_swaps import atomic_swap_engine, SwapType, SwapState, validate_btc_address, validate_wepo_address
@@ -33,14 +34,22 @@ class WepoFullNode:
     """WEPO Full Blockchain Node"""
     
     def __init__(self, data_dir: str = "/tmp/wepo", p2p_port: int = 22567, 
-                 api_port: int = 8001, enable_mining: bool = True):
+                 api_port: int = 8001, enable_mining: bool = True,
+                 background_mining_enabled: Optional[bool] = None,
+                 difficulty_override: Optional[int] = None):
         self.data_dir = data_dir
         self.p2p_port = p2p_port
         self.api_port = api_port
-        self.enable_mining = enable_mining
+        self.mining_api_enabled = enable_mining
+        self.background_mining_enabled = (
+            enable_mining if background_mining_enabled is None else background_mining_enabled
+        )
         
         # Initialize blockchain
         self.blockchain = WepoBlockchain(data_dir)
+        if difficulty_override is not None:
+            self.blockchain.fixed_difficulty = max(1, int(difficulty_override))
+            self.blockchain.current_difficulty = self.blockchain.fixed_difficulty
         
         # Initialize quantum-resistant blockchain
         self.quantum_blockchain = QuantumWepoBlockchain(data_dir + "_quantum")
@@ -58,9 +67,10 @@ class WepoFullNode:
         self.setup_api_routes()
         
         # Mining state
-        self.mining_enabled = enable_mining
         self.mining_thread: Optional[threading.Thread] = None
-        self.miner_address = "wepo1node00000000000000000000000000"
+        self.miner_address = generate_wepo_address("wepo-node-miner", address_type="regular")
+        self.active_mining_jobs: Dict[str, Dict[str, Any]] = {}
+        self.mining_job_ttl_seconds = 300
         
         # Node state
         self.running = False
@@ -69,10 +79,23 @@ class WepoFullNode:
         print(f"  Data directory: {data_dir}")
         print(f"  P2P port: {p2p_port}")
         print(f"  API port: {api_port}")
-        print(f"  Mining enabled: {enable_mining}")
+        print(f"  Mining API enabled: {self.mining_api_enabled}")
+        print(f"  Background mining enabled: {self.background_mining_enabled}")
+        if difficulty_override is not None:
+            print(f"  Difficulty override: {self.blockchain.fixed_difficulty}")
     
     def setup_api_routes(self):
         """Setup API routes"""
+
+        def prune_expired_mining_jobs():
+            now = time.time()
+            expired_job_ids = [
+                job_id
+                for job_id, job in self.active_mining_jobs.items()
+                if now - job["created_at"] > self.mining_job_ttl_seconds
+            ]
+            for job_id in expired_job_ids:
+                self.active_mining_jobs.pop(job_id, None)
         
         # Add CORS middleware
         self.app.add_middleware(
@@ -103,7 +126,8 @@ class WepoFullNode:
                 "peers": p2p_info['peer_count'],
                 "connections": p2p_info['connected_peers'],
                 "node_id": p2p_info['node_id'],
-                "mining_enabled": self.mining_enabled
+                "mining_enabled": self.mining_api_enabled,
+                "background_mining_enabled": self.background_mining_enabled,
             }
         
         # Blockchain info
@@ -213,10 +237,11 @@ class WepoFullNode:
                 to_address = request.get('to_address')
                 amount = request.get('amount')
                 fee = request.get('fee', 0.0001)
+                fee_mode = request.get('fee_mode', 'standard')
                 privacy_level = request.get('privacy_level', 'standard')  # 'standard', 'high', 'maximum'
                 
                 # Input validation
-                if not all([from_address, to_address, amount]):
+                if from_address is None or to_address is None or amount is None:
                     raise HTTPException(status_code=400, detail="Missing required fields: from_address, to_address, amount")
                 
                 # Validate addresses
@@ -226,10 +251,20 @@ class WepoFullNode:
                 if not to_address.startswith("wepo1") or len(to_address) < 30:
                     raise HTTPException(status_code=400, detail="Invalid recipient address format")
                 
+                if fee_mode not in ['standard', 'canonical_settlement']:
+                    raise HTTPException(status_code=400, detail="Invalid fee_mode")
+
                 # Validate amount
-                if not isinstance(amount, (int, float)) or amount <= 0:
-                    raise HTTPException(status_code=400, detail="Amount must be a positive number")
-                
+                if not isinstance(amount, (int, float)) or amount < 0:
+                    raise HTTPException(status_code=400, detail="Amount must be a non-negative number")
+
+                if not isinstance(fee, (int, float)) or fee <= 0:
+                    raise HTTPException(status_code=400, detail="Fee must be a positive number")
+
+                allow_fee_only = fee_mode == 'canonical_settlement'
+                if amount == 0 and not allow_fee_only:
+                    raise HTTPException(status_code=400, detail="Amount must be positive for standard transfers")
+
                 # Check sender balance
                 sender_balance = self.blockchain.get_balance_wepo(from_address)
                 required_amount = amount + fee
@@ -241,7 +276,13 @@ class WepoFullNode:
                     )
                 
                 # Create transaction using blockchain method
-                tx = self.blockchain.create_transaction(from_address, to_address, amount, fee)
+                tx = self.blockchain.create_transaction(
+                    from_address,
+                    to_address,
+                    int(round(amount * COIN)),
+                    int(round(fee * COIN)),
+                    allow_fee_only=allow_fee_only,
+                )
                 
                 if not tx:
                     raise HTTPException(status_code=400, detail="Failed to create transaction")
@@ -288,7 +329,8 @@ class WepoFullNode:
                         'status': 'pending',
                         'message': 'Transaction submitted to mempool',
                         'privacy_protected': bool(tx.privacy_proof or tx.ring_signature),
-                        'privacy_level': privacy_level
+                        'privacy_level': privacy_level,
+                        'fee_mode': fee_mode,
                     }
                 else:
                     raise HTTPException(status_code=400, detail="Transaction validation failed")
@@ -633,28 +675,41 @@ class WepoFullNode:
                 'difficulty': self.blockchain.current_difficulty,
                 'algorithm': 'Argon2',
                 'block_time': '10 minutes' if height <= 52560 else '2 minutes',
-                'mining_enabled': self.mining_enabled,
+                'mining_enabled': self.mining_api_enabled,
+                'background_mining_enabled': self.background_mining_enabled,
                 'mempool_size': len(self.blockchain.mempool),
                 'reward_schedule': 'Balanced Year 1: 400→200→100→50 WEPO, then 12.4 with 4yr halvings'
             }
         
         @self.app.get("/api/mining/getwork")
-        async def get_work():
+        async def get_work(miner_address: Optional[str] = None):
             """Get mining work"""
-            if not self.mining_enabled:
-                raise HTTPException(status_code=503, detail="Mining disabled")
+            if not self.mining_api_enabled:
+                raise HTTPException(status_code=503, detail="Mining API disabled")
+
+            reward_address = miner_address or self.miner_address
+            if not reward_address.startswith("wepo1") or len(reward_address) < 30:
+                raise HTTPException(status_code=400, detail="Invalid miner address format")
             
             # Create new block template
-            new_block = self.blockchain.create_new_block(self.miner_address)
+            new_block = self.blockchain.create_new_block(reward_address)
+            job_id = f"job_{new_block.height}_{int(time.time())}_{secrets.token_hex(4)}"
+            prune_expired_mining_jobs()
+            self.active_mining_jobs[job_id] = {
+                "block": new_block,
+                "created_at": time.time(),
+                "miner_address": reward_address,
+            }
             
             return {
-                'job_id': f"job_{new_block.height}_{int(time.time())}",
+                'job_id': job_id,
                 'prev_hash': new_block.header.prev_hash,
                 'merkle_root': new_block.header.merkle_root,
                 'timestamp': new_block.header.timestamp,
                 'bits': new_block.header.bits,
                 'height': new_block.height,
-                'target_difficulty': self.blockchain.current_difficulty
+                'target_difficulty': new_block.header.bits,
+                'miner_address': reward_address,
             }
         
         @self.app.post("/api/mining/submit")
@@ -663,11 +718,52 @@ class WepoFullNode:
             try:
                 job_id = request.get('job_id')
                 nonce = request.get('nonce')
-                miner_address = request.get('miner_address', self.miner_address)
-                
-                # Create block with submitted nonce
-                new_block = self.blockchain.create_new_block(miner_address)
+                miner_address = request.get('miner_address')
+
+                if not job_id or not isinstance(job_id, str):
+                    return {
+                        'accepted': False,
+                        'reason': 'Missing or invalid job_id'
+                    }
+
+                if not isinstance(nonce, int) or nonce < 0:
+                    return {
+                        'accepted': False,
+                        'reason': 'Missing or invalid nonce'
+                    }
+
+                prune_expired_mining_jobs()
+                job = self.active_mining_jobs.pop(job_id, None)
+                if not job:
+                    return {
+                        'accepted': False,
+                        'reason': 'Unknown or expired job'
+                    }
+
+                if miner_address and miner_address != job['miner_address']:
+                    return {
+                        'accepted': False,
+                        'reason': 'Submitted miner address does not match issued work'
+                    }
+
+                new_block = job['block']
+                latest_block = self.blockchain.get_latest_block()
+                expected_prev_hash = latest_block.get_block_hash() if latest_block else "0" * 64
+                expected_height = self.blockchain.get_block_height() + 1
+
+                if new_block.header.prev_hash != expected_prev_hash or new_block.height != expected_height:
+                    return {
+                        'accepted': False,
+                        'reason': 'Stale work'
+                    }
+
                 new_block.header.nonce = nonce
+
+                if not self.blockchain.validate_pow_block(new_block):
+                    return {
+                        'accepted': False,
+                        'reason': 'Invalid proof of work'
+                    }
                 
                 # Validate and add block
                 if self.blockchain.add_block(new_block):
@@ -1082,12 +1178,12 @@ class WepoFullNode:
     
     def start_mining(self):
         """Start mining in background thread"""
-        if not self.mining_enabled:
+        if not self.background_mining_enabled:
             return
         
         def mining_worker():
             print("Starting WEPO mining...")
-            while self.running and self.mining_enabled:
+            while self.running and self.background_mining_enabled:
                 try:
                     mined_block = self.blockchain.mine_next_block(self.miner_address)
                     if mined_block:
@@ -1119,8 +1215,8 @@ class WepoFullNode:
         time.sleep(2)
         self.p2p_node.discover_peers()
         
-        # Start mining if enabled
-        if self.enable_mining:
+        # Start background mining if enabled
+        if self.background_mining_enabled:
             self.start_mining()
         
         print(f"WEPO Full Node started successfully!")
@@ -1140,7 +1236,8 @@ class WepoFullNode:
         """Stop the full node"""
         print("Stopping WEPO Full Node...")
         self.running = False
-        self.mining_enabled = False
+        self.background_mining_enabled = False
+        self.mining_api_enabled = False
         
         # Stop P2P network
         self.p2p_node.stop_server()
@@ -1165,9 +1262,13 @@ def main():
     parser.add_argument('--api-port', type=int, default=8001,
                        help='API server port')
     parser.add_argument('--no-mining', action='store_true',
-                       help='Disable mining')
+                       help='Disable both mining RPC and background mining')
+    parser.add_argument('--no-background-mining', action='store_true',
+                       help='Disable the background miner but keep mining RPC available')
     parser.add_argument('--miner-address',
                        help='Miner address for block rewards')
+    parser.add_argument('--difficulty-override', type=int,
+                       help='Fixed PoW difficulty for local testing or smoke environments')
     
     args = parser.parse_args()
     
@@ -1182,7 +1283,11 @@ def main():
     print(f"Data directory: {args.data_dir}")
     print(f"P2P port: {args.p2p_port}")
     print(f"API port: {args.api_port}")
-    print(f"Mining: {'Disabled' if args.no_mining else 'Enabled'}")
+    print(f"Mining API: {'Disabled' if args.no_mining else 'Enabled'}")
+    print(
+        f"Background mining: "
+        f"{'Disabled' if args.no_mining or args.no_background_mining else 'Enabled'}"
+    )
     print("=" * 60)
     
     # Create and start node
@@ -1191,7 +1296,9 @@ def main():
         data_dir=args.data_dir,
         p2p_port=args.p2p_port,
         api_port=args.api_port,
-        enable_mining=not args.no_mining
+        enable_mining=not args.no_mining,
+        background_mining_enabled=False if args.no_mining else not args.no_background_mining,
+        difficulty_override=args.difficulty_override,
     )
     
     if args.miner_address:

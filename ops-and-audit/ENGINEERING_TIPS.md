@@ -1,10 +1,12 @@
 # 🚨 WEPO ENGINEERING TIPS - CRITICAL SECURITY DEBUGGING
 
-## ⚠️ URGENT: Christmas Day 2025 Launch Blocked - Security Integration Fixes Needed
+> Historical note: this document is bridge-era debugging guidance. Preview-era security scripts now live under `/app/legacy/preview-tests/`. The current authoritative local verification path is `/app/wepo-blockchain/scripts/run_canonical_fee_smoke.sh`.
+
+## ⚠️ URGENT: Launch Blocked - Security Integration Fixes Needed
 
 **Current Status:** 44.2% security score (FAILED - Requires 85%+ for cryptocurrency production)  
 **Critical Issues:** Brute force protection and rate limiting not working despite implementation  
-**Timeline:** Immediate fixes required for Christmas Day 2025 launch  
+**Timeline:** Immediate fixes required for launch  
 
 ---
 
@@ -224,8 +226,12 @@ limiter = Limiter()  # Uses in-memory storage
 
 ### Run Comprehensive Security Test
 ```bash
+# legacy preview-era harness, kept only for historical reference:
 cd /app
-python definitive_security_test.py
+python legacy/preview-tests/definitive_security_test.py
+
+# current canonical local verification:
+/app/wepo-blockchain/scripts/run_canonical_fee_smoke.sh
 ```
 
 ### Check Security Score
@@ -234,7 +240,7 @@ python definitive_security_test.py
 # FINAL SECURITY SCORE: 85%+ (PASSED)
 # - Brute Force Protection: 100%
 # - Rate Limiting: 100% 
-# - Overall Status: READY for Christmas Day 2025
+# - Overall Status: READY for genesis date
 ```
 
 ### Backend Testing Agent
@@ -277,7 +283,7 @@ deep_testing_backend_v2("Test SlowAPI rate limiting integration and brute force 
 ### When to Use Testing Agents
 - **Backend Issues:** Use `deep_testing_backend_v2` for API testing
 - **Frontend Issues:** Ask user permission before frontend testing
-- **Security Issues:** Run `/app/definitive_security_test.py` first
+- **Security Issues:** Use `/app/wepo-blockchain/scripts/run_canonical_fee_smoke.sh` for the current canonical local path; `/app/legacy/preview-tests/definitive_security_test.py` is historical only
 
 ### Escalation Path
 1. **First:** Debug using the steps in this guide

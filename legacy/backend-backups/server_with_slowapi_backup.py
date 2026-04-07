@@ -1,13 +1,17 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 import os
 import logging
 import math
 from pathlib import Path
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 from typing import List, Optional, Dict, Any
 import uuid
 import hashlib
@@ -16,20 +20,92 @@ import json
 from datetime import datetime, timedelta
 from enum import Enum
 import secrets
+import re
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
+
+# Add current directory to Python path for security_utils import
+import sys
+sys.path.append(str(ROOT_DIR))
+
+# Import security utilities
+from security_utils import SecurityManager, init_redis
+
+# Initialize security features
+init_redis()  # Initialize Redis for rate limiting (fallback to in-memory if Redis unavailable)
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-# Create the main app
-app = FastAPI(title="WEPO Blockchain API", version="1.0.0")
+
+def parse_csv_env(env_name: str, default_values: List[str]) -> List[str]:
+    raw_value = os.getenv(env_name, "")
+    if not raw_value.strip():
+        return list(default_values)
+    return [value.strip() for value in raw_value.split(",") if value.strip()]
+
+
+DEFAULT_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+WEPO_ALLOWED_ORIGINS = parse_csv_env("WEPO_ALLOWED_ORIGINS", DEFAULT_ALLOWED_ORIGINS)
+
+# Create the main app with enhanced security
+app = FastAPI(
+    title="WEPO Blockchain API", 
+    version="1.0.0",
+    docs_url=None,  # Disable docs in production for security
+    redoc_url=None  # Disable redoc in production for security
+)
+
+# Create rate limiter with proper key function
+def get_client_id(request: Request):
+    """Get client identifier for rate limiting"""
+    return SecurityManager.get_client_identifier(request)
+
+limiter = Limiter(key_func=get_client_id)
+
+# Add rate limiting to app
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Security middleware
+class SecurityMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        # Add security headers and processing
+        try:
+            response = await call_next(request)
+            
+            # Add security headers
+            security_headers = SecurityManager.get_security_headers()
+            for header, value in security_headers.items():
+                response.headers[header] = value
+            
+            return response
+        except Exception as e:
+            logging.error(f"Security middleware error: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error")
+
+app.add_middleware(SecurityMiddleware)
 
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
+
+# Configure logging with enhanced security logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('/tmp/wepo_security.log')
+    ]
+)
+
+logger = logging.getLogger(__name__)
 
 # Security
 security = HTTPBasic()
@@ -254,88 +330,171 @@ async def get_network_status():
 
 # ===== WALLET AUTHENTICATION ENDPOINTS =====
 
-@api_router.post("/wallet/create")
-async def create_wallet(request: dict):
-    """Create a new WEPO wallet with BIP-39 secure generation"""
+@app.post("/api/wallet/create")
+@limiter.limit("3/minute")  # Rate limit wallet creation
+async def create_wallet(request: Request, data: dict):
+    """Create a new WEPO wallet with comprehensive security"""
+    client_id = SecurityManager.get_client_identifier(request)
+    logger.info(f"Wallet creation attempt from {client_id}")
+    
     try:
-        username = request.get("username")
-        password = request.get("password")
+        # Input validation and sanitization
+        username = SecurityManager.sanitize_input(data.get("username", ""))
+        password = data.get("password", "")
         
         if not username or not password:
             raise HTTPException(status_code=400, detail="Username and password required")
         
-        if len(password) < 8:
-            raise HTTPException(status_code=400, detail="Password must be at least 8 characters long")
+        # Enhanced password validation
+        password_validation = SecurityManager.validate_password_strength(password)
+        if not password_validation["is_valid"]:
+            raise HTTPException(
+                status_code=400, 
+                detail={
+                    "message": "Password does not meet security requirements",
+                    "issues": password_validation["issues"],
+                    "strength_score": password_validation["strength_score"]
+                }
+            )
+        
+        # Username validation
+        if len(username) < 3 or len(username) > 50:
+            raise HTTPException(status_code=400, detail="Username must be 3-50 characters long")
+        
+        if not re.match(r'^[a-zA-Z0-9_]+$', username):
+            raise HTTPException(status_code=400, detail="Username can only contain letters, numbers, and underscores")
         
         # Check if username already exists
         existing = await db.wallets.find_one({"username": username})
         if existing:
             raise HTTPException(status_code=400, detail="Username already exists")
         
-        # Generate secure BIP-39 wallet data (server-side generation for security)
-        import secrets
-        import hashlib
+        # Generate secure WEPO address
+        wepo_address = SecurityManager.generate_wepo_address(username)
         
-        # Generate secure wallet address
-        wallet_seed = secrets.token_bytes(32)  # 256-bit entropy
-        address_hash = hashlib.sha256(wallet_seed + username.encode()).hexdigest()
-        wepo_address = f"wepo1{address_hash[:32]}"
+        # Hash password securely
+        password_hash = SecurityManager.hash_password(password)
         
-        # Generate encrypted private key (simplified for demo - in production use proper encryption)
-        private_key_raw = hashlib.sha256(wallet_seed + b"private").hexdigest()
-        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        # Generate secure private key (simplified for demo - use proper key derivation in production)
+        private_key_entropy = secrets.token_bytes(32)
+        private_key_raw = hashlib.sha256(private_key_entropy + username.encode()).hexdigest()
         
-        # Encrypt private key with password hash (simplified - use proper encryption in production)
-        encrypted_private_key = hashlib.sha256(private_key_raw.encode() + password_hash.encode()).hexdigest()
-        
-        # Create wallet entry
+        # Create wallet entry with enhanced security
         wallet_data = {
             "username": username,
             "address": wepo_address,
-            "encrypted_private_key": encrypted_private_key,
+            "password_hash": password_hash,  # Store bcrypt hash instead of plaintext processing
             "created_at": int(time.time()),
-            "version": "3.0",
+            "version": "3.1",  # Updated version for security enhancements
             "bip39": True,
-            "balance": 0.0
+            "balance": 0.0,
+            "security_level": "enhanced",
+            "last_login": None,
+            "failed_login_attempts": 0,
+            "account_locked": False
         }
         
-        await db.wallets.insert_one(wallet_data)
+        # Insert wallet with proper error handling
+        result = await db.wallets.insert_one(wallet_data)
+        if not result.inserted_id:
+            raise HTTPException(status_code=500, detail="Failed to create wallet in database")
+        
+        logger.info(f"Wallet created successfully for user {username} from {client_id}")
         
         return {
             "success": True,
             "address": wepo_address,
             "username": username,
-            "message": "Wallet created successfully",
-            "bip39": True
+            "message": "Wallet created successfully with enhanced security",
+            "bip39": True,
+            "security_level": "enhanced"
         }
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Wallet creation error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to create wallet: {str(e)}")
+        logger.error(f"Wallet creation error from {client_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to create wallet due to internal error")
 
-@api_router.post("/wallet/login")
-async def login_wallet(request: dict):
-    """Login to existing WEPO wallet"""
+@app.post("/api/wallet/login")
+@limiter.limit("5/minute")  # Rate limit login attempts
+async def login_wallet(request: Request, data: dict):
+    """Login to existing WEPO wallet with comprehensive security"""
+    client_id = SecurityManager.get_client_identifier(request)
+    logger.info(f"Login attempt from {client_id}")
+    
     try:
-        username = request.get("username")
-        password = request.get("password")
+        # Input validation and sanitization
+        username = SecurityManager.sanitize_input(data.get("username", ""))
+        password = data.get("password", "")
         
         if not username or not password:
             raise HTTPException(status_code=400, detail="Username and password required")
         
+        # Check for rate limiting specific to this endpoint
+        if SecurityManager.is_rate_limited(client_id, "login"):
+            raise HTTPException(status_code=429, detail="Too many login attempts. Please try again later.")
+        
         # Find wallet by username
         wallet = await db.wallets.find_one({"username": username})
         if not wallet:
+            # Record failed login attempt
+            SecurityManager.record_failed_login(username)
+            logger.warning(f"Login attempt for non-existent user {username} from {client_id}")
             raise HTTPException(status_code=401, detail="Invalid username or password")
         
-        # Verify password (simplified - in production use proper password verification)
-        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        # Check if account is locked
+        if wallet.get("account_locked", False):
+            logger.warning(f"Login attempt for locked account {username} from {client_id}")
+            raise HTTPException(status_code=423, detail="Account is locked due to too many failed attempts")
         
-        # In production, you would decrypt the private key with the password
-        # and verify it matches. For now, we'll simulate successful login
-        # since we don't store the actual password hash
+        # Verify password using proper verification
+        password_hash = wallet.get("password_hash")
+        if not password_hash:
+            # Handle legacy accounts that might not have proper password hash
+            logger.error(f"Legacy account detected for {username} - security upgrade required")
+            raise HTTPException(status_code=500, detail="Account requires security upgrade")
+        
+        if not SecurityManager.verify_password(password, password_hash):
+            # Record failed login attempt
+            failed_info = SecurityManager.record_failed_login(username)
+            
+            # Lock account if too many failed attempts
+            if failed_info["is_locked"]:
+                await db.wallets.update_one(
+                    {"username": username},
+                    {
+                        "$set": {
+                            "account_locked": True,
+                            "failed_login_attempts": failed_info["attempts"],
+                            "lockout_until": time.time() + SecurityManager.LOCKOUT_DURATION
+                        }
+                    }
+                )
+                logger.warning(f"Account {username} locked after {failed_info['attempts']} failed attempts from {client_id}")
+                raise HTTPException(
+                    status_code=423, 
+                    detail=f"Account locked due to {failed_info['attempts']} failed login attempts. Try again in {failed_info['time_remaining']} seconds."
+                )
+            
+            logger.warning(f"Failed login for {username} from {client_id} - {failed_info['attempts']}/{failed_info['max_attempts']} attempts")
+            raise HTTPException(status_code=401, detail="Invalid username or password")
+        
+        # Successful login - clear failed attempts and unlock account
+        SecurityManager.clear_failed_login(username)
+        await db.wallets.update_one(
+            {"username": username},
+            {
+                "$set": {
+                    "last_login": int(time.time()),
+                    "failed_login_attempts": 0,
+                    "account_locked": False
+                },
+                "$unset": {"lockout_until": ""}
+            }
+        )
+        
+        logger.info(f"Successful login for {username} from {client_id}")
         
         return {
             "success": True,
@@ -343,16 +502,17 @@ async def login_wallet(request: dict):
             "username": wallet["username"],
             "balance": wallet.get("balance", 0.0),
             "created_at": wallet.get("created_at"),
-            "version": wallet.get("version", "3.0"),
+            "version": wallet.get("version", "3.1"),
             "bip39": wallet.get("bip39", True),
+            "security_level": wallet.get("security_level", "enhanced"),
             "message": "Login successful"
         }
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Wallet login error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Login failed: {str(e)}")
+        logger.error(f"Login error for user {username} from {client_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Login failed due to internal error")
 
 @api_router.get("/wallet/{address}")
 async def get_wallet(address: str):
@@ -403,40 +563,110 @@ async def get_wallet_transactions(address: str, limit: int = 50):
     
     return transactions
 
-@api_router.post("/transaction/send")
-async def send_transaction(request: SendTransactionRequest):
-    """Send WEPO transaction"""
-    # Verify wallet exists and has sufficient balance
-    wallet = await db.wallets.find_one({"address": request.from_address})
-    if not wallet:
-        raise HTTPException(status_code=404, detail="Wallet not found")
+@app.post("/api/transaction/send")
+@limiter.limit("10/minute")  # Rate limit transaction attempts
+async def send_transaction(request: Request, data: dict):
+    """Send WEPO transaction with comprehensive security validation"""
+    client_id = SecurityManager.get_client_identifier(request)
+    logger.info(f"Transaction attempt from {client_id}")
     
-    if wallet["balance"] < request.amount + 0.0001:  # Include fee
-        raise HTTPException(status_code=400, detail="Insufficient balance")
-    
-    # Create transaction with privacy features
-    transaction = WepoTransaction(
-        from_address=request.from_address,
-        to_address=request.to_address,
-        amount=request.amount,
-        transaction_type=TransactionType.SEND,
-        privacy_proof=generate_zk_proof(),
-        ring_signature=generate_ring_signature()
-    )
-    
-    transaction.tx_hash = calculate_transaction_hash(transaction)
-    
-    await db.transactions.insert_one(transaction.dict())
-    
-    # Simulate transaction confirmation after delay
-    # In real implementation, this would be handled by miners/validators
-    
-    return {
-        "transaction_id": transaction.id,
-        "tx_hash": transaction.tx_hash,
-        "status": transaction.status,
-        "privacy_protected": True
-    }
+    try:
+        # Input validation and sanitization
+        from_address = SecurityManager.sanitize_input(data.get("from_address", ""))
+        to_address = SecurityManager.sanitize_input(data.get("to_address", ""))
+        amount = data.get("amount", 0)
+        
+        # Comprehensive input validation
+        if not from_address or not to_address:
+            raise HTTPException(status_code=400, detail="From and to addresses are required")
+        
+        # Validate addresses
+        if not SecurityManager.validate_wepo_address(from_address):
+            raise HTTPException(status_code=400, detail="Invalid from_address format")
+        
+        if not SecurityManager.validate_wepo_address(to_address):
+            raise HTTPException(status_code=400, detail="Invalid to_address format")
+        
+        # Prevent self-transactions
+        if from_address == to_address:
+            raise HTTPException(status_code=400, detail="Cannot send to the same address")
+        
+        # Validate transaction amount
+        amount_validation = SecurityManager.validate_transaction_amount(amount)
+        if not amount_validation["is_valid"]:
+            raise HTTPException(
+                status_code=400, 
+                detail={
+                    "message": "Invalid transaction amount",
+                    "issues": amount_validation["issues"]
+                }
+            )
+        
+        validated_amount = amount_validation["sanitized_amount"]
+        
+        # Verify wallet exists and has sufficient balance
+        wallet = await db.wallets.find_one({"address": from_address})
+        if not wallet:
+            logger.warning(f"Transaction attempt from non-existent wallet {from_address} by {client_id}")
+            raise HTTPException(status_code=404, detail="Wallet not found")
+        
+        # Transaction fee calculation
+        transaction_fee = 0.0001  # Standard WEPO fee
+        total_required = validated_amount + transaction_fee
+        
+        if wallet.get("balance", 0) < total_required:
+            logger.warning(f"Insufficient balance transaction attempt from {from_address} by {client_id}")
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Insufficient balance. Required: {total_required} WEPO, Available: {wallet.get('balance', 0)} WEPO"
+            )
+        
+        # Create secure transaction with enhanced validation
+        transaction_data = {
+            "id": str(uuid.uuid4()),
+            "tx_hash": secrets.token_hex(32),
+            "from_address": from_address,
+            "to_address": to_address,
+            "amount": validated_amount,
+            "fee": transaction_fee,
+            "transaction_type": "send",
+            "status": "pending",
+            "timestamp": datetime.utcnow().isoformat(),
+            "privacy_proof": generate_zk_proof(),
+            "ring_signature": generate_ring_signature(),
+            "client_id": client_id,
+            "security_validated": True
+        }
+        
+        # Insert transaction with proper error handling
+        result = await db.transactions.insert_one(transaction_data)
+        if not result.inserted_id:
+            raise HTTPException(status_code=500, detail="Failed to create transaction")
+        
+        # Update wallet balance (in real implementation, this would be handled by consensus)
+        await db.wallets.update_one(
+            {"address": from_address},
+            {"$inc": {"balance": -total_required}}
+        )
+        
+        logger.info(f"Transaction created: {transaction_data['tx_hash']} from {from_address} to {to_address} amount {validated_amount} by {client_id}")
+        
+        return {
+            "success": True,
+            "transaction_id": transaction_data["id"],
+            "tx_hash": transaction_data["tx_hash"],
+            "status": transaction_data["status"],
+            "amount": validated_amount,
+            "fee": transaction_fee,
+            "privacy_protected": True,
+            "message": "Transaction created successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Transaction error from {client_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Transaction failed due to internal error")
 
 @api_router.post("/stake")
 async def create_stake(request: StakeRequest):
@@ -984,7 +1214,7 @@ class WalletMiner:
                 "target_difficulty": 1.0,
                 "reward": 0,  # Genesis block has no reward
                 "algorithm": "argon2",
-                "message": "🎄 WEPO Genesis Block - December 25, 2025"
+                "message": "WEPO Genesis Block"
             }
         
         # Regular PoW block
@@ -2178,8 +2408,8 @@ app.include_router(api_router)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=["*"],
-    allow_methods=["*"],
+    allow_origins=WEPO_ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 

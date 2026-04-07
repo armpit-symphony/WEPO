@@ -1,5 +1,19 @@
 # WEPO Network Production Deployment Guide
 
+## Status Notice
+
+This deployment guide predates the current canonical backend/node hardening work.
+
+It still reflects bridge-era assumptions and should not be treated as the authoritative production deployment runbook yet.
+
+Before using any deployment instructions here, verify the current canonical local path first:
+
+```bash
+/home/sparky/WEPO/wepo-blockchain/scripts/run_canonical_fee_smoke.sh
+```
+
+That is the current authoritative local verification path for canonical backend-originated fee settlement.
+
 ## 🎯 Complete Deployment in 30 Minutes
 
 This guide will get your WEPO blockchain network live on the internet in about 30 minutes.
@@ -177,7 +191,7 @@ curl https://api.wepo.network/api/
 - Mining, staking, masternodes
 - Complete transaction system
 
-✅ **Production Ready**
+✅ **Operational Hardening In Scope**
 - Automatic service restart
 - Log rotation
 - Security hardening
@@ -189,13 +203,13 @@ curl https://api.wepo.network/api/
 - Web wallet ready for browsers
 - GitHub distribution ready
 
-## 🎄 Christmas Day 2025 Launch
+## Launch Planning
 
 **Timeline:**
-- **Today**: Deploy network infrastructure
-- **This Week**: Test all functionality
-- **Next Week**: Announce network availability
-- **December 25, 2025**: Official genesis launch!
+- **Phase 1**: Deploy network infrastructure
+- **Phase 2**: Test all functionality in staging
+- **Phase 3**: Complete security and operations review
+- **Phase 4**: Announce public availability when release criteria are met
 
 ## 💰 Monthly Costs
 

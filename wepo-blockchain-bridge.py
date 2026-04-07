@@ -2,6 +2,12 @@
 """
 WEPO Blockchain Integration Bridge
 Quick-start bridge for frontend integration with real blockchain
+
+LEGACY NOTICE:
+- This integration bridge is not the canonical backend or node path anymore.
+- It exists only as older frontend-testing infrastructure.
+- For the current authoritative local verification path, use:
+  - /home/sparky/WEPO/wepo-blockchain/scripts/run_canonical_fee_smoke.sh
 """
 
 import sys
@@ -326,6 +332,8 @@ def main():
     print("=" * 60)
     print("🚀 WEPO Blockchain Integration Bridge")
     print("=" * 60)
+    print("LEGACY NOTICE: this bridge is not the canonical backend/node path")
+    print("Use /home/sparky/WEPO/wepo-blockchain/scripts/run_canonical_fee_smoke.sh instead")
     print("Starting fast integration bridge for frontend testing...")
     print("This bridges frontend wallet with real WEPO blockchain core")
     print("=" * 60)

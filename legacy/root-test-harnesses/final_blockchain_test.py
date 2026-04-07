@@ -727,7 +727,7 @@ def run_final_tests():
     
     print("\nSYSTEM READINESS:")
     if test_results["failed"] == 0:
-        print("✅ WEPO blockchain system is FULLY OPERATIONAL and ready for production use")
+        print("✅ WEPO blockchain system is operational in current testing and not approved for production use")
         print("✅ All critical issues from extended testing have been resolved")
         print("✅ System is ready for frontend integration")
     else:

@@ -1,11 +1,13 @@
 # 🚨 WEPO TODO LIST - CRITICAL SECURITY FIXES REQUIRED
 
-## ⚠️ URGENT: Christmas Day 2025 Launch BLOCKED - Immediate Action Required
+> Historical note: this checklist reflects a December 2024 bridge-era security pass. Preview-era verification scripts now live under `/app/legacy/preview-tests/`. The current authoritative local verification path is `/app/wepo-blockchain/scripts/run_canonical_fee_smoke.sh`.
+
+## ⚠️ URGENT: Launch BLOCKED - Immediate Action Required
 
 **Date:** December 2024  
 **Security Score:** 44.2% (FAILED - Requires 85%+ for cryptocurrency production)  
 **Status:** 🚨 CRITICAL - Launch blocked by security vulnerabilities  
-**Priority:** IMMEDIATE - Security fixes required for production launch  
+**Priority:** IMMEDIATE - Security fixes required for public launch  
 
 ---
 
@@ -44,7 +46,7 @@
 ### 3. ACHIEVE 85%+ SECURITY SCORE FOR PRODUCTION
 **Status:** ❌ FAILED - Currently 44.2%  
 **Target:** 85%+ required for cryptocurrency production standards  
-**Testing:** Run `/app/definitive_security_test.py` to verify fixes  
+**Testing:** Historical preview-era verification now lives at `/app/legacy/preview-tests/definitive_security_test.py`; use `/app/wepo-blockchain/scripts/run_canonical_fee_smoke.sh` for the current canonical local backend/node path.  
 
 **Success Criteria:**
 - [ ] Brute Force Protection: 100% (4/4 tests pass)
@@ -97,7 +99,7 @@
 - [ ] Run full backend testing (should maintain 100% success)
 - [ ] Verify frontend integration (should maintain 95%+ success)
 - [ ] Test all working features for regressions
-- [ ] Confirm Christmas Day 2025 launch readiness
+- [ ] Confirm launch readiness
 
 ### 5. PRODUCTION DEPLOYMENT PREPARATION
 **Status:** ✅ READY - Waiting for security clearance  
@@ -216,7 +218,7 @@ Overall Frontend Success: 95%
 - **Target:** 85%+ overall security score
 - **Critical:** Brute force protection and rate limiting at 100%
 - **Verification:** All existing functionality remains working
-- **Outcome:** Christmas Day 2025 launch CLEARED
+- **Outcome:** launch CLEARED
 
 ---
 
@@ -228,7 +230,8 @@ Overall Frontend Success: 95%
 - **`/app/backend/requirements.txt`** - Dependencies (slowapi, aioredis)
 
 ### Testing and Verification
-- **`/app/definitive_security_test.py`** - Comprehensive security testing
+- **`/app/legacy/preview-tests/definitive_security_test.py`** - Historical preview-era security testing
+- **`/app/wepo-blockchain/scripts/run_canonical_fee_smoke.sh`** - Current canonical local backend/node verification
 - **`/app/test_result.md`** - Current testing status and protocols
 
 ### Documentation
@@ -238,4 +241,4 @@ Overall Frontend Success: 95%
 
 ---
 
-**Next Engineer:** The system is 95%+ functionally complete. Focus immediately on the two critical security integration issues (SlowAPI rate limiting and brute force protection). All the security code exists and is correct - only integration debugging is needed to achieve production readiness for Christmas Day 2025 launch. 🎄
+**Next Engineer:** The system is 95%+ functionally complete. Focus immediately on the two critical security integration issues (SlowAPI rate limiting and brute force protection). All the security code exists and is correct - only integration debugging is needed to achieve production readiness for launch. 🎄

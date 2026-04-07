@@ -535,7 +535,7 @@ def run_brute_force_protection_test():
     if protection_status == "WORKING":
         print("• 🎉 Brute force protection is functional!")
         print("• Account lockout working as expected")
-        print("• System ready for production use")
+        print("• System not approved for production use")
         print("• Continue with rate limiting fixes")
     elif protection_status == "PARTIAL":
         print("• ⚠️  Some brute force protection working")
@@ -581,24 +581,24 @@ if __name__ == "__main__":
         print("   Account lockout functional after 5 failed attempts")
         print("   Lockout persists with correct password")
         print("   SecurityManager integration operational")
-        print("   Ready for Christmas Day 2025 launch")
+        print("   Under launch review")
     elif results['protection_status'] == "PARTIAL":
         print("⚠️  BRUTE FORCE PROTECTION: PARTIAL")
         print("   Some security features working")
         print("   Additional fixes needed")
-        print("   Not ready for production launch")
+        print("   Not not yet approved for public launch")
     else:
         print("🚨 BRUTE FORCE PROTECTION: FAILED")
         print("   Critical security vulnerability present")
         print("   Account lockout not working")
-        print("   Christmas Day 2025 launch BLOCKED")
+        print("   launch BLOCKED")
     
     print(f"\n🔧 NEXT STEPS:")
     if results['protection_status'] == "WORKING":
         print("• ✅ Brute force protection verified working")
         print("• Proceed with rate limiting fixes")
         print("• Continue security testing")
-        print("• System ready for production")
+        print("• System not yet approved for production")
     else:
         print("• 🚨 Fix brute force protection immediately")
         print("• Do NOT proceed with other fixes until resolved")

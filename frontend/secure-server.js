@@ -4,6 +4,23 @@ const compression = require('compression');
 const path = require('path');
 
 const app = express();
+const parseCsvEnv = (value, defaultValues) => {
+  if (!value || !value.trim()) {
+    return [...defaultValues];
+  }
+  return value.split(',').map((entry) => entry.trim()).filter(Boolean);
+};
+
+const DEFAULT_CONNECT_SRC = [
+  "'self'",
+  "https:",
+  "wss:",
+  "http://localhost:8011",
+  "http://127.0.0.1:8011",
+  "http://localhost:8122",
+  "http://127.0.0.1:8122"
+];
+const CSP_CONNECT_SRC = parseCsvEnv(process.env.WEPO_FRONTEND_CONNECT_SRC, DEFAULT_CONNECT_SRC);
 
 // Enable compression for better performance
 app.use(compression());
@@ -29,10 +46,7 @@ app.use(helmet({
         "https://avatars.githubusercontent.com"
       ],
       connectSrc: [
-        "'self'", 
-        "https:",
-        "wss:",
-        "https://blockchain-sectest.preview.emergentagent.com"
+        ...CSP_CONNECT_SRC
       ],
       fontSrc: ["'self'", "https:"],
       objectSrc: ["'none'"],

@@ -4,16 +4,12 @@ WEPO Core Blockchain Implementation
 Revolutionary cryptocurrency with hybrid PoW/PoS consensus and privacy features
 """
 try:
-    from .transaction import Transaction, TransactionInput, TransactionOutput, UTXO
     from .dilithium import dilithium_system
     from .quantum_transaction import QuantumTransaction
-    from .rwa_tokens import rwa_system
 except ImportError:
     # Fallback for direct execution
-    from transaction import Transaction, TransactionInput, TransactionOutput, UTXO
     from dilithium import dilithium_system
     from quantum_transaction import QuantumTransaction
-    from rwa_tokens import rwa_system
 
 
 import hashlib
@@ -31,7 +27,10 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 import sqlite3
 import os
-from .address_utils import validate_wepo_address, is_quantum_address, is_regular_address
+try:
+    from .address_utils import generate_wepo_address, validate_wepo_address, is_quantum_address, is_regular_address
+except ImportError:
+    from address_utils import generate_wepo_address, validate_wepo_address, is_quantum_address, is_regular_address
 
 # WEPO Network Constants
 WEPO_VERSION = 70001
@@ -39,10 +38,11 @@ NETWORK_MAGIC = b'WEPO'
 DEFAULT_PORT = 22567
 COIN = 100000000  # 1 WEPO = 100,000,000 satoshis
 MAX_BLOCK_SIZE = 2 * 1024 * 1024  # 2MB
+MAX_FUTURE_BLOCK_TIME_DRIFT = 2 * 60 * 60  # 2 hours
 
 # WEPO 20-YEAR MINING SCHEDULE - SUSTAINABLE LONG-TERM POW
-# Genesis: December 25, 2025, 3:00 PM EST
-GENESIS_TIME = 1735138800  # Christmas Day 2025
+# Genesis timing is controlled by the configured mainnet timestamp.
+GENESIS_TIME = 1735138800  # configured genesis timestamp
 
 # Total Supply - DEFINITIVE VALUE
 TOTAL_SUPPLY = 69000003  # 69,000,003 WEPO total supply
@@ -90,18 +90,21 @@ POW_END_HEIGHT = PHASE_2D_END_HEIGHT
 # Total mining allocation: 20,702,037 WEPO over 198 months (30% of total supply)
 TOTAL_POW_SUPPLY = 20702037 * COIN
 
+# Explicit genesis bootstrap allocation
+GENESIS_BOOTSTRAP_REWARD = 400 * COIN
+
 # Legacy constants - kept for backward compatibility
 TOTAL_INITIAL_BLOCKS = PRE_POS_DURATION_BLOCKS  # For PoS activation timing
 POW_BLOCKS_YEAR1 = 52560      # OLD: 10-min blocks for 1 year (not used in new schedule)
-REWARD_Q1 = 400 * COIN        # OLD: 400 WEPO per block Q1 (not used in new schedule)
+REWARD_Q1 = GENESIS_BOOTSTRAP_REWARD  # Legacy alias for genesis bootstrap allocation
 REWARD_Q2 = 200 * COIN        # OLD: 200 WEPO per block Q2 (not used in new schedule)
 REWARD_Q3 = 100 * COIN        # OLD: 100 WEPO per block Q3 (not used in new schedule)
 REWARD_Q4 = 50 * COIN         # OLD: 50 WEPO per block Q4 (not used in new schedule)
 REWARD_YEAR2_BASE = 12.4 * COIN # OLD: 12.4 WEPO per block year 2+ (not used in new schedule)
 HALVING_INTERVAL = 1051200    # OLD: Blocks between halvings (not used in new schedule)
 
-# MAINNET CONFIGURATION - CHRISTMAS DAY 2025 GENESIS LAUNCH
-CHRISTMAS_GENESIS_TIMESTAMP = 1735138800  # December 25, 2025, 3:00 PM EST
+# MAINNET CONFIGURATION - GENESIS TIMING
+MAINNET_GENESIS_TIMESTAMP = 1735138800  # configured mainnet genesis timestamp
 STAKING_ACTIVATION_DELAY = 18 * 30 * 24 * 60 * 60  # 18 months in seconds
 PRODUCTION_MODE = False  # Set to False for mainnet (True only for development testing)
 
@@ -111,9 +114,9 @@ if PRODUCTION_MODE:
     POS_ACTIVATION_HEIGHT = 1  # Activate after first block
     print("🧪 DEVELOPMENT MODE: Staking activated immediately for testing")
 else:
-    # MAINNET CONFIGURATION: activate after 18 months from Christmas launch
+    # MAINNET CONFIGURATION: activate after 18 months from configured genesis
     POS_ACTIVATION_HEIGHT = TOTAL_INITIAL_BLOCKS  # 131,400 blocks (18 months)
-    print(f"🎄 MAINNET READY: Staking activates at block {POS_ACTIVATION_HEIGHT} (18 months post-genesis)")
+    print(f"MAINNET CONFIGURED: Staking activates at block {POS_ACTIVATION_HEIGHT} (18 months post-genesis)")
     print(f"🔄 PoW CONTINUES: Mining continues for 198 months total alongside PoS/Masternodes")
 
 MIN_STAKE_AMOUNT = 1000 * COIN  # 1,000 WEPO minimum stake - accessible to community
@@ -430,13 +433,38 @@ class WepoArgon2Miner:
     """Argon2 Proof of Work Miner"""
     
     def __init__(self):
-        self.hasher = argon2.PasswordHasher(
-            time_cost=3,
-            memory_cost=4096,  # 4MB
-            parallelism=1,
-            hash_len=32,
-            salt_len=16
+        self.time_cost = 3
+        self.memory_cost = 4096  # 4MB
+        self.parallelism = 1
+        self.hash_len = 32
+        self.salt_len = 16
+
+    def _build_pow_input(self, header: BlockHeader) -> bytes:
+        """Build deterministic PoW input bytes for a block header."""
+        return struct.pack(
+            '<I32s32sIII',
+            header.version,
+            bytes.fromhex(header.prev_hash),
+            bytes.fromhex(header.merkle_root),
+            header.timestamp,
+            header.bits,
+            header.nonce,
+        ) + header.consensus_type.encode()
+
+    def calculate_pow_hash(self, header: BlockHeader) -> str:
+        """Calculate a deterministic Argon2-based PoW hash for a block header."""
+        pow_input = self._build_pow_input(header)
+        salt = hashlib.sha256(b"WEPO_POW_SALT" + pow_input).digest()[:self.salt_len]
+        pow_bytes = argon2.low_level.hash_secret_raw(
+            secret=pow_input,
+            salt=salt,
+            time_cost=self.time_cost,
+            memory_cost=self.memory_cost,
+            parallelism=self.parallelism,
+            hash_len=self.hash_len,
+            type=argon2.low_level.Type.ID,
         )
+        return hashlib.sha256(pow_bytes).hexdigest()
     
     def mine_block(self, block: Block, target_difficulty: int) -> Optional[Block]:
         """Mine a block using Argon2 PoW"""
@@ -449,13 +477,9 @@ class WepoArgon2Miner:
         while nonce < max_nonce:
             # Update nonce in header
             block.header.nonce = nonce
-            
-            # Calculate hash using Argon2
-            header_data = f"{block.header.version}{block.header.prev_hash}{block.header.merkle_root}{block.header.timestamp}{block.header.bits}{nonce}"
-            
+
             try:
-                hash_result = self.hasher.hash(header_data)
-                block_hash = hashlib.sha256(hash_result.encode()).hexdigest()
+                block_hash = self.calculate_pow_hash(block.header)
                 
                 # Check if hash meets difficulty target
                 if self.check_difficulty(block_hash, target_difficulty):
@@ -504,6 +528,7 @@ class WepoBlockchain:
         self.stakes: Dict[str, dict] = {}
         self.masternodes: Dict[str, dict] = {}
         self.current_difficulty = 4  # Start with 4 leading zeros
+        self.fixed_difficulty: Optional[int] = None
         self.miner = WepoArgon2Miner()
         
         # Ensure data directory exists
@@ -620,6 +645,7 @@ class WepoBlockchain:
     def create_genesis_block(self):
         """Create the genesis block"""
         print("Creating WEPO genesis block...")
+        genesis_address = generate_wepo_address("wepo-mainnet-genesis", address_type="regular")
         
         # Genesis coinbase transaction
         genesis_tx = Transaction(
@@ -631,21 +657,22 @@ class WepoBlockchain:
                 sequence=0xffffffff
             )],
             outputs=[TransactionOutput(
-                value=REWARD_Q1,
+                value=GENESIS_BOOTSTRAP_REWARD,
                 script_pubkey=b"genesis_output",
-                address="wepo1genesis0000000000000000000000"
+                address=genesis_address
             )],
             lock_time=0,
             timestamp=GENESIS_TIME
         )
         
         # Genesis block header
+        genesis_difficulty = 1
         genesis_header = BlockHeader(
             version=1,
             prev_hash="0" * 64,
             merkle_root="",
             timestamp=GENESIS_TIME,
-            bits=self.current_difficulty,
+            bits=genesis_difficulty,
             nonce=0,
             consensus_type="pow"
         )
@@ -660,21 +687,14 @@ class WepoBlockchain:
         # Calculate merkle root
         genesis_block.header.merkle_root = genesis_block.calculate_merkle_root()
         
-        # Mine genesis block
-        mined_genesis = self.miner.mine_block(genesis_block, self.current_difficulty)
+        # Mine genesis block at minimal bootstrap difficulty so a fresh node can initialize quickly.
+        mined_genesis = self.miner.mine_block(genesis_block, genesis_difficulty)
         if mined_genesis:
             self.add_block(mined_genesis, validate=False)  # Skip validation for genesis
-            
-            # Create genesis UTXO manually
-            genesis_txid = genesis_tx.calculate_txid()
-            self.conn.execute('''
-                INSERT INTO utxos (txid, vout, address, amount, script_pubkey, spent)
-                VALUES (?, ?, ?, ?, ?, FALSE)
-            ''', (genesis_txid, 0, "wepo1genesis0000000000000000000000", REWARD_Q1, b"genesis_output"))
-            self.conn.commit()
-            
+
             print(f"Genesis block created: {mined_genesis.get_block_hash()}")
-            print(f"Genesis UTXO created: {REWARD_Q1 / COIN} WEPO")
+            print(f"Genesis address: {genesis_address}")
+            print(f"Genesis bootstrap UTXO created: {GENESIS_BOOTSTRAP_REWARD / COIN} WEPO")
         else:
             raise Exception("Failed to mine genesis block")
     
@@ -689,6 +709,7 @@ class WepoBlockchain:
             block = self.deserialize_block(block_data)
             self.chain.append(block)
         
+        self.current_difficulty = self.calculate_expected_difficulty()
         print(f"Loaded {len(self.chain)} blocks from database")
     
     def serialize_block(self, block: Block) -> str:
@@ -815,6 +836,9 @@ class WepoBlockchain:
     
     def calculate_block_reward(self, height: int) -> int:
         """Calculate block reward based on new 20-year sustainable mining schedule"""
+        if height == 0:
+            # Genesis is an explicit bootstrap allocation, not a normal mining-era block.
+            return GENESIS_BOOTSTRAP_REWARD
         
         # PHASE 1: Pre-PoS Mining (Months 1-18) - 10% of supply
         if height <= PRE_POS_DURATION_BLOCKS:
@@ -855,7 +879,7 @@ class WepoBlockchain:
     
     def calculate_pos_reward(self, height: int) -> int:
         """Calculate PoS block reward based on height"""
-        if height < POS_ACTIVATION_HEIGHT:
+        if height <= POS_ACTIVATION_HEIGHT:
             return 0
         
         # PoS rewards are smaller than PoW since they occur more frequently
@@ -884,7 +908,7 @@ class WepoBlockchain:
             return 0
     
     def create_coinbase_transaction(self, height: int, recipient_address: str, consensus_type: str = "pow") -> Transaction:
-        """Create coinbase transaction for new block with 3-way fee redistribution"""
+        """Create coinbase transaction for new block with canonical fee redistribution."""
         # Get appropriate reward based on consensus type
         if consensus_type == "pow":
             base_reward = self.calculate_block_reward(height)
@@ -901,50 +925,94 @@ class WepoBlockchain:
             if hasattr(tx, 'fee') and tx.fee:
                 total_transaction_fees += tx.fee
         
-        # New 3-way fee distribution system
+        fee_outputs = []
         if total_transaction_fees > 0:
-            # Distribute fees: 60% MN, 25% Miners, 15% Stakers
-            masternode_fees = int(total_transaction_fees * 0.60)
-            miner_fees = int(total_transaction_fees * 0.25)
-            staker_fees = int(total_transaction_fees * 0.15)
-            
-            # Distribute masternode fees equally among active masternodes
+            distributed_masternode_fees = 0
+            distributed_staker_fees = 0
+
             active_masternodes = self.get_active_masternodes()
-            if active_masternodes:
-                masternode_fee_per_node = masternode_fees // len(active_masternodes)
-                for masternode_addr in active_masternodes:
-                    # Add fee to masternode balance (in real implementation)
-                    print(f"Masternode {masternode_addr} receives {masternode_fee_per_node / COIN:.8f} WEPO in fees")
-            
-            # Distribute staker fees proportionally among active stakers
-            active_stakers = self.get_active_stakers()
-            total_stake = sum(staker['amount'] for staker in active_stakers)
-            if total_stake > 0:
-                for staker in active_stakers:
-                    stake_percentage = staker['amount'] / total_stake
-                    staker_reward = int(staker_fees * stake_percentage)
-                    print(f"Staker {staker['address']} receives {staker_reward / COIN:.8f} WEPO in fees")
-            
+            pre_pos_fee_policy = height <= POS_ACTIVATION_HEIGHT
+            if pre_pos_fee_policy:
+                # Before PoS activation, all fees go to the miner unless active masternodes
+                # already exist. If they do, keep the masternode share and route the
+                # non-staker remainder to the miner.
+                staker_fees = 0
+                if active_masternodes:
+                    masternode_fees = int(total_transaction_fees * 0.60)
+                    miner_fees = total_transaction_fees - masternode_fees
+                else:
+                    masternode_fees = 0
+                    miner_fees = total_transaction_fees
+            else:
+                # Post-PoS: 60% masternodes, 25% miner/validator, 15% stakers.
+                masternode_fees = int(total_transaction_fees * 0.60)
+                miner_fees = int(total_transaction_fees * 0.25)
+                staker_fees = total_transaction_fees - masternode_fees - miner_fees
+
+            if active_masternodes and masternode_fees > 0:
+                fee_per_masternode = masternode_fees // len(active_masternodes)
+                fee_remainder = masternode_fees % len(active_masternodes)
+                for index, masternode in enumerate(active_masternodes):
+                    fee_amount = fee_per_masternode + (1 if index < fee_remainder else 0)
+                    if fee_amount <= 0:
+                        continue
+                    distributed_masternode_fees += fee_amount
+                    fee_outputs.append(TransactionOutput(
+                        value=fee_amount,
+                        script_pubkey=b"masternode_fee_output",
+                        address=masternode.operator_address
+                    ))
+                    print(
+                        f"Masternode {masternode.operator_address} receives "
+                        f"{fee_amount / COIN:.8f} WEPO in fees"
+                    )
+
+            active_stakers = [] if pre_pos_fee_policy else self.get_active_stakes()
+            total_stake = sum(staker.amount for staker in active_stakers)
+            if active_stakers and total_stake > 0 and staker_fees > 0:
+                remaining_fees = staker_fees
+                for index, staker in enumerate(active_stakers):
+                    if index == len(active_stakers) - 1:
+                        staker_reward = remaining_fees
+                    else:
+                        staker_reward = int(staker_fees * (staker.amount / total_stake))
+                        staker_reward = min(staker_reward, remaining_fees)
+                    if staker_reward <= 0:
+                        continue
+                    remaining_fees -= staker_reward
+                    distributed_staker_fees += staker_reward
+                    fee_outputs.append(TransactionOutput(
+                        value=staker_reward,
+                        script_pubkey=b"staker_fee_output",
+                        address=staker.staker_address
+                    ))
+                    print(
+                        f"Staker {staker.staker_address} receives "
+                        f"{staker_reward / COIN:.8f} WEPO in fees"
+                    )
+
+            recipient_fee_share = (
+                miner_fees
+                + (masternode_fees - distributed_masternode_fees)
+                + (staker_fees - distributed_staker_fees)
+            )
+
             print(f"Fee Distribution Summary:")
             print(f"  Total Fees: {total_transaction_fees / COIN:.8f} WEPO")
             print(f"  Masternodes (60%): {masternode_fees / COIN:.8f} WEPO")
-            print(f"  Miner/Validator (25%): {miner_fees / COIN:.8f} WEPO")
-            print(f"  Stakers (15%): {staker_fees / COIN:.8f} WEPO")
+            print(
+                f"  Miner/Validator ({'100%' if pre_pos_fee_policy and not active_masternodes else '40%' if pre_pos_fee_policy else '25%'}): "
+                f"{miner_fees / COIN:.8f} WEPO"
+            )
+            print(f"  Stakers ({'0%' if pre_pos_fee_policy else '15%'}): {staker_fees / COIN:.8f} WEPO")
         else:
-            miner_fees = 0
-        
-        # Recipient gets base reward + their share of fees
-        if consensus_type == "pow":
-            total_recipient_reward = base_reward + miner_fees
-        elif consensus_type == "pos":
-            # PoS validators get base reward + staker fees (since they are stakers)
-            total_recipient_reward = base_reward + staker_fees
-        else:
-            total_recipient_reward = base_reward
+            recipient_fee_share = 0
+
+        total_recipient_reward = base_reward + recipient_fee_share
         
         print(f"Coinbase for {consensus_type.upper()} block {height}:")
         print(f"  Base reward: {base_reward / COIN:.8f} WEPO")
-        print(f"  Fee share: {(miner_fees if consensus_type == 'pow' else staker_fees) / COIN:.8f} WEPO")
+        print(f"  Fee share: {recipient_fee_share / COIN:.8f} WEPO")
         print(f"  Total reward: {total_recipient_reward / COIN:.8f} WEPO")
         
         return Transaction(
@@ -955,11 +1023,14 @@ class WepoBlockchain:
                 script_sig=f"Block {height} {consensus_type.upper()} fees:{total_transaction_fees} 3-way-distribution".encode(),
                 sequence=0xffffffff
             )],
-            outputs=[TransactionOutput(
-                value=total_recipient_reward,
-                script_pubkey=b"coinbase_output",
-                address=recipient_address
-            )],
+            outputs=[
+                TransactionOutput(
+                    value=total_recipient_reward,
+                    script_pubkey=b"coinbase_output",
+                    address=recipient_address
+                ),
+                *fee_outputs,
+            ],
             lock_time=0
         )
     
@@ -975,19 +1046,15 @@ class WepoBlockchain:
             if hasattr(tx, 'fee') and tx.fee:
                 total_transaction_fees += tx.fee
         
-        # Add normal transaction fees to RWA redistribution pool
-        if total_transaction_fees > 0:
-            rwa_system.add_transaction_fees_to_pool(total_transaction_fees, height)
-        
-        # Create coinbase transaction (will include redistributed fees)
+        # Fees are redistributed canonically via the block coinbase outputs.
         coinbase_tx = self.create_coinbase_transaction(height, miner_address, consensus_type="pow")
         
         # Add transactions from mempool (up to block size limit)
         transactions = [coinbase_tx]
-        current_size = len(json.dumps(asdict(coinbase_tx)))
+        current_size = self._estimate_transaction_size(coinbase_tx)
         
         for txid, tx in list(self.mempool.items()):
-            tx_size = len(json.dumps(asdict(tx)))
+            tx_size = self._estimate_transaction_size(tx)
             if current_size + tx_size <= MAX_BLOCK_SIZE:
                 transactions.append(tx)
                 current_size += tx_size
@@ -1023,6 +1090,17 @@ class WepoBlockchain:
         block.header.merkle_root = block.calculate_merkle_root()
         
         return block
+
+    def _estimate_transaction_size(self, tx: Transaction) -> int:
+        """Estimate transaction payload size while handling bytes fields safely."""
+        return len(json.dumps(asdict(tx), default=self._json_default))
+
+    @staticmethod
+    def _json_default(value):
+        """JSON serializer fallback for blockchain dataclasses with bytes content."""
+        if isinstance(value, (bytes, bytearray)):
+            return value.hex()
+        return str(value)
     
     def mine_block(self, miner_address: str) -> Optional[Block]:
         """Mine a new block"""
@@ -1051,7 +1129,7 @@ class WepoBlockchain:
         prev_hash = self.chain[-1].get_block_hash() if self.chain else "0" * 64
         
         # Create coinbase transaction for PoS rewards
-        coinbase_tx = self.create_coinbase_transaction(validator_address, height, consensus_type="pos")
+        coinbase_tx = self.create_coinbase_transaction(height, validator_address, consensus_type="pos")
         transactions = [coinbase_tx]
         
         # Add transactions from mempool
@@ -1130,9 +1208,10 @@ class WepoBlockchain:
         
         # Save to database
         self.save_block(block)
+        self.current_difficulty = self.calculate_expected_difficulty()
         
         # Distribute staking rewards if PoS is active
-        if block.height >= POS_ACTIVATION_HEIGHT:
+        if block.height > POS_ACTIVATION_HEIGHT:
             self.distribute_staking_rewards(block.height, block.get_block_hash())
         
         print(f"Block {block.height} added to chain: {block.get_block_hash()}")
@@ -1160,14 +1239,14 @@ class WepoBlockchain:
     
     def get_consensus_type(self, height: int) -> str:
         """Get the consensus type for a given height"""
-        if height < POS_ACTIVATION_HEIGHT:
+        if height <= POS_ACTIVATION_HEIGHT:
             return "pow"
         else:
             return "hybrid"  # Both PoW and PoS active
     
     def process_hybrid_blocks(self, height: int):
         """Process both PoW and PoS blocks for hybrid consensus"""
-        if height < POS_ACTIVATION_HEIGHT:
+        if height <= POS_ACTIVATION_HEIGHT:
             return
         
         # Time-based block production
@@ -1194,6 +1273,25 @@ class WepoBlockchain:
         # Basic validation
         if not block.transactions:
             return False
+
+        if block.size > MAX_BLOCK_SIZE:
+            return False
+
+        latest_block = self.get_latest_block()
+        expected_height = self.get_block_height() + 1
+        if self.chain:
+            if block.height != expected_height:
+                return False
+            if block.header.prev_hash != latest_block.get_block_hash():
+                return False
+        elif block.height != 0:
+            return False
+
+        if block.header.timestamp > int(time.time()) + MAX_FUTURE_BLOCK_TIME_DRIFT:
+            return False
+
+        if block.header.merkle_root != block.calculate_merkle_root():
+            return False
         
         # Check coinbase transaction
         if not block.transactions[0].is_coinbase():
@@ -1205,8 +1303,8 @@ class WepoBlockchain:
             if not self.validate_pos_block(block):
                 return False
         elif block.header.is_pow_block():
-            # PoW block validation (existing logic)
-            pass
+            if not self.validate_pow_block(block):
+                return False
         else:
             return False
         
@@ -1215,6 +1313,30 @@ class WepoBlockchain:
             if not self.validate_transaction(tx):
                 return False
         
+        return True
+
+    def validate_pow_block(self, block: Block) -> bool:
+        """Validate deterministic PoW and expected difficulty for a block."""
+        expected_difficulty = self.calculate_expected_difficulty()
+        if block.header.bits != expected_difficulty:
+            print(
+                f"Invalid PoW difficulty bits: got {block.header.bits}, "
+                f"expected {expected_difficulty}"
+            )
+            return False
+
+        if not isinstance(block.header.nonce, int) or block.header.nonce < 0:
+            print(f"Invalid nonce: {block.header.nonce}")
+            return False
+
+        pow_hash = self.miner.calculate_pow_hash(block.header)
+        if not self.miner.check_difficulty(pow_hash, expected_difficulty):
+            print(
+                f"Invalid proof of work for block {block.height}: "
+                f"pow_hash={pow_hash}, difficulty={expected_difficulty}"
+            )
+            return False
+
         return True
     
     def process_block_transactions(self, block: Block):
@@ -1280,34 +1402,47 @@ class WepoBlockchain:
     
     def adjust_difficulty(self):
         """Adjust mining difficulty based on block time"""
+        previous_difficulty = self.current_difficulty
+        self.current_difficulty = self.calculate_expected_difficulty()
+        if self.current_difficulty > previous_difficulty:
+            print(f"Difficulty increased to {self.current_difficulty}")
+        elif self.current_difficulty < previous_difficulty:
+            print(f"Difficulty decreased to {self.current_difficulty}")
+
+    def calculate_expected_difficulty(self) -> int:
+        """Calculate the expected difficulty for the next PoW block."""
+        if self.fixed_difficulty is not None:
+            return max(1, int(self.fixed_difficulty))
+
+        if not self.chain:
+            return max(1, self.current_difficulty)
+
+        base_difficulty = max(1, int(self.chain[-1].header.bits))
         if len(self.chain) < 10:
-            return
-        
-        # Calculate average block time over last 10 blocks
+            return base_difficulty
+
         recent_blocks = self.chain[-10:]
         time_diffs = []
         for i in range(1, len(recent_blocks)):
-            diff = recent_blocks[i].header.timestamp - recent_blocks[i-1].header.timestamp
+            diff = recent_blocks[i].header.timestamp - recent_blocks[i - 1].header.timestamp
             time_diffs.append(diff)
-        
+
+        if not time_diffs:
+            return base_difficulty
+
         avg_time = sum(time_diffs) / len(time_diffs)
-        
-        # Determine target time based on current height
         current_height = self.get_block_height()
-        if current_height <= TOTAL_INITIAL_BLOCKS:
-            target_time = BLOCK_TIME_INITIAL_18_MONTHS
-        else:
-            target_time = BLOCK_TIME_LONGTERM
-        
-        # Adjust difficulty
+        target_time = (
+            BLOCK_TIME_INITIAL_18_MONTHS
+            if current_height <= TOTAL_INITIAL_BLOCKS
+            else BLOCK_TIME_LONGTERM
+        )
+
         if avg_time < target_time * 0.75:
-            # Blocks too fast, increase difficulty
-            self.current_difficulty += 1
-            print(f"Difficulty increased to {self.current_difficulty}")
-        elif avg_time > target_time * 1.25:
-            # Blocks too slow, decrease difficulty  
-            self.current_difficulty = max(1, self.current_difficulty - 1)
-            print(f"Difficulty decreased to {self.current_difficulty}")
+            return base_difficulty + 1
+        if avg_time > target_time * 1.25:
+            return max(1, base_difficulty - 1)
+        return base_difficulty
     
     def add_transaction_to_mempool(self, transaction: Transaction) -> bool:
         """Add transaction to mempool"""
@@ -1316,12 +1451,6 @@ class WepoBlockchain:
         # Basic validation
         if self.validate_transaction(transaction):
             self.mempool[txid] = transaction
-            
-            # Collect fee for redistribution (if not coinbase)
-            if not transaction.is_coinbase() and hasattr(transaction, 'fee') and transaction.fee > 0:
-                fee_amount_wepo = transaction.fee / COIN  # Convert satoshis to WEPO
-                rwa_system.add_transaction_fees_to_pool(transaction.fee, self.get_block_height() + 1)
-                print(f"Added {fee_amount_wepo:.8f} WEPO transaction fee to redistribution pool")
             
             print(f"Transaction added to mempool: {txid}")
             return True
@@ -1384,9 +1513,13 @@ class WepoBlockchain:
         """Get balance for an address"""
         cursor = self.conn.execute('''
             SELECT SUM(amount) FROM utxos WHERE address = ? AND spent = FALSE
-        ''')
+        ''', (address,))
         result = cursor.fetchone()
         return result[0] if result[0] else 0
+
+    def get_balance_wepo(self, address: str) -> float:
+        """Get balance for an address in WEPO units."""
+        return self.get_balance(address) / COIN
     
     def get_utxos_for_address(self, address: str) -> List[dict]:
         """Get all unspent UTXOs for an address"""
@@ -1406,8 +1539,27 @@ class WepoBlockchain:
         
         return utxos
     
-    def create_transaction(self, from_address: str, to_address: str, amount: int, fee: int = 10000) -> Optional[Transaction]:
-        """Create a transaction"""
+    def create_transaction(
+        self,
+        from_address: str,
+        to_address: str,
+        amount: int,
+        fee: int = 10000,
+        allow_fee_only: bool = False,
+    ) -> Optional[Transaction]:
+        """Create a transaction."""
+        if amount < 0:
+            print(f"Invalid transaction amount: {amount}")
+            return None
+
+        if fee < 0:
+            print(f"Invalid transaction fee: {fee}")
+            return None
+
+        if amount == 0 and not allow_fee_only:
+            print("Zero-amount transfer rejected without fee-only mode")
+            return None
+
         # Get UTXOs for sender
         utxos = self.get_utxos_for_address(from_address)
         
@@ -1439,11 +1591,13 @@ class WepoBlockchain:
                 break
         
         # Create outputs
-        outputs = [TransactionOutput(
-            value=amount,
-            script_pubkey=b"output_script",
-            address=to_address
-        )]
+        outputs = []
+        if amount > 0:
+            outputs.append(TransactionOutput(
+                value=amount,
+                script_pubkey=b"output_script",
+                address=to_address
+            ))
         
         # Add change output if needed
         change = input_total - amount - fee
@@ -1453,6 +1607,10 @@ class WepoBlockchain:
                 script_pubkey=b"change_script", 
                 address=from_address
             ))
+
+        if not outputs:
+            print("Transaction creation produced no outputs")
+            return None
         
         # Create transaction
         transaction = Transaction(
@@ -1469,6 +1627,9 @@ class WepoBlockchain:
     
     def create_stake(self, staker_address: str, amount: int) -> str:
         """Create a new stake"""
+        if self.get_block_height() <= POS_ACTIVATION_HEIGHT:
+            raise ValueError(f"Staking is not active until block {POS_ACTIVATION_HEIGHT + 1}")
+
         if amount < MIN_STAKE_AMOUNT:
             raise ValueError(f"Minimum stake amount is {MIN_STAKE_AMOUNT / COIN} WEPO")
         
@@ -1559,7 +1720,7 @@ class WepoBlockchain:
     def get_pos_collateral_for_height(self, height: int) -> int:
         """Get required PoS staking collateral for a specific height (tied to PoW halvings)"""
         # PoS is not available before activation height
-        if height < POS_ACTIVATION_HEIGHT:
+        if height <= POS_ACTIVATION_HEIGHT:
             return 0
             
         # Find the appropriate collateral requirement for this height
@@ -1589,7 +1750,7 @@ class WepoBlockchain:
             'masternode_collateral_wepo': masternode_collateral / COIN,
             'pos_collateral': pos_collateral,
             'pos_collateral_wepo': pos_collateral / COIN,
-            'pos_available': height >= POS_ACTIVATION_HEIGHT,
+            'pos_available': height > POS_ACTIVATION_HEIGHT,
             'phase': phase_info['phase'],
             'phase_description': phase_info['description'],
             'pow_reward': phase_info['pow_reward'],
@@ -1599,31 +1760,37 @@ class WepoBlockchain:
     
     def get_current_phase_info(self, height: int) -> dict:
         """Get current mining phase information"""
-        if height < PRE_POS_DURATION_BLOCKS:
+        if height == 0:
+            return {
+                'phase': 'Genesis',
+                'description': 'Genesis Bootstrap Block',
+                'pow_reward': GENESIS_BOOTSTRAP_REWARD / COIN
+            }
+        elif height <= PRE_POS_DURATION_BLOCKS:
             return {
                 'phase': 'Phase 1',
                 'description': 'Pre-PoS Mining (Genesis)',
                 'pow_reward': PRE_POS_REWARD / COIN
             }
-        elif height < PHASE_2A_END_HEIGHT:
+        elif height <= PHASE_2A_END_HEIGHT:
             return {
                 'phase': 'Phase 2A',
                 'description': 'PoS Active, First Long-term Phase',
                 'pow_reward': PHASE_2A_REWARD / COIN
             }
-        elif height < PHASE_2B_END_HEIGHT:
+        elif height <= PHASE_2B_END_HEIGHT:
             return {
                 'phase': 'Phase 2B',
                 'description': 'Second Halving Phase',
                 'pow_reward': PHASE_2B_REWARD / COIN
             }
-        elif height < PHASE_2C_END_HEIGHT:
+        elif height <= PHASE_2C_END_HEIGHT:
             return {
                 'phase': 'Phase 2C',
                 'description': 'Third Halving Phase',
                 'pow_reward': PHASE_2C_REWARD / COIN
             }
-        elif height < PHASE_2D_END_HEIGHT:
+        elif height <= PHASE_2D_END_HEIGHT:
             return {
                 'phase': 'Phase 2D',
                 'description': 'Fourth Halving Phase',
@@ -1727,7 +1894,7 @@ class WepoBlockchain:
         rewards = {}
         
         # Only distribute PoS rewards after activation
-        if block_height < POS_ACTIVATION_HEIGHT:
+        if block_height <= POS_ACTIVATION_HEIGHT:
             return rewards
         
         # Get active stakes and masternodes
@@ -1767,12 +1934,12 @@ class WepoBlockchain:
     
     def calculate_pos_reward(self, block_height: int) -> int:
         """Calculate PoS reward for a block height"""
-        if block_height < POS_ACTIVATION_HEIGHT:
+        if block_height <= POS_ACTIVATION_HEIGHT:
             return 0
         
         # After PoS activation, use a decreasing reward schedule
         # This is separate from PoW rewards and represents newly minted coins for PoS
-        years_since_pos = (block_height - POS_ACTIVATION_HEIGHT) // (365 * 24 * 60 // 9)  # 9-min blocks
+        years_since_pos = (block_height - POS_ACTIVATION_HEIGHT) // BLOCKS_PER_YEAR_LONGTERM
         
         if years_since_pos < 2:
             base_reward = 25 * COIN  # 25 WEPO per block for first 2 years
@@ -1786,10 +1953,10 @@ class WepoBlockchain:
             base_reward = 6.25 * COIN
             for _ in range(halvings):
                 base_reward //= 2
-            
-            return int(base_reward * 0.5)  # 50% to PoS
-        
-        return 0
+
+        # The returned value is the total PoS reward pool for the block.
+        # Downstream distribution splits it between stakers and masternodes.
+        return int(base_reward * 0.5)
     
     def distribute_staking_rewards(self, block_height: int, block_hash: str):
         """Distribute staking rewards for a block"""
@@ -1827,12 +1994,13 @@ class WepoBlockchain:
             activation_info = self.get_pos_activation_info()
             
             return {
-                "staking_enabled": current_height >= POS_ACTIVATION_HEIGHT,
+                "staking_enabled": current_height > POS_ACTIVATION_HEIGHT,
                 "pos_activation_height": POS_ACTIVATION_HEIGHT,
+                "pos_first_active_height": POS_ACTIVATION_HEIGHT + 1,
                 "current_height": current_height,
-                "blocks_until_activation": max(0, POS_ACTIVATION_HEIGHT - current_height),
+                "blocks_until_activation": max(0, (POS_ACTIVATION_HEIGHT + 1) - current_height),
                 "production_mode": PRODUCTION_MODE,
-                "christmas_launch": datetime.fromtimestamp(CHRISTMAS_GENESIS_TIMESTAMP).isoformat(),
+                "genesis_launch": datetime.fromtimestamp(MAINNET_GENESIS_TIMESTAMP).isoformat(),
                 "staking_activation_date": activation_info["activation_date"],
                 "days_until_staking": activation_info["days_until_activation"],
                 "min_stake_amount": MIN_STAKE_AMOUNT / COIN,
@@ -1862,8 +2030,8 @@ class WepoBlockchain:
                     "activation_timestamp": 0
                 }
             else:
-                # Calculate 18 months from Christmas launch
-                activation_timestamp = CHRISTMAS_GENESIS_TIMESTAMP + STAKING_ACTIVATION_DELAY
+                # Calculate 18 months from the configured genesis timestamp
+                activation_timestamp = MAINNET_GENESIS_TIMESTAMP + STAKING_ACTIVATION_DELAY
                 activation_date = datetime.fromtimestamp(activation_timestamp).isoformat()
                 
                 # Calculate days until activation
@@ -1917,9 +2085,10 @@ class WepoBlockchain:
                 
                 return {
                     "success": True,
-                    "message": "Production staking activated immediately",
+                    "message": "Production staking activates from the next block",
                     "pos_activation_height": POS_ACTIVATION_HEIGHT,
-                    "staking_enabled": True,
+                    "pos_first_active_height": POS_ACTIVATION_HEIGHT + 1,
+                    "staking_enabled": self.get_block_height() > POS_ACTIVATION_HEIGHT,
                     "min_stake_amount": MIN_STAKE_AMOUNT / COIN,
                     "fee_distribution_active": True
                 }
@@ -1928,7 +2097,8 @@ class WepoBlockchain:
                     "success": True,
                     "message": "Production staking already active",
                     "pos_activation_height": POS_ACTIVATION_HEIGHT,
-                    "staking_enabled": True
+                    "pos_first_active_height": POS_ACTIVATION_HEIGHT + 1,
+                    "staking_enabled": self.get_block_height() > POS_ACTIVATION_HEIGHT
                 }
                 
         except Exception as e:
@@ -1947,7 +2117,7 @@ class WepoBlockchain:
     
     def select_pos_validator(self, block_height: int) -> Optional[str]:
         """Select PoS validator using stake-weighted random selection"""
-        if block_height < POS_ACTIVATION_HEIGHT:
+        if block_height <= POS_ACTIVATION_HEIGHT:
             return None
             
         # Get active stakes
@@ -1977,7 +2147,7 @@ class WepoBlockchain:
     
     def is_valid_pos_validator(self, validator_address: str, block_height: int) -> bool:
         """Check if address is a valid PoS validator"""
-        if block_height < POS_ACTIVATION_HEIGHT:
+        if block_height <= POS_ACTIVATION_HEIGHT:
             return False
             
         # Check if validator has active stake
@@ -2016,6 +2186,19 @@ class WepoBlockchain:
             })
         
         return network_info
+
+    def get_blockchain_info(self) -> dict:
+        """Backward-compatible node-facing blockchain status wrapper"""
+        info = self.get_network_info()
+        info.update({
+            "chain_height": info["height"],
+            "latest_block_hash": info["best_block_hash"],
+        })
+        return info
+
+    def mine_next_block(self, miner_address: str) -> Optional[Block]:
+        """Backward-compatible wrapper used by the full-node mining loop"""
+        return self.mine_block(miner_address)
 
 def main():
     """Main function for testing"""

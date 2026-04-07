@@ -1,6 +1,6 @@
 # 🚨 WEPO SECURITY CONCERNS - CRITICAL STATUS UPDATE
 
-## ⚠️ URGENT: Christmas Day 2025 Launch Blocked by Critical Security Vulnerabilities
+## ⚠️ URGENT: Launch Blocked by Critical Security Vulnerabilities
 
 **Date:** December 2024  
 **Security Score:** 44.2% (FAILED - Requires 85%+ for cryptocurrency production)  
@@ -60,7 +60,7 @@ async def create_wallet(request: Request):
 
 ---
 
-## ✅ WORKING SECURITY FEATURES (Production Ready)
+## ✅ WORKING SECURITY FEATURES (Status Review Needed)
 
 ### Input Validation: 100% Success
 - ✅ XSS Protection: All malicious scripts blocked
@@ -149,6 +149,8 @@ async def create_wallet(request: Request):
 
 ## 🛠️ IMMEDIATE ACTION PLAN
 
+> Historical note: this document reflects a bridge-era security investigation. Preview-era verification scripts now live under `/app/legacy/preview-tests/`. The current authoritative local verification path is `/app/wepo-blockchain/scripts/run_canonical_fee_smoke.sh`.
+
 ### Critical Priority (Christmas Launch Blockers)
 
 1. **DEBUG SLOWAPI INTEGRATION** - Priority: CRITICAL
@@ -172,7 +174,8 @@ async def create_wallet(request: Request):
 3. **VERIFY SECURITY INTEGRATION** - Priority: HIGH
    ```bash
    # End-to-end testing:
-   - Run /app/definitive_security_test.py
+   - Historical preview-era script: /app/legacy/preview-tests/definitive_security_test.py
+   - Current canonical local verification: /app/wepo-blockchain/scripts/run_canonical_fee_smoke.sh
    - Achieve 85%+ overall security score
    - Confirm no regressions in working features
    ```
@@ -225,12 +228,15 @@ Failed Tests: 10
 3. **Run Security Verification**
    ```bash
    cd /app
-   python definitive_security_test.py
+   python legacy/preview-tests/definitive_security_test.py
+
+   # canonical local backend/node verification
+   /app/wepo-blockchain/scripts/run_canonical_fee_smoke.sh
    ```
 
 ### Success Metrics
 - **Target Security Score:** 85%+ (minimum for cryptocurrency production)
 - **Critical Tests:** Brute force protection and rate limiting must be 100%
-- **Timeline:** Immediate fixes required for Christmas Day 2025 launch
+- **Timeline:** Immediate fixes required for launch
 
 **The good news:** All security code is implemented correctly - only integration debugging needed to achieve production readiness.

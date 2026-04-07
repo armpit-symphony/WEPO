@@ -2,6 +2,12 @@
 """
 WEPO Fast Test Blockchain Bridge
 Instant blockchain for testing functionality with BTC atomic swaps and community mining
+
+LEGACY NOTICE:
+- This bridge is not the canonical backend or node path anymore.
+- Keep it only as historical/test infrastructure.
+- For the current authoritative local verification path, use:
+  - /home/sparky/WEPO/wepo-blockchain/scripts/run_canonical_fee_smoke.sh
 """
 
 import time
@@ -30,14 +36,32 @@ init_redis()
 # Setup logger
 logger = logging.getLogger(__name__)
 
+
+def parse_csv_env(env_name, default_values):
+    raw_value = os.getenv(env_name, "").strip()
+    if not raw_value:
+        return list(default_values)
+    return [value.strip() for value in raw_value.split(",") if value.strip()]
+
+
+DEFAULT_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+WEPO_ALLOWED_ORIGINS = parse_csv_env("WEPO_ALLOWED_ORIGINS", DEFAULT_ALLOWED_ORIGINS)
+
+# Local path setup for running outside a container image
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CORE_DIR = os.path.join(BASE_DIR, 'wepo-blockchain', 'core')
+
 # Add atomic swaps and RWA to the path
-sys.path.append('/app/wepo-blockchain/core')
+sys.path.append(CORE_DIR)
 from atomic_swaps import atomic_swap_engine, SwapType, SwapState, validate_btc_address, validate_wepo_address
 from rwa_tokens import rwa_system
 from address_utils import validate_wepo_address as validate_address_std, generate_wepo_address
 
 # Import mining coordinator
-sys.path.append('/app')
+sys.path.append(BASE_DIR)
 from wepo_community_mining_backend import mining_coordinator, setup_mining_routes
 
 # Import masternode service manager
@@ -463,7 +487,7 @@ class FastTestBlockchain:
                 "current_height": current_height,
                 "blocks_until_activation": 0,  # Already activated
                 "production_mode": self.PRODUCTION_MODE,
-                "christmas_launch": "2025-12-25T20:00:00Z",
+                "genesis_launch": "TBD pending production readiness",
                 "staking_activation_date": "Immediately (Production Mode)",
                 "days_until_staking": 0,
                 "min_stake_amount": self.MIN_STAKE_AMOUNT / self.COIN,
@@ -886,11 +910,7 @@ class WepoFastTestBridge:
     def setup_cors(self):
         self.app.add_middleware(
             CORSMiddleware,
-            allow_origins=[
-                "https://blockchain-sectest.preview.emergentagent.com",  # Production frontend
-                "http://localhost:3000",  # Development frontend
-                "http://127.0.0.1:3000",  # Alternative localhost
-            ],
+            allow_origins=WEPO_ALLOWED_ORIGINS,
             allow_credentials=True,
             allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
             allow_headers=["*"],
@@ -989,7 +1009,7 @@ class WepoFastTestBridge:
             try:
                 # Import dilithium to check quantum resistance status
                 import sys
-                sys.path.append('/app/wepo-blockchain/core')
+                sys.path.append(CORE_DIR)
                 
                 try:
                     from dilithium import DilithiumSigner
@@ -1513,7 +1533,7 @@ class WepoFastTestBridge:
             # SPECIAL CASE: Genesis Block (Block 0) gets commemorative 400 WEPO reward
             if height == 0:
                 current_reward = 400.0
-                quarter_info = "Genesis Block - Christmas Day 2025 (400 WEPO commemorative)"
+                quarter_info = "Genesis Block - genesis date (400 WEPO commemorative)"
                 phase_name = "Genesis Block - Christmas Launch"
                 reward_schedule = "🎄 GENESIS BLOCK: 400 WEPO commemorative reward, then Phase1=52.51, Phase2a=33.17, Phase2b=16.58, Phase2c=8.29, Phase2d=4.15 WEPO per block"
             # Regular mining schedule after Genesis (aligned with tokenomics)
@@ -2645,7 +2665,7 @@ class WepoFastTestBridge:
 
         # Quantum Vault Endpoints - "Be Your Own Bank" Privacy Feature
         # Import quantum vault system
-        sys.path.append('/app')
+        sys.path.append(BASE_DIR)
         from quantum_vault_system import quantum_vault_system
 
         @self.app.post("/api/vault/create")
@@ -7225,6 +7245,8 @@ def main():
     print("=" * 60)
     print("⚡ WEPO FAST TEST BLOCKCHAIN BRIDGE")
     print("=" * 60)
+    print("LEGACY NOTICE: this bridge is not the canonical backend/node path")
+    print("Use /home/sparky/WEPO/wepo-blockchain/scripts/run_canonical_fee_smoke.sh instead")
     print("INSTANT blockchain for testing functionality")
     print("Genesis block ready, instant mining, zero delays!")
     print("=" * 60)
@@ -7234,7 +7256,7 @@ def main():
     uvicorn.run(
         bridge.app,
         host="0.0.0.0",
-        port=8001,
+        port=int(os.getenv("WEPO_FAST_BRIDGE_PORT", "8001")),
         log_level="info"
     )
 

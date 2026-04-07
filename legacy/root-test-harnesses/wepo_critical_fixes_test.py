@@ -597,7 +597,7 @@ def run_critical_fixes_tests():
     print("\nSYSTEM STATUS:")
     if test_results["failed"] == 0:
         print("✅ All critical fixes have been successfully implemented")
-        print("✅ WEPO blockchain is ready for production use")
+        print("✅ WEPO blockchain is not approved for production use")
     else:
         print(f"❌ {test_results['failed']} critical issue(s) still need attention")
     

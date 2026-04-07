@@ -1,422 +1,145 @@
-## 🎯 RECENT ACHIEVEMENTS & MILESTONES
+# WEPO
 
-### 🚀 **BITCOIN MAINNET INTEGRATION COMPLETE** (January 2025)
-**PRODUCTION-READY: Real Bitcoin functionality with self-custodial wallet and masternode privacy mixing**
+WEPO is the platform repository for the WEPO network.
 
-**Core Bitcoin Features:**
-- ✅ **Bitcoin Mainnet Active** - Real Bitcoin addresses and transactions (not testnet)
-- ✅ **Self-Custodial Wallet** - BIP39/BIP44 HD wallet generated from WEPO seed phrase
-- ✅ **BlockCypher API Integration** - Live Bitcoin blockchain connectivity
-- ✅ **Background Balance Sync** - Non-blocking real-time balance updates
-- ✅ **UTXO Management** - Transaction input selection and management
-- ✅ **Public Mode** - Direct Bitcoin transactions available to everyone
-- ✅ **Private Mode** - Bitcoin privacy mixing via masternodes (available to all users)
+As of April 5, 2026, this repo should be treated as the source of truth for:
 
-**Technical Implementation:**
-- ✅ **Bitcoin Network Service** - Rate-limited API calls for free tier compliance
-- ✅ **Address Generation** - Multiple Bitcoin addresses for enhanced privacy
-- ✅ **Transaction Broadcasting** - Infrastructure ready for Bitcoin network
-- ✅ **Error Handling** - Robust error handling prevents wallet crashes
-- ✅ **Non-blocking Initialization** - Wallet loads fast, Bitcoin syncs in background
+- blockchain and node code
+- backend and API services
+- genesis and network configuration
+- staking, masternode, governance, and protocol logic
+- deployment and operations assets
 
-**Masternode Economy:**
-- ✅ **10,000 WEPO Collateral** - Clear requirement for masternode operation
-- ✅ **Privacy Service** - Bitcoin mixing available to all network users
-- ✅ **Fee Distribution** - Masternode operators earn from privacy mixing services
-- ✅ **Network Effects** - More users = more masternode income = higher WEPO demand
+This repo should not be the long-term home for wallet clients. Web, desktop, iOS, and Android wallet ownership is being split toward `WEPO-wallet`.
 
-**User Experience Updates:**
-- ✅ **Mode Toggle** - "Public" and "Private" (renamed from "Regular" and "Quantum")
-- ✅ **Privacy Security Box** - Moved to bottom between masternodes and transactions
-- ✅ **Bitcoin Status Display** - Real mainnet connectivity indicators
-- ✅ **Masternode Requirements** - Clear 10,000 WEPO collateral display
+## Status
 
-**Production Readiness:**
-- ✅ **100% Security Score** - Enterprise-grade security controls active
-- ✅ **Wallet Preview Working** - No more black screen or runtime errors  
-- ✅ **Bitcoin Mainnet Ready** - Real BTC addresses and blockchain connectivity
-- ✅ **Christmas Day 2025 Launch Ready** - Full WEPO ecosystem operational
+This repository is not production ready yet.
 
----
+Known gaps include:
 
-### ✅ **REVOLUTIONARY WALLET MINING SYSTEM IMPLEMENTED** (January 2025)
-**BREAKTHROUGH FEATURE: Mine directly from your wallet browser - NO EXTERNAL SOFTWARE REQUIRED!**
+- backend, chain, and deployment code need production hardening
+- deployment assets still include demo/test-oriented paths
+- docs and product claims have been ahead of actual implementation
+- repo cleanup is still required for generated artifacts and backup files
 
-**Core Implementation:**
-- **Browser-based mining** using WebWorker technology for non-blocking UI
-- **25% CPU default** with user controls (25%, 50%, 75%, 100%) for battery optimization
-- **Mobile mining support** - accessibility on all devices
-- **Real-time miner tracking** - see network participants grow
-- **Christmas Day 2025 genesis mining** with live countdown timer
-- **Automatic mode switching** - Genesis → PoW after first block found
+## Intended Repo Boundary
 
-**Technical Achievements:**
-- ✅ **Complete backend integration** - 10 new API endpoints in main server
-- ✅ **WebWorker mining engine** - JavaScript Argon2 implementation for browsers
-- ✅ **Real-time statistics** - Live hashrate, miner count, network rank
-- ✅ **Mining activity logging** - Real-time updates with timestamp tracking
-- ✅ **Same network pathways** - Wallet miners use identical infrastructure as external miners
-- ✅ **90% backend success rate** - All critical endpoints operational
-- ✅ **100% frontend success rate** - Complete UI/UX mining experience
+### This repo owns
 
-**User Experience:**
-```
-🎄 Christmas Day 2025 Launch Workflow:
-1. Open wallet → Click "🎄 Join Genesis Mining"
-2. See countdown timer → Days, hours, minutes, seconds
-3. Click "Connect to Network" → Miner count increases
-4. Click "Start Mining" → See your hashrate and rank
-5. Mining continues in background → Even when tab minimized
-6. After genesis block → Interface switches to "⚡ PoW Mining"
-```
+- `backend/`
+- `wepo-blockchain/`
+- `wepo-production-deployment/`
+- `data/genesis/`
+- `genesis.json`
+- `wepo-network-genesis.sh`
+- `wepo-blockchain-bridge.py`
+- `wepo-fast-test-bridge.py`
 
-**Revolutionary Impact:**
-- **Democratic mining** - Anyone with a wallet can participate in network security
-- **No barriers to entry** - No expensive equipment or technical setup required
-- **Community-driven launch** - True decentralization from day one
-- **We The People accessibility** - Financial freedom through inclusive mining
+### This repo should not own long term
 
----
+- `frontend/`
+- `wepo-desktop-wallet/`
+- `wepo-ios-wallet/`
+- `wepo-android-wallet/`
 
-### ✅ RWA TOKEN TRADING & MASTERNODE INTEGRATION - COMPLETE
-**Advanced RWA trading with privacy-enhanced Bitcoin mixing through masternode network**
+Those wallet surfaces currently remain in-tree while the split is being planned, but they should be treated as migration candidates rather than stable ownership.
 
-**Fixed Issues:**
-- ❌ **404 errors** on RWA trading endpoints (`/api/rwa/tokens`, `/api/rwa/rates`)
-- ❌ **Missing backend integration** for RWA Quantum Vault features  
-- ❌ **Inconsistent service routing** between main backend and bridge services
+## Repository Layout
 
-**Solutions Implemented:**
-- ✅ **Integrated RWA endpoints** into main backend (`/app/backend/server.py`)
-- ✅ **Added 5 sample RWA tokens** for immediate testing and trading
-- ✅ **Bitcoin-backed RWA privacy mixing** through masternode network
-- ✅ **Complete fee redistribution** following 60% Masternodes / 25% Miners / 15% PoS model
-- ✅ **RWA Quantum Vault integration** with zk-STARK privacy storage
+### Platform surfaces
 
-**Testing Results:**
-- 🎯 **100% backend success** - All RWA endpoints operational
-- 🎯 **100% frontend success** - RWA trading interface fully functional
-- 🎯 **Privacy mixing verified** - BTC-RWA trades routed through masternode mixing
+- `backend/`: FastAPI service layer and backend security utilities
+- `wepo-blockchain/`: blockchain, mining, node, wallet-daemon, and protocol code
+- `wepo-production-deployment/`: deployment scripts and ops docs
+- `data/genesis/`: genesis-related data
 
----
+### Transitional / duplicate surfaces
 
-### ✅ UNIFIED EXCHANGE → MASTERNODE BTC MIXING INTEGRATION - COMPLETE
-**Privacy-enhanced BTC-WEPO swaps with real-time masternode mixing coordination**
+- `frontend/`: current web wallet/client surface, planned for wallet repo ownership
+- `wepo-desktop-wallet/`: current Electron wallet surface, planned for wallet repo ownership
+- `wepo-ios-wallet/`: current iOS wallet surface, planned for wallet repo ownership
+- `wepo-android-wallet/`: current Android wallet surface, planned for wallet repo ownership
 
-**Core Features:**
-- ✅ **Bitcoin privacy mixing** integrated into all BTC-WEPO swaps
-- ✅ **Real-time mixing status** with masternode coordination
-- ✅ **Privacy controls** allowing users to enable/disable mixing per transaction
-- ✅ **Mixing fee integration** built into swap calculations
-- ✅ **Complete privacy flow**: BTC → Mixer → Exchange → Self-Custodial Wallet
+## Current Priorities
 
-**Technical Implementation:**
-- Updated `UnifiedExchange.js` with comprehensive mixing service functions
-- Added privacy mixing for both regular swaps and RWA trades
-- Integrated mixing status display and real-time updates
-- Enhanced warning system for privacy-conscious trading
-- Full masternode coordination for mixing operations
+1. Finalize repo ownership and remove duplication with `WEPO-wallet`.
+2. Replace test/demo deployment paths with a real staging and production model.
+3. Harden backend and chain behavior for public production.
+4. Remove stale under-launch-review messaging and align docs with reality.
+5. Clean generated artifacts, release bundles, and backup files from versioned source.
 
-**Testing Results:**
-- 🎯 **100% frontend success** - All mixing features operational
-- 🎯 **Complete privacy flow** - End-to-end BTC mixing verified
-- 🎯 **Masternode integration** - Full coordination and fee distribution working
+## Canonical Local Verification
 
----
+The current authoritative local verification path for backend-originated canonical fee settlement is:
 
-### ✅ WALLET FUNCTION ISSUES - COMPLETELY RESOLVED
-**Fixed critical wallet functionality and Quantum Vault creation issues**
-
-**Issues Resolved:**
-- ❌ **Quantum Vault creation errors** - "Failed to create vault" in preview environment
-- ❌ **Buffer polyfill conflicts** - React application loading failures
-- ❌ **API endpoint mismatches** - Service routing inconsistencies
-
-**Solutions Implemented:**
-- ✅ **Fixed Quantum Vault API integration** - Corrected return value parsing between services
-- ✅ **Resolved Buffer polyfill issues** - Updated webpack config and crypto library imports
-- ✅ **Corrected service endpoints** - Ensured proper routing to main backend service
-- ✅ **Updated wallet functions** - Fixed `sendWepo` addressing and authentication
-
-**Testing Results:**
-- 🎯 **100% wallet functionality** working - Create, login, send, receive all operational
-- 🎯 **Quantum Vault operational** - Vault creation and management fully functional
-- 🎯 **Buffer issues resolved** - React application loads perfectly across all browsers
-
----
-
-## 🧭 DIRECTIONS OF USE (Wallet Owners)
-- Create a new wallet or log in with an existing one.
-- Pre-Genesis (before launch):
-  - BTC wallet is fully usable (self-custodial). You can view balances and (once BTC provider is connected) send BTC.
-  - Connect your miner in Community Mining to be counted in the genesis queue. Start/Submit is disabled until genesis.
-  - WEPO Send and Quantum Vault actions are disabled until genesis for safety.
-- Post-Genesis (after launch):
-  - Mining switches to PoW mode. Send WEPO becomes available per network rules.
-- Privacy (BTC):
-  - By default, BTC broadcasts are relayed via WEPO masternodes (privacy by design).
-  - To change fallback behavior, go to Settings → Network Status → "Relay BTC via Masternodes only".
-  - To see your last relay result (txid, path, peers), click "Show Last BTC Relay" in Settings.
-
-## 🧭 DIRECTIONS OF USE (Operators)
-- Settings → Network Status (staging only):
-  - "Simulate PoW" / "Simulate Pre-Genesis" toggles flip UI state for testing.
-  - BTC relay diagnostics available via "Show Last BTC Relay".
-- Backend Diagnostics:
-  - Masternode BTC relay endpoints: POST /api/bitcoin/relay/broadcast, GET /api/bitcoin/relay/status.
-  - Mining status: GET /api/mining/status.
-
----
-
-## 🏁 LAUNCH DAY CHECKLIST (Operators)
-- Pre-Launch
-  - Re-run Full Prelaunch Security Suite (expect ≥85/100, GO) → prelaunch_security_report.json.
-  - Verify /api/mining/status reflects correct genesis status and block height.
-  - Ensure masternodes are online and accepting BTCR relay messages (check relay status endpoint/logs).
-  - Confirm frontend REACT_APP_BACKEND_URL points to production ingress.
-- Hour of Launch
-  - Monitor miner connections and hashrate in Community Mining.
-  - Watch first PoW block arrival; verify UI flips from Pre-Genesis → PoW.
-  - Confirm WEPO Send/Vault enable as per launch policy.
-  - Verify BTC relay via masternodes (Settings → Show Last BTC Relay) on a small test send.
-- Post-Launch
-  - Supervisor health: sudo supervisorctl status; logs: tail -n 100 /var/log/supervisor/backend.*.log
-  - Re-run smoke tests and document any incidents.
-
----
-
-## 🏗️ WEPO ECOSYSTEM ARCHITECTURE
-
-### **Blockchain Infrastructure**
-- **Quantum-Resistant Security**: Real NIST ML-DSA Dilithium2 implementation (not simulation)
-- **Hybrid Consensus**: PoW (9-min blocks) + PoS (3-min blocks, activates block 131,400)
-- **Dynamic Collateral**: Masternode requirements adjust with halvings (10K → 1K WEPO)
-- **Community AMM**: Constant product formula, no admin control, fair launch pricing
-
-### **Privacy & Security**
-- **Production zk-STARKs**: Full implementation for Quantum Vault transactions
-- **Real Dilithium2**: 128-bit quantum security with NIST standardized signatures
-- **End-to-End Messaging**: True E2E encryption using quantum-resistant cryptography
-- **Masternode Mixing**: Bitcoin privacy mixing integrated into exchange operations
-
-### **Technical Stack**
-- **Frontend**: React 18 + Vite, TailwindCSS, Responsive Design
-- **Backend**: FastAPI + MongoDB, Real-time APIs, Microservice Architecture  
-- **Blockchain**: Custom Python implementation, SQLite storage, P2P networking
-- **Mining**: Dual-layer system (60% Argon2, 40% SHA-256), Browser + External support
-
----
-
-## 🌟 CURRENT FEATURES
-
-### **💳 Self-Custodial Wallet System**
-- **16-word seed phrase** with BIP39 compatibility
-- **Dual-wallet support**: WEPO + Bitcoin in unified interface
-- **Quantum messaging** with E2E encryption
-- **Transaction privacy** with zk-STARK proofs
-- **🔥 NEW: Browser mining** - Mine directly from wallet interface
-
-### **🏛️ Masternode Network**
-- **5 Genuine Services**: Transaction Mixing, DEX Relay, Network Relay, Governance, Vault Relay
-- **Dynamic Collateral**: Adjusts automatically with network growth
-- **Fee Distribution**: 60% to masternodes for network security
-- **Bitcoin Mixing**: Privacy-enhanced BTC transactions
-
-### **🔄 Unified Exchange**
-- **BTC-WEPO Swaps**: Community-driven pricing, no admin manipulation
-- **RWA Trading**: Real-world asset tokenization with privacy features  
-- **Liquidity Pools**: Constant product AMM with fair launch mechanics
-- **Privacy Mixing**: All trades can be routed through masternode mixing
-
-### **🔐 Quantum Vault System**
-- **zk-STARK Privacy**: Production-grade zero-knowledge proofs
-- **Multi-asset Storage**: WEPO, BTC, and RWA tokens supported
-- **Quantum Resistance**: Future-proof against quantum computing threats
-- **Privacy Preservation**: Complete transaction obfuscation
-
-### **⛏️ Revolutionary Wallet Mining**
-- **Browser-based Mining**: No external software required
-- **CPU Usage Controls**: 25% default, adjustable to 100%
-- **Mobile Mining Support**: Mine from any device
-- **Real-time Statistics**: Live hashrate, network rank, earnings tracking
-- **Genesis Launch Ready**: Christmas Day 2025 community-mined genesis block
-- **Automatic Mode Switching**: Genesis countdown → PoW mining after first block
-
----
-
-## 🚀 TOKENOMICS & ECONOMICS
-
-### **Supply Distribution**
-- **Fixed Supply**: 69,000,003 WEPO (no inflation, no burning)
-- **Community Genesis**: No pre-mine, fair launch Christmas Day 2025
-- **Fee Redistribution**: 60% Masternodes, 25% Miners, 15% PoS Stakers
-
-### **Block Rewards**
-- **Genesis Block**: 0 WEPO (community milestone only)
-- **First Halving (52,560 blocks)**: 121.6 WEPO per PoW block
-- **Second Halving**: 60.8 WEPO per PoW block  
-- **Minimum Reward**: 12.4 WEPO per block (floor)
-
-### **Mining Economics**
-- **Dual Algorithm**: 60% Argon2 (wallet-friendly), 40% SHA-256 (ASIC-compatible)
-- **Fair Launch**: Everyone starts mining simultaneously on Christmas Day
-- **No Elite Advantage**: Wallet mining ensures broad participation
-- **Network Security**: More miners = stronger decentralization
-
----
-
-## 🎄 CHRISTMAS DAY 2025 GENESIS LAUNCH
-
-### **Launch Timeline**
-- **Date**: December 25, 2025
-- **Time**: 3:00 PM EST (8:00 PM UTC)
-- **Event**: Community-mined genesis block celebration
-
-### **Launch Preparation**
-- ✅ **Wallet Mining System** - Complete browser-based mining ready
-- ✅ **Network Infrastructure** - All services operational and tested
-- ✅ **Security Audits** - Quantum resistance and privacy features verified
-- ✅ **Community Tools** - Mining interface, exchange, and vault systems ready
-- ✅ **Documentation** - Complete guides for miners, traders, and developers
-
-### **Participation Options**
-1. **Wallet Mining**: Mine directly from browser (recommended for beginners)
-2. **Pool Mining**: Join community mining pools for steady rewards
-3. **Solo Mining**: Run dedicated mining software for maximum rewards
-4. **Trading Participation**: Provide liquidity for BTC-WEPO trading
-5. **Masternode Hosting**: Stake 10,000 WEPO for network services
-
----
-
-## 🔧 FOR DEVELOPERS & AI BUILDERS
-
-### **Code Architecture Notes**
-```javascript
-// CRITICAL: Always use environment variables for URLs
-// Frontend API calls MUST use REACT_APP_BACKEND_URL
-const backendUrl = process.env.REACT_APP_BACKEND_URL;
-
-// Backend MUST use MONGO_URL from environment
-const mongoUrl = process.env.MONGO_URL;
-
-// All backend routes MUST be prefixed with '/api' for Kubernetes ingress
-app.get('/api/mining/status', handler);
-```
-
-### **Mining System Integration**
-```python
-# Wallet Mining Backend Pattern
-class WalletMiner:
-    def __init__(self):
-        self.connected_miners = {}  # address -> miner info
-        self.mining_stats = {...}   # network statistics
-    
-    async def connect_miner(address, mode="genesis"):
-        # Same pathways as external miners
-        # Real-time miner tracking
-        # Network statistics updates
-```
-
-### **WebWorker Mining Pattern**
-```javascript
-// mining-worker.js - Browser mining implementation
-const HASH_BATCH_SIZE = 100;  // Process 100 hashes per batch
-const CPU_USAGE_DELAY = {     // CPU usage control
-  25: 300,   // 25% CPU = 300ms delay between batches
-  50: 150,   // 50% CPU = 150ms delay
-  75: 50,    // 75% CPU = 50ms delay  
-  100: 0     // 100% CPU = no delay
-};
-```
-
-### **Polyfill Configuration (Critical)**
-```javascript
-// craco.config.js - Required for crypto libraries
-module.exports = {
-  webpack: {
-    configure: {
-      resolve: {
-        fallback: {
-          "buffer": require.resolve("buffer"),
-          "process": require.resolve("process/browser"),
-          "util": require.resolve("util")
-        }
-      }
-    }
-  }
-};
-```
-
-### **Service Management Commands**
 ```bash
-# Restart all services
-sudo supervisorctl restart all
-
-# Check service status
-sudo supervisorctl status
-
-# View logs for debugging
-tail -n 100 /var/log/supervisor/backend.*.log
+/home/sparky/WEPO/wepo-blockchain/scripts/run_canonical_fee_smoke.sh
 ```
 
-### **Testing Protocol**
+That launcher:
+
+1. starts a dedicated local node on `127.0.0.1:8122`
+2. starts a dedicated local backend on `127.0.0.1:8011`
+3. runs the canonical smoke at `/home/sparky/WEPO/canonical_fee_settlement_smoke.py`
+4. verifies on-chain settlement plus Mongo state
+5. tears the temporary processes down
+
+For manual or deeper local work, the authoritative scripts are:
+
+- `/home/sparky/WEPO/canonical_fee_settlement_smoke.py`
+- `/home/sparky/WEPO/wepo-blockchain/scripts/run_canonical_fee_smoke.sh`
+- `/home/sparky/WEPO/wepo-blockchain/scripts/run_canonical_fee_soak.sh`
+- `/home/sparky/WEPO/wepo-blockchain/scripts/wepo_accelerated_simulation.py`
+
+For repeated local backend/node verification under load, use:
+
 ```bash
-# Always test backend first
-deep_testing_backend_v2 "Test wallet mining system"
-
-# Then ask user before frontend testing
-ask_human "Should I proceed with frontend testing?"
-
-# Update test_result.md with findings
-# Document all fixes and improvements
+/home/sparky/WEPO/wepo-blockchain/scripts/run_canonical_fee_soak.sh
 ```
 
----
+Useful env overrides:
 
-## 🎯 PRODUCTION DEPLOYMENT CHECKLIST
+- `SOAK_ITERATIONS`
+- `SOAK_PAUSE_SECONDS`
+- `MAX_FAILURES`
+- `SOAK_LOG_DIR`
 
-### **Pre-Launch Requirements**
-- ✅ **Security Audits**: Quantum resistance verified, privacy features tested
-- ✅ **Performance Testing**: Mining system handles multiple concurrent miners  
-- ✅ **Mobile Optimization**: Wallet mining works on all mobile devices
-- ✅ **Documentation**: Complete user guides and developer documentation
-- ✅ **Community Preparation**: Mining tutorials and launch event coordination
+The active backend/frontend runtime files no longer carry a built-in preview-host
+default. Set explicit allowlists through env when needed:
 
-### **Launch Day Operations**
-- ✅ **Monitor Network**: Real-time tracking of miner connections and hashrate
-- ✅ **Support Community**: Active assistance for new miners joining network
-- ✅ **Track Genesis Block**: Coordinate community celebration of first block
-- ✅ **Document History**: Record the birth of the WEPO network
+- `WEPO_ALLOWED_ORIGINS` for backend/bridge CORS origins
+- `WEPO_FRONTEND_CONNECT_SRC` for frontend CSP `connect-src`
 
-### **Post-Launch Goals**
-- **Network Growth**: Achieve 1,000+ wallet miners in first month
-- **Exchange Adoption**: Establish BTC-WEPO trading pairs on multiple platforms
-- **Masternode Network**: Deploy 100+ masternodes for network security
-- **Real-World Adoption**: Enable RWA trading and privacy-enhanced transactions
+## Legacy Paths
 
----
+The following files still exist in-tree but should not be treated as the canonical production path:
 
-## 🔮 FUTURE ROADMAP
+- `wepo-fast-test-bridge.py`
+- `wepo-blockchain-bridge.py`
+- preview-era smoke/security scripts now quarantined under `legacy/preview-tests/`
+- unreferenced backend backup files now quarantined under `legacy/backend-backups/`
+- historical step2 result artifacts now stored under `legacy/step2-results/`
+- older ad hoc root-level API/stress harnesses now quarantined under `legacy/root-test-harnesses/`
+- historical launch-readiness/security notes under `ops-and-audit/` may reference quarantined preview-era scripts
 
-### **Q1 2026: Network Maturation**
-- **Advanced Mining Pools**: Professional mining pool software
-- **Mobile Apps**: Native iOS and Android wallet apps with mining
-- **Hardware Integration**: Support for dedicated WEPO mining devices
+Use them only as historical reference until they are either removed or rewritten around the canonical backend/node stack.
 
-### **Q2 2026: Ecosystem Expansion** 
-- **DeFi Integration**: Lending, borrowing, and yield farming protocols
-- **Cross-chain Bridges**: Integration with Ethereum, Bitcoin, and other networks
-- **Enterprise Solutions**: Business-grade privacy and asset tokenization
+## Production Track
 
-### **Q3 2026: Global Adoption**
-- **Regulatory Compliance**: Work with global regulators for clear legal framework
-- **Merchant Adoption**: Point-of-sale systems and e-commerce integration
-- **Educational Initiatives**: University partnerships and developer training programs
+The production path for this repo is:
 
----
+1. stable protocol and chain rules
+2. stable backend and API behavior
+3. real deployment and secrets handling
+4. observability, backup, and rollback procedures
+5. accurate public documentation
 
-**WEPO: We The People - Your Financial Freedom** 🗽
+## Related Repositories
 
-*Revolutionary wallet mining technology makes cryptocurrency accessible to everyone. Mine from your browser, trade with privacy, and help secure the network - no technical expertise required.*
+- Platform repo: `https://github.com/armpit-symphony/WEPO`
+- Wallet repo: `https://github.com/armpit-symphony/WEPO-wallet`
 
-**Ready for Christmas Day 2025 Genesis Launch** 🎄
+## Sparkpit Labs Positioning
+
+WEPO and WEPO Wallet are being prepared for future Sparkpit Labs product integration. Public product pages and download surfaces will live under `sparkpitlabs.com`, but this repository remains the engineering source for the platform/network side.

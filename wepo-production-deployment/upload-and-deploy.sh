@@ -2,6 +2,12 @@
 
 # WEPO File Upload Script
 # Run this from your local machine to upload WEPO files to production server
+#
+# LEGACY NOTICE:
+# - This script still deploys the bridge-era `wepo-fast-test-bridge.py` path.
+# - It is not the current authoritative production deployment path.
+# - Verify the canonical local backend/node flow first with:
+#   /home/sparky/WEPO/wepo-blockchain/scripts/run_canonical_fee_smoke.sh
 
 set -e
 
@@ -20,6 +26,8 @@ NC='\033[0m' # No Color
 
 echo -e "${BLUE}🚀 WEPO Network Deployment - File Upload${NC}"
 echo -e "${BLUE}=========================================${NC}"
+echo -e "${YELLOW}⚠️  LEGACY NOTICE: this script deploys the bridge-era backend path${NC}"
+echo -e "${YELLOW}⚠️  Verify the canonical backend/node path first via run_canonical_fee_smoke.sh${NC}"
 echo ""
 
 # Check if configuration is updated
@@ -174,7 +182,7 @@ echo -e "   Status:   ssh ${SERVER_USER}@${SERVER_IP} 'systemctl status wepo-api
 echo -e "   Logs:     ssh ${SERVER_USER}@${SERVER_IP} 'journalctl -u wepo-api -f'"
 echo -e "   Restart:  ssh ${SERVER_USER}@${SERVER_IP} 'systemctl restart wepo-api'"
 echo ""
-echo -e "${GREEN}🎄 Ready for Christmas Day 2025 Genesis Launch!${NC}"
+echo -e "${GREEN}🎄 Ready for genesis launch!${NC}"
 
 # Step 8: Create wallet configuration files
 echo -e "${YELLOW}📝 Step 8: Creating wallet configuration files...${NC}"

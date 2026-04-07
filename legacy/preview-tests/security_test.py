@@ -2,6 +2,12 @@
 """
 WEPO COMPREHENSIVE SECURITY TESTING - CHRISTMAS DAY 2025 LAUNCH READINESS
 
+LEGACY NOTICE:
+- This script is preview-era and not the canonical local verification path.
+- It should not be used as the primary acceptance signal for the current backend/node stack.
+- Use the canonical backend/node smoke path first:
+  - /home/sparky/WEPO/wepo-blockchain/scripts/run_canonical_fee_smoke.sh
+
 **SECURITY TESTING CONTINUATION - Authentication System Now Working!**
 
 **SPECIFIC SECURITY TESTS REQUIRED:**
@@ -27,7 +33,7 @@ WEPO COMPREHENSIVE SECURITY TESTING - CHRISTMAS DAY 2025 LAUNCH READINESS
 4. **SECURITY SCORE CALCULATION**
    - Calculate overall security score with current working features
    - Identify what % we're at now vs 85%+ target
-   - Prioritize remaining issues for Christmas launch readiness
+   - Prioritize remaining issues for public launch readiness
 
 **CONTEXT:**
 - Services are running on ports 8001 (wepo-fast-test-bridge) and 8003 (backend/server)
@@ -50,12 +56,13 @@ import base64
 import hashlib
 import re
 
-# Use preview backend URL from frontend/.env
-BACKEND_URL = "https://blockchain-sectest.preview.emergentagent.com"
+# Legacy preview target. Override explicitly if you still need this script.
+BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8011")
 API_URL = f"{BACKEND_URL}/api"
 
+print("⚠️ LEGACY SCRIPT: use wepo-blockchain/scripts/run_canonical_fee_smoke.sh for the canonical path")
 print(f"🔐 WEPO COMPREHENSIVE SECURITY TESTING - CHRISTMAS DAY 2025 LAUNCH READINESS")
-print(f"Preview Backend API URL: {API_URL}")
+print(f"Backend API URL: {API_URL}")
 print(f"Focus: Brute Force Protection, Rate Limiting, Input Validation, Security Score")
 print("=" * 80)
 
@@ -781,7 +788,7 @@ def test_data_protection():
 def calculate_security_score():
     """Calculate overall security score with weighted categories"""
     print("\n📊 SECURITY SCORE CALCULATION")
-    print("Calculating weighted security score for Christmas Day 2025 launch readiness...")
+    print("Calculating weighted security score for launch readiness...")
     
     total_weighted_score = 0
     total_weight = 0
@@ -827,7 +834,7 @@ def calculate_security_score():
     
     print(f"\n🏆 OVERALL SECURITY SCORE: {overall_score:.1f}%")
     
-    # Christmas Day 2025 Launch Assessment
+    # Launch Assessment
     print(f"\n🎄 CHRISTMAS DAY 2025 LAUNCH ASSESSMENT:")
     
     if overall_score >= 85:
@@ -846,7 +853,7 @@ def calculate_security_score():
         print("🚨 LAUNCH DELAYED - Significant security issues")
         print("   ❌ Below 70% minimum for cryptocurrency operations")
         print("   ❌ Multiple security vulnerabilities present")
-        print("   ❌ Not suitable for production launch")
+        print("   ❌ Not suitable for public launch")
         launch_status = "DELAYED"
     else:
         print("🚨 LAUNCH BLOCKED - Critical security failures")
@@ -881,9 +888,9 @@ def calculate_security_score():
     }
 
 def run_comprehensive_security_testing():
-    """Run comprehensive security testing for Christmas Day 2025 launch"""
+    """Run comprehensive security testing for launch"""
     print("🔐 STARTING COMPREHENSIVE SECURITY TESTING")
-    print("Testing authentication system security for Christmas Day 2025 launch readiness...")
+    print("Testing authentication system security for launch readiness...")
     print("=" * 80)
     
     # Run all security test categories
@@ -942,6 +949,7 @@ def run_comprehensive_security_testing():
     return score_results
 
 if __name__ == "__main__":
+    print("⚠️ LEGACY SCRIPT: canonical path is wepo-blockchain/scripts/run_canonical_fee_smoke.sh")
     # Run comprehensive security testing
     results = run_comprehensive_security_testing()
     
@@ -966,7 +974,7 @@ if __name__ == "__main__":
     
     print(f"\n💡 RECOMMENDATIONS:")
     if results['overall_score'] >= 85:
-        print("   • 🎉 System ready for Christmas Day 2025 launch")
+        print("   • 🎉 System under launch review")
         print("   • Continue monitoring for any edge cases")
         print("   • Maintain current security measures")
     elif results['overall_score'] >= 70:
@@ -977,7 +985,7 @@ if __name__ == "__main__":
         print("   • 🚨 Implement critical security fixes immediately")
         print("   • Focus on brute force protection and rate limiting")
         print("   • Comprehensive security review required")
-        print("   • Christmas Day 2025 launch should be delayed until fixes complete")
+        print("   • launch should be delayed until fixes complete")
 """
 WEPO CRITICAL SECURITY TESTING FOR CHRISTMAS DAY 2025 LAUNCH
 =============================================================
@@ -1009,7 +1017,7 @@ CRITICAL SECURITY TESTS REQUIRED:
 CRITICAL SUCCESS CRITERIA:
 - Brute force protection: HTTP 423 after 5 failed attempts
 - Rate limiting: HTTP 429 responses at specified limits
-- Overall security score: Must achieve 85%+ for cryptocurrency production launch
+- Overall security score: Must achieve 85%+ for cryptocurrency public launch
 """
 
 import requests
@@ -1023,13 +1031,14 @@ from datetime import datetime
 import random
 import string
 
-# Use preview backend URL from frontend/.env
-BACKEND_URL = "https://blockchain-sectest.preview.emergentagent.com"
+# Legacy preview target. Override explicitly if you still need this script.
+BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8011")
 API_URL = f"{BACKEND_URL}/api"
 
+print("⚠️ LEGACY SCRIPT: use wepo-blockchain/scripts/run_canonical_fee_smoke.sh for the canonical path")
 print(f"🔐 WEPO CRITICAL SECURITY TESTING FOR CHRISTMAS DAY 2025 LAUNCH")
 print(f"Backend API URL: {API_URL}")
-print(f"Target Security Score: 85%+ for cryptocurrency production launch")
+print(f"Target Security Score: 85%+ for cryptocurrency public launch")
 print("=" * 80)
 
 # Test results tracking
@@ -1560,7 +1569,7 @@ def calculate_security_score():
     return total_weighted_score
 
 def run_critical_security_testing():
-    """Run critical security testing for Christmas Day 2025 launch"""
+    """Run critical security testing for launch"""
     print("🔐 STARTING CRITICAL SECURITY TESTING FOR CHRISTMAS DAY 2025 LAUNCH")
     print("Testing critical security requirements for cryptocurrency production...")
     print("=" * 80)
@@ -1600,13 +1609,13 @@ def run_critical_security_testing():
             if vuln["details"]:
                 print(f"    Issue: {vuln['details']}")
     
-    # Christmas Day 2025 launch assessment
+    # launch assessment
     print(f"\n🎄 CHRISTMAS DAY 2025 LAUNCH ASSESSMENT:")
     if security_score >= 85:
         print("🎉 LAUNCH APPROVED - Security requirements met!")
         print("   ✅ Security score meets 85%+ requirement for cryptocurrency production")
         print("   ✅ Critical security vulnerabilities addressed")
-        print("   ✅ System ready for Christmas Day 2025 launch")
+        print("   ✅ System under launch review")
     elif security_score >= 70:
         print("⚠️  LAUNCH CONDITIONAL - Security improvements needed")
         print("   ⚠️  Security score below 85% requirement")
@@ -1646,7 +1655,7 @@ def run_critical_security_testing():
         print("🚨 CRITICAL: Implement comprehensive rate limiting (global + endpoint-specific)")
     
     if security_score < 85:
-        print("🚨 CRITICAL: Address all security vulnerabilities before Christmas Day 2025 launch")
+        print("🚨 CRITICAL: Address all security vulnerabilities before launch")
     
     return {
         "security_score": security_score,
@@ -1659,6 +1668,7 @@ def run_critical_security_testing():
     }
 
 if __name__ == "__main__":
+    print("⚠️ LEGACY SCRIPT: canonical path is wepo-blockchain/scripts/run_canonical_fee_smoke.sh")
     # Run critical security testing
     results = run_critical_security_testing()
     
@@ -1679,11 +1689,11 @@ if __name__ == "__main__":
     
     print(f"\n🔧 NEXT STEPS:")
     if results['launch_approved']:
-        print("• System ready for Christmas Day 2025 launch")
+        print("• System under launch review")
         print("• Continue monitoring for security edge cases")
         print("• Proceed with final production preparations")
     else:
         print("• Address critical security vulnerabilities immediately")
         print("• Focus on brute force protection and rate limiting")
         print("• Re-run security verification after fixes")
-        print("• Christmas Day 2025 launch depends on security fixes")
+        print("• launch depends on security fixes")

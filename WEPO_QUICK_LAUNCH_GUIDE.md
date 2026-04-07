@@ -1,5 +1,19 @@
 # WEPO Network Launch - Quick Start Guide
 
+## Status Notice
+
+This document is legacy bridge-era guidance and is not the current canonical path.
+
+Do not treat `wepo-fast-test-bridge.py` as the authoritative production backend.
+
+For the current local backend/node verification path, use:
+
+```bash
+/home/sparky/WEPO/wepo-blockchain/scripts/run_canonical_fee_smoke.sh
+```
+
+That path exercises the canonical FastAPI backend plus the canonical WEPO node and verifies on-chain fee settlement directly.
+
 ## 🎯 Current Situation
 
 You have:
@@ -150,12 +164,12 @@ server {
 - **Load Balancer**: $12/month
 - **Total**: $84/month
 
-## 🎄 Christmas Day Launch Timeline
+## Launch Timeline
 
 **Week 1 (Now)**: Deploy to production server
 **Week 2**: Test all wallet functionality
 **Week 3**: Announce network availability
-**Christmas Day**: Official genesis launch announcement
+**Final Approval**: Official genesis launch announcement
 
 ## ✅ What This Gives You
 
@@ -169,7 +183,7 @@ server {
 - Users download desktop wallet from GitHub
 - Wallet automatically connects to your live network
 - All features work immediately (mining, Bitcoin, privacy)
-- Christmas Day 2025 ready!
+- genesis date ready!
 
 ## 🔧 Quick Test Commands
 
@@ -206,4 +220,4 @@ curl -X POST https://api.wepo.network/api/mining/start \
 
 Your users can then download the desktop wallet from GitHub and immediately start using the full WEPO network with all features working!
 
-🎄 **Ready for Christmas Day 2025 Genesis Launch!**
+🎄 **Ready for genesis launch!**

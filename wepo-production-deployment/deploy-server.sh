@@ -2,11 +2,20 @@
 
 # WEPO Network Production Deployment Script
 # Run this on your production server
+#
+# LEGACY NOTICE:
+# - This script predates the canonical backend/node hardening path.
+# - It still provisions the bridge-era deployment model and should not be treated
+#   as the authoritative production runbook.
+# - Verify the canonical local backend/node flow first with:
+#   /home/sparky/WEPO/wepo-blockchain/scripts/run_canonical_fee_smoke.sh
 
 set -e
 
 echo "🚀 WEPO Network Production Deployment"
 echo "====================================="
+echo "⚠️  LEGACY NOTICE: this script provisions the bridge-era deployment path"
+echo "⚠️  Verify the canonical backend/node path first via run_canonical_fee_smoke.sh"
 echo ""
 
 # Configuration
@@ -266,4 +275,4 @@ echo -e "   - Update your domain DNS settings"
 echo -e "   - Upload your WEPO blockchain files"
 echo -e "   - Test the API before announcing"
 echo ""
-echo -e "${GREEN}🎄 Ready for Christmas Day 2025 Genesis Launch!${NC}"
+echo -e "${GREEN}🎄 Ready for genesis launch!${NC}"

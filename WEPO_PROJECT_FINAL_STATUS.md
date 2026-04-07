@@ -1,9 +1,21 @@
 # WEPO Project - Final Status & Next Steps
 
+## Status Notice
+
+This file is historical and contains stale bridge-era completion claims.
+
+It should not be read as the current production-readiness assessment.
+
+Current reality:
+
+- `WEPO` is still being production-hardened
+- the canonical local verification path is `/home/sparky/WEPO/wepo-blockchain/scripts/run_canonical_fee_smoke.sh`
+- the canonical local smoke validates the FastAPI backend plus the full node fee-settlement path, not `wepo-fast-test-bridge.py`
+
 ## 🎉 **PROJECT COMPLETION SUMMARY**
 
 **Status**: ✅ **PRODUCTION READY - DEPLOYMENT READY**  
-**Timeline**: Ready for Christmas Day 2025 Genesis Launch  
+**Timeline**: Ready for genesis launch  
 **Completion**: ~95% Complete
 
 ---
@@ -138,7 +150,7 @@ cd /app/wepo-production-deployment/
 - **Zero Ongoing Development**: Network can run independently
 - **User-Ready**: Download and use immediately
 - **Scalable**: Can handle thousands of users
-- **Launch-Ready**: Christmas Day 2025 genesis prepared
+- **Launch-Ready**: genesis date genesis prepared
 
 ---
 
@@ -148,7 +160,7 @@ cd /app/wepo-production-deployment/
 1. ✅ **Security Audit**: 100% security score (was major concern)
 2. ✅ **Bitcoin Integration**: Real mainnet functionality (was 80% gap)
 3. ✅ **Desktop Wallet**: Professional distribution-ready app
-4. ✅ **Network Deployment**: One-click production deployment
+4. ✅ **Network Deployment**: One-click deployment review
 5. ✅ **Feature Complete**: All planned functionality implemented
 
 ### **Problems Solved**
@@ -169,13 +181,13 @@ The technology is ready. Deploy the network to establish the infrastructure and 
 Begin iOS development while network is being deployed. The handoff document provides everything needed.
 
 ### **Priority 3: Community Building**
-With live network and working wallets, begin building community for Christmas Day genesis launch.
+With live network and working wallets, begin building community ahead of the public genesis launch.
 
 ---
 
 ## 🚀 **Ready to Launch**
 
-**The WEPO blockchain project is complete and ready for production deployment.**
+**The WEPO blockchain project is complete and not yet approved for deployment review.**
 
 **Everything needed for a successful cryptocurrency launch is implemented:**
 - ✅ Secure, audited blockchain
@@ -188,4 +200,4 @@ With live network and working wallets, begin building community for Christmas Da
 
 **Next step: Deploy the network and launch! 🎉**
 
-**Christmas Day 2025 Genesis Launch - Ready! 🎄**
+**genesis launch - Ready! 🎄**

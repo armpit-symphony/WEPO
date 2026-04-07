@@ -2,6 +2,13 @@
 """
 WEPO BACKEND SMOKE TESTS - REVIEW REQUEST SPECIFIC TESTING
 
+LEGACY NOTICE:
+- This script is not the current canonical local verification path.
+- It was written for preview-era backend checks against a hosted preview target.
+- The canonical backend/node smoke path is now:
+  - /home/sparky/WEPO/wepo-blockchain/scripts/run_canonical_fee_smoke.sh
+  - /home/sparky/WEPO/canonical_fee_settlement_smoke.py
+
 Backend smoke tests for wallet and mining/vault correctness after minor frontend guards:
 - Verify /api/wallet/create validates and returns 200 with strong password, then /api/wallet/{address} returns 200 and balance number.
 - Verify /api/transaction/send rejects invalid addresses and insufficient balance; verify good path after creating wallet and seeding balance directly in DB if helper exists (else skip success path).
@@ -17,12 +24,14 @@ import uuid
 import secrets
 import random
 import string
+import os
 from datetime import datetime
 
-# Use preview backend URL from frontend/.env
-BACKEND_URL = "https://blockchain-sectest.preview.emergentagent.com"
+# Legacy preview target. Override explicitly if you really want to run this script.
+BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8011")
 API_URL = f"{BACKEND_URL}/api"
 
+print("⚠️ LEGACY SCRIPT: use wepo-blockchain/scripts/run_canonical_fee_smoke.sh for the canonical path")
 print(f"🔥 WEPO BACKEND SMOKE TESTS - REVIEW REQUEST SPECIFIC")
 print(f"Backend API URL: {API_URL}")
 print(f"Focus: Wallet, Transaction, Mining, Quantum, Collateral, Vault endpoints")
@@ -438,7 +447,7 @@ def run_smoke_tests():
     print(f"\n💡 SMOKE TEST ASSESSMENT:")
     if success_rate >= 90:
         print("🎉 EXCELLENT - All critical endpoints working properly")
-        print("   Backend ready for production use")
+        print("   Backend not approved for production use")
     elif success_rate >= 75:
         print("✅ GOOD - Most endpoints working correctly")
         print("   Minor issues detected but not blocking")
