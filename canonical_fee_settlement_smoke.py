@@ -57,6 +57,7 @@ class SmokeContext:
     wallet_address: str
     wallet_username: str
     token_id: str
+    idempotency_key: Optional[str] = None
     trade_id: Optional[str] = None
     settlement_txid: Optional[str] = None
 
@@ -188,6 +189,8 @@ def execute_trade(
         "wepo_amount": wepo_amount,
         "privacy_enhanced": False,
     }
+    if context.idempotency_key:
+        request_body["idempotency_key"] = context.idempotency_key
     response = session.post(api_url(backend_base_url, "/api/dex/rwa-trade"), json=request_body, timeout=20)
     require(
         response.ok,
@@ -349,6 +352,28 @@ def verify_trade_response(
     return trade_id, settlement_txid
 
 
+def verify_idempotent_replay(
+    initial_payload: Dict[str, Any],
+    replay_payload: Dict[str, Any],
+) -> None:
+    require(
+        replay_payload.get("idempotent_replay") is True,
+        f"Replay response was not marked idempotent: {replay_payload}",
+    )
+    require(
+        replay_payload.get("trade_id") == initial_payload.get("trade_id"),
+        f"Replay trade_id mismatch: initial={initial_payload.get('trade_id')} replay={replay_payload.get('trade_id')}",
+    )
+    require(
+        replay_payload.get("fee_settlement_txid") == initial_payload.get("fee_settlement_txid"),
+        "Replay settlement txid mismatch",
+    )
+    require(
+        replay_payload.get("timestamp") == initial_payload.get("timestamp"),
+        "Replay timestamp mismatch",
+    )
+
+
 def verify_database_state(
     db: Any,
     context: SmokeContext,
@@ -411,6 +436,13 @@ def verify_database_state(
         observed_ledger_fee == expected_fee,
         f"Ledger fee mismatch: observed {observed_ledger_fee:.8f}, expected {expected_fee:.8f}",
     )
+
+    if context.idempotency_key:
+        matching_trades = db.rwa_trades.count_documents({"idempotency_key": context.idempotency_key})
+        require(
+            matching_trades == 1,
+            f"Expected exactly one idempotent trade record, found {matching_trades}",
+        )
 
 
 def cleanup_artifacts(db: Any, context: SmokeContext) -> None:
@@ -517,6 +549,11 @@ def parse_args() -> argparse.Namespace:
         default=30,
         help="Seconds to spend mining a valid nonce when force-confirming locally",
     )
+    parser.add_argument(
+        "--verify-idempotent-replay",
+        action="store_true",
+        help="Replay the same trade request with an idempotency key and verify the backend returns the original trade result without applying effects twice",
+    )
     return parser.parse_args()
 
 
@@ -542,6 +579,9 @@ def main() -> int:
     print_step(f"smoke_id={context.smoke_id}")
 
     try:
+        if args.verify_idempotent_replay:
+            context.idempotency_key = f"idem_{context.smoke_id}"
+
         preflight_http(session, args.backend_base_url, args.node_base_url)
         verify_settlement_wallet(
             session,
@@ -574,6 +614,17 @@ def main() -> int:
         print_step(
             f"Trade executed trade_id={context.trade_id} settlement_txid={context.settlement_txid}"
         )
+
+        if args.verify_idempotent_replay:
+            replay_payload = execute_trade(
+                session,
+                args.backend_base_url,
+                context,
+                args.token_amount,
+                args.wepo_amount,
+            )
+            verify_idempotent_replay(trade_payload, replay_payload)
+            print_step("Idempotent replay returned the original trade result without a second settlement")
 
         if not args.disable_force_confirm:
             force_confirmation_block(

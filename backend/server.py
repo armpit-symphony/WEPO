@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ReturnDocument
 import os
 import logging
 import math
@@ -1949,6 +1950,9 @@ async def transfer_rwa_tokens(request: dict):
 @api_router.post("/dex/rwa-trade")
 async def execute_rwa_trade(request: dict):
     """Execute RWA token trades through the unified exchange"""
+    reserved_trade_id: Optional[str] = None
+    trade_timestamp: Optional[int] = None
+    trade_effects_applied = False
     try:
         token_id = request.get('token_id')
         trade_type = request.get('trade_type')  # 'buy' or 'sell'
@@ -1956,12 +1960,34 @@ async def execute_rwa_trade(request: dict):
         token_amount = request.get('token_amount') 
         wepo_amount = request.get('wepo_amount')
         privacy_enhanced = request.get('privacy_enhanced', False)
+        idempotency_key = str(request.get("idempotency_key", "")).strip() or None
         
         if not all([token_id, trade_type, user_address, token_amount, wepo_amount]):
             raise HTTPException(status_code=400, detail="Missing required fields")
+
+        if idempotency_key and len(idempotency_key) > 128:
+            raise HTTPException(status_code=400, detail="idempotency_key must be 128 characters or fewer")
         
         token_amount = float(token_amount)
         wepo_amount = float(wepo_amount)
+
+        if idempotency_key:
+            reservation, reserved_trade_id, trade_timestamp = await reserve_rwa_trade_idempotency(
+                user_address,
+                idempotency_key,
+            )
+            if reservation.get("trade_id") != reserved_trade_id:
+                if reservation.get("status") == "completed":
+                    return build_rwa_trade_response(reservation, idempotent_replay=True)
+                if reservation.get("status") == "failed":
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Duplicate trade request requires manual review because the prior attempt failed after partial processing",
+                    )
+                raise HTTPException(status_code=409, detail="Duplicate trade request is already processing")
+        else:
+            reserved_trade_id = f"rwa_trade_{int(time.time())}_{secrets.token_hex(4)}"
+            trade_timestamp = int(time.time())
         
         # Get token info
         token = await db.rwa_tokens.find_one({"_id": token_id})
@@ -1979,6 +2005,7 @@ async def execute_rwa_trade(request: dict):
                 raise HTTPException(status_code=400, detail="Insufficient WEPO balance")
             
             # Deduct WEPO from user
+            trade_effects_applied = True
             await update_wallet_balance(user_address, -(wepo_amount + trade_fee))
             
             # Add RWA tokens to user
@@ -2001,6 +2028,7 @@ async def execute_rwa_trade(request: dict):
                 raise HTTPException(status_code=400, detail="Insufficient token balance")
             
             # Deduct RWA tokens from user
+            trade_effects_applied = True
             await db.rwa_balances.update_one(
                 {"token_id": token_id, "address": user_address},
                 {"$inc": {"balance": -token_amount}}
@@ -2013,7 +2041,7 @@ async def execute_rwa_trade(request: dict):
         
         # Record trade
         trade_record = {
-            "trade_id": f"rwa_trade_{int(time.time())}_{secrets.token_hex(4)}",
+            "trade_id": reserved_trade_id,
             "token_id": token_id,
             "token_symbol": token.get("symbol", ""),
             "trade_type": trade_type,
@@ -2027,32 +2055,37 @@ async def execute_rwa_trade(request: dict):
                 "settlement_txid": fee_settlement.get("settlement_txid"),
             },
             "privacy_enhanced": privacy_enhanced,
-            "timestamp": int(time.time()),
+            "timestamp": trade_timestamp,
             "status": "completed"
         }
+
+        if idempotency_key:
+            trade_record["idempotency_key"] = idempotency_key
         
-        await db.rwa_trades.insert_one(trade_record)
+        if idempotency_key:
+            await db.rwa_trades.update_one(
+                {"trade_id": reserved_trade_id},
+                {"$set": trade_record, "$unset": {"processing_started_at": ""}},
+            )
+        else:
+            await db.rwa_trades.insert_one(trade_record)
         
-        return {
-            "success": True,
-            "trade_id": trade_record["trade_id"],
-            "token_id": token_id,
-            "trade_type": trade_type,
-            "token_amount": token_amount,
-            "wepo_amount": wepo_amount,
-            "trade_fee": trade_fee,
-            "fee_applied_on_chain": fee_settlement["applied_on_chain"],
-            "fee_settlement_policy": fee_settlement["settlement_policy"],
-            "fee_settlement_txid": fee_settlement.get("settlement_txid"),
-            "privacy_enhanced": privacy_enhanced,
-            "status": "completed",
-            "timestamp": trade_record["timestamp"]
-        }
+        return build_rwa_trade_response(trade_record)
         
-    except HTTPException:
+    except HTTPException as exc:
+        await mark_rwa_trade_attempt_failed(
+            reserved_trade_id,
+            str(exc.detail),
+            trade_effects_applied=trade_effects_applied,
+        )
         raise
     except Exception as e:
         logger.error(f"Error executing RWA trade: {str(e)}")
+        await mark_rwa_trade_attempt_failed(
+            reserved_trade_id,
+            str(e),
+            trade_effects_applied=trade_effects_applied,
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 # ===== QUANTUM VAULT ENDPOINTS =====
@@ -2727,6 +2760,83 @@ async def update_wallet_balance(address: str, amount_change: float):
         upsert=True
     )
 
+def build_rwa_trade_response(
+    trade_record: Dict[str, Any],
+    *,
+    idempotent_replay: bool = False,
+) -> Dict[str, Any]:
+    fee_settlement = trade_record.get("fee_settlement", {})
+    response = {
+        "success": True,
+        "trade_id": trade_record["trade_id"],
+        "token_id": trade_record["token_id"],
+        "trade_type": trade_record["trade_type"],
+        "token_amount": trade_record["token_amount"],
+        "wepo_amount": trade_record["wepo_amount"],
+        "trade_fee": trade_record["trade_fee"],
+        "fee_applied_on_chain": fee_settlement.get("applied_on_chain"),
+        "fee_settlement_policy": fee_settlement.get("settlement_policy"),
+        "fee_settlement_txid": fee_settlement.get("settlement_txid"),
+        "privacy_enhanced": trade_record.get("privacy_enhanced", False),
+        "status": trade_record.get("status", "completed"),
+        "timestamp": trade_record.get("timestamp"),
+        "idempotent_replay": idempotent_replay,
+    }
+    if trade_record.get("idempotency_key"):
+        response["idempotency_key"] = trade_record["idempotency_key"]
+    return response
+
+
+async def reserve_rwa_trade_idempotency(
+    user_address: str,
+    idempotency_key: str,
+) -> Tuple[Dict[str, Any], str, int]:
+    trade_id = f"rwa_trade_{int(time.time())}_{secrets.token_hex(4)}"
+    timestamp = int(time.time())
+    reservation = await db.rwa_trades.find_one_and_update(
+        {"user_address": user_address, "idempotency_key": idempotency_key},
+        {
+            "$setOnInsert": {
+                "trade_id": trade_id,
+                "user_address": user_address,
+                "idempotency_key": idempotency_key,
+                "status": "processing",
+                "timestamp": timestamp,
+                "processing_started_at": timestamp,
+            }
+        },
+        upsert=True,
+        return_document=ReturnDocument.AFTER,
+    )
+    return reservation, trade_id, timestamp
+
+
+async def mark_rwa_trade_attempt_failed(
+    trade_id: Optional[str],
+    failure_reason: str,
+    *,
+    trade_effects_applied: bool,
+) -> None:
+    if not trade_id:
+        return
+
+    if trade_effects_applied:
+        await db.rwa_trades.update_one(
+            {"trade_id": trade_id},
+            {
+                "$set": {
+                    "status": "failed",
+                    "failure_reason": failure_reason[:500],
+                    "manual_review_required": True,
+                    "failed_at": int(time.time()),
+                },
+                "$unset": {"processing_started_at": ""},
+            },
+        )
+        return
+
+    await db.rwa_trades.delete_one({"trade_id": trade_id, "status": "processing"})
+
 async def settle_application_fee(fee_amount: float, fee_type: str) -> dict:
     """Settle product fees canonically on-chain when configured, and always record the result."""
     normalized_fee = round(float(fee_amount), 8)
@@ -2822,6 +2932,11 @@ async def startup_event():
     await db.stakes.create_index("wallet_address")
     await db.masternodes.create_index("wallet_address")
     await db.btc_swaps.create_index("wepo_address")
+    await db.rwa_trades.create_index(
+        [("user_address", 1), ("idempotency_key", 1)],
+        unique=True,
+        sparse=True,
+    )
 
 @app.on_event("shutdown")
 async def shutdown_db_client():

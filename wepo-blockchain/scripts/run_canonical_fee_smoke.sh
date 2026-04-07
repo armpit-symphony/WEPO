@@ -18,6 +18,7 @@ DIFFICULTY_OVERRIDE="${DIFFICULTY_OVERRIDE:-1}"
 READY_TIMEOUT_SECONDS="${READY_TIMEOUT_SECONDS:-30}"
 SMOKE_TIMEOUT_SECONDS="${SMOKE_TIMEOUT_SECONDS:-20}"
 LOG_DIR="${LOG_DIR:-/tmp/wepo-canonical-fee-smoke-logs}"
+VERIFY_IDEMPOTENT_REPLAY="${VERIFY_IDEMPOTENT_REPLAY:-false}"
 
 NODE_BASE_URL="http://${NODE_HOST}:${NODE_API_PORT}"
 BACKEND_BASE_URL="http://${BACKEND_HOST}:${BACKEND_PORT}"
@@ -117,11 +118,19 @@ if ! wait_for_http "${BACKEND_BASE_URL}/api/" "${READY_TIMEOUT_SECONDS}"; then
 fi
 
 print_step "Running canonical fee smoke"
-python3 "${SMOKE_SCRIPT}" \
-    --backend-base-url "${BACKEND_BASE_URL}" \
-    --node-base-url "${NODE_BASE_URL}" \
-    --backend-env "${BACKEND_ENV_PATH}" \
-    --settlement-address "${SETTLEMENT_ADDRESS}" \
+SMOKE_ARGS=(
+    --backend-base-url "${BACKEND_BASE_URL}"
+    --node-base-url "${NODE_BASE_URL}"
+    --backend-env "${BACKEND_ENV_PATH}"
+    --settlement-address "${SETTLEMENT_ADDRESS}"
     --mine-timeout "${SMOKE_TIMEOUT_SECONDS}"
+)
+
+if [[ "${VERIFY_IDEMPOTENT_REPLAY}" == "true" ]]; then
+    SMOKE_ARGS+=(--verify-idempotent-replay)
+fi
+
+python3 "${SMOKE_SCRIPT}" \
+    "${SMOKE_ARGS[@]}"
 
 print_step "PASS canonical fee smoke launcher completed successfully"

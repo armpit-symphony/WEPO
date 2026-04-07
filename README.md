@@ -104,6 +104,7 @@ Useful env overrides:
 - `SOAK_PAUSE_SECONDS`
 - `MAX_FAILURES`
 - `SOAK_LOG_DIR`
+- `VERIFY_IDEMPOTENT_REPLAY=true`
 
 The active backend/frontend runtime files no longer carry a built-in preview-host
 default. Set explicit allowlists through env when needed:

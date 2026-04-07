@@ -21,6 +21,7 @@ SOAK_ITERATIONS="${SOAK_ITERATIONS:-10}"
 SOAK_PAUSE_SECONDS="${SOAK_PAUSE_SECONDS:-1}"
 MAX_FAILURES="${MAX_FAILURES:-1}"
 SOAK_LOG_DIR="${SOAK_LOG_DIR:-/tmp/wepo-canonical-fee-soak-logs}"
+VERIFY_IDEMPOTENT_REPLAY="${VERIFY_IDEMPOTENT_REPLAY:-false}"
 
 NODE_BASE_URL="http://${NODE_HOST}:${NODE_API_PORT}"
 BACKEND_BASE_URL="http://${BACKEND_HOST}:${BACKEND_PORT}"
@@ -101,14 +102,21 @@ wait_for_http() {
 run_iteration() {
     local iteration="$1"
     local iteration_log="${SOAK_LOG_DIR}/smoke-${iteration}.log"
+    local -a smoke_args=(
+        --backend-base-url "${BACKEND_BASE_URL}"
+        --node-base-url "${NODE_BASE_URL}"
+        --backend-env "${BACKEND_ENV_PATH}"
+        --settlement-address "${SETTLEMENT_ADDRESS}"
+        --mine-timeout "${SMOKE_TIMEOUT_SECONDS}"
+    )
+
+    if [[ "${VERIFY_IDEMPOTENT_REPLAY}" == "true" ]]; then
+        smoke_args+=(--verify-idempotent-replay)
+    fi
 
     print_step "Starting iteration ${iteration}/${SOAK_ITERATIONS}"
     if python3 "${SMOKE_SCRIPT}" \
-        --backend-base-url "${BACKEND_BASE_URL}" \
-        --node-base-url "${NODE_BASE_URL}" \
-        --backend-env "${BACKEND_ENV_PATH}" \
-        --settlement-address "${SETTLEMENT_ADDRESS}" \
-        --mine-timeout "${SMOKE_TIMEOUT_SECONDS}" \
+        "${smoke_args[@]}" \
         >"${iteration_log}" 2>&1; then
         PASSED_RUNS=$((PASSED_RUNS + 1))
         print_step "PASS iteration ${iteration}; log=${iteration_log}"
