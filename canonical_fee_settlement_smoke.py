@@ -396,7 +396,7 @@ def verify_trade_response(
 def verify_depleted_settlement_response(
     payload: Dict[str, Any],
     expected_fee: float,
-) -> str:
+) -> Tuple[str, str]:
     observed_fee = round(float(payload.get("trade_fee", -1)), 8)
     require(
         observed_fee == round(expected_fee, 8),
@@ -416,7 +416,7 @@ def verify_depleted_settlement_response(
         f"Depleted settlement wallet should not produce a settlement txid: {payload}",
     )
     require(bool(payload.get("trade_id")), f"Trade response missing trade_id: {payload}")
-    return payload["trade_id"]
+    return payload["trade_id"], payload["fee_settlement_policy"]
 
 
 def verify_idempotent_replay(
@@ -499,6 +499,7 @@ def execute_concurrent_idempotent_trade(
     return {
         "trade_id": trade_id,
         "settlement_txid": settlement_txid,
+        "settlement_policy": primary_payload.get("fee_settlement_policy"),
     }
 
 
@@ -814,8 +815,12 @@ def main() -> int:
             )
             context.trade_id = trade_result["trade_id"]
             context.settlement_txid = trade_result["settlement_txid"]
+            settlement_policy = trade_result["settlement_policy"]
             print_step(
-                f"Trade executed trade_id={context.trade_id} settlement_txid={context.settlement_txid}"
+                "Trade executed"
+                f" trade_id={context.trade_id}"
+                f" settlement_txid={context.settlement_txid}"
+                f" settlement_policy={settlement_policy}"
             )
         else:
             trade_payload = execute_trade(
@@ -826,7 +831,7 @@ def main() -> int:
                 args.wepo_amount,
             )
             if args.expect_settlement_depletion:
-                context.trade_id = verify_depleted_settlement_response(
+                context.trade_id, settlement_policy = verify_depleted_settlement_response(
                     trade_payload,
                     expected_fee,
                 )
@@ -836,8 +841,12 @@ def main() -> int:
                     trade_payload,
                     expected_fee,
                 )
+                settlement_policy = trade_payload.get("fee_settlement_policy")
             print_step(
-                f"Trade executed trade_id={context.trade_id} settlement_txid={context.settlement_txid}"
+                "Trade executed"
+                f" trade_id={context.trade_id}"
+                f" settlement_txid={context.settlement_txid}"
+                f" settlement_policy={settlement_policy}"
             )
 
         if args.verify_idempotent_replay and not args.verify_concurrent_idempotency:

@@ -98,6 +98,14 @@ For repeated local backend/node verification under load, use:
 /home/sparky/WEPO/wepo-blockchain/scripts/run_canonical_fee_soak.sh
 ```
 
+That soak launcher now emits both:
+
+- `summary.log`
+- `summary.json`
+
+under `SOAK_LOG_DIR`, including per-iteration duration, extracted trade metadata,
+failure classification, and restart events.
+
 Useful env overrides:
 
 - `SOAK_ITERATIONS`
