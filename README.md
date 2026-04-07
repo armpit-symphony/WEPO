@@ -160,6 +160,7 @@ See also:
 - `wepo-production-deployment/CANONICAL_RELEASE_GATE.md`
 - `wepo-production-deployment/CANONICAL_STAGING_DEPLOYMENT.md`
 - `wepo-production-deployment/bootstrap-canonical-staging.sh`
+- `wepo-production-deployment/verify-canonical-staging-host.sh`
 
 ## Related Repositories
 

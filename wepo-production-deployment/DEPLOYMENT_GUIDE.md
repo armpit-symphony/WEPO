@@ -38,6 +38,12 @@ Bootstrap script for installing the canonical staging templates:
 /home/sparky/WEPO/wepo-production-deployment/bootstrap-canonical-staging.sh
 ```
 
+Host-level verifier for the canonical staging install:
+
+```bash
+/home/sparky/WEPO/wepo-production-deployment/verify-canonical-staging-host.sh
+```
+
 ## 🎯 Complete Deployment in 30 Minutes
 
 This guide will get your WEPO blockchain network live on the internet in about 30 minutes.

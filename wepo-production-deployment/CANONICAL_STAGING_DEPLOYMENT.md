@@ -25,6 +25,7 @@ Use these files as the starting point:
 
 - `/home/sparky/WEPO/wepo-production-deployment/backend.env.example`
 - `/home/sparky/WEPO/wepo-production-deployment/bootstrap-canonical-staging.sh`
+- `/home/sparky/WEPO/wepo-production-deployment/verify-canonical-staging-host.sh`
 - `/home/sparky/WEPO/wepo-production-deployment/wepo-backend.service.example`
 - `/home/sparky/WEPO/wepo-production-deployment/wepo-node.service.example`
 - `/home/sparky/WEPO/wepo-production-deployment/nginx-wepo-api.conf.example`
@@ -114,6 +115,12 @@ NODE_BASE_URL=http://127.0.0.1:8122 \
 BACKEND_ENV_PATH=/etc/wepo/backend.env \
 SOAK_ITERATIONS=5 \
 /home/sparky/WEPO/wepo-production-deployment/run-canonical-release-gate.sh
+```
+
+For a single operator command that checks systemd, nginx, env values, local health, and then runs the gate, use:
+
+```bash
+sudo /home/sparky/WEPO/wepo-production-deployment/verify-canonical-staging-host.sh
 ```
 
 Required pass matrix before calling staging valid:
