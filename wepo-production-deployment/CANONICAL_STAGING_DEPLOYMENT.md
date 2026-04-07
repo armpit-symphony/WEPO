@@ -24,10 +24,17 @@ Recommended public DNS split:
 Use these files as the starting point:
 
 - `/home/sparky/WEPO/wepo-production-deployment/backend.env.example`
+- `/home/sparky/WEPO/wepo-production-deployment/bootstrap-canonical-staging.sh`
 - `/home/sparky/WEPO/wepo-production-deployment/wepo-backend.service.example`
 - `/home/sparky/WEPO/wepo-production-deployment/wepo-node.service.example`
 - `/home/sparky/WEPO/wepo-production-deployment/nginx-wepo-api.conf.example`
 - `/home/sparky/WEPO/wepo-production-deployment/run-canonical-release-gate.sh`
+
+If you want the templates installed into `/etc`, `/var`, and nginx in one pass, use:
+
+```bash
+sudo /home/sparky/WEPO/wepo-production-deployment/bootstrap-canonical-staging.sh
+```
 
 ## Backend Environment
 
@@ -65,6 +72,8 @@ Then adjust:
 - repo checkout path under `/opt/wepo`
 - node miner address placeholder in `wepo-node.service`
 - any user/group names if the service user is not `wepo`
+
+The bootstrap script can pre-install these files for you, but it intentionally does not start the services.
 
 ## Nginx Layout
 
