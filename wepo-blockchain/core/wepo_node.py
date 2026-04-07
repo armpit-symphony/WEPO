@@ -21,6 +21,13 @@ import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from blockchain import WepoBlockchain, Transaction, Block, COIN
+from network_profile import (
+    describe_reward_schedule,
+    format_block_time,
+    get_network_profile,
+    get_pow_block_time_seconds,
+    get_reward_phase_label,
+)
 from p2p_network import WepoP2PNode
 from privacy import privacy_engine, create_privacy_proof, verify_privacy_proof, ZK_STARK_PROOF_SIZE, RING_SIGNATURE_SIZE, CONFIDENTIAL_PROOF_SIZE
 from atomic_swaps import atomic_swap_engine, SwapType, SwapState, validate_btc_address, validate_wepo_address
@@ -36,17 +43,19 @@ class WepoFullNode:
     def __init__(self, data_dir: str = "/tmp/wepo", p2p_port: int = 22567, 
                  api_port: int = 8001, enable_mining: bool = True,
                  background_mining_enabled: Optional[bool] = None,
-                 difficulty_override: Optional[int] = None):
+                 difficulty_override: Optional[int] = None,
+                 network_profile: str = "mainnet"):
         self.data_dir = data_dir
         self.p2p_port = p2p_port
         self.api_port = api_port
+        self.network_profile = network_profile
         self.mining_api_enabled = enable_mining
         self.background_mining_enabled = (
             enable_mining if background_mining_enabled is None else background_mining_enabled
         )
         
         # Initialize blockchain
-        self.blockchain = WepoBlockchain(data_dir)
+        self.blockchain = WepoBlockchain(data_dir, network_profile=network_profile)
         if difficulty_override is not None:
             self.blockchain.fixed_difficulty = max(1, int(difficulty_override))
             self.blockchain.current_difficulty = self.blockchain.fixed_difficulty
@@ -81,6 +90,7 @@ class WepoFullNode:
         print(f"  API port: {api_port}")
         print(f"  Mining API enabled: {self.mining_api_enabled}")
         print(f"  Background mining enabled: {self.background_mining_enabled}")
+        print(f"  Network profile: {self.network_profile}")
         if difficulty_override is not None:
             print(f"  Difficulty override: {self.blockchain.fixed_difficulty}")
     
@@ -112,7 +122,12 @@ class WepoFullNode:
         
         @self.app.get("/api/")
         async def api_root():
-            return {"message": "WEPO Node API", "version": "1.0.0"}
+            return {
+                "message": "WEPO Node API",
+                "version": "1.0.0",
+                "network": self.blockchain.get_network_info().get("network"),
+                "network_profile": self.network_profile,
+            }
         
         # Network status
         @self.app.get("/api/network/status")
@@ -659,26 +674,25 @@ class WepoFullNode:
         async def get_mining_info():
             """Get mining information"""
             height = self.blockchain.get_block_height()
-            current_reward = self.blockchain.calculate_block_reward(height + 1)
-            
-            # Determine which quarter we're in for Year 1
-            quarter_info = ""
-            if height <= 52560:  # Year 1
-                blocks_per_quarter = 52560 // 4
-                quarter = (height // blocks_per_quarter) + 1
-                quarter_info = f" (Q{quarter} rewards)"
+            next_height = height + 1
+            current_reward = self.blockchain.calculate_block_reward(next_height)
+            profile = get_network_profile(self.network_profile)
+            reward_phase = get_reward_phase_label(profile, next_height)
             
             return {
                 'current_block_height': height,
                 'current_reward': current_reward / 100000000,  # Convert to WEPO
-                'quarter_info': quarter_info,
+                'quarter_info': f" ({reward_phase})",
+                'reward_phase': reward_phase,
                 'difficulty': self.blockchain.current_difficulty,
                 'algorithm': 'Argon2',
-                'block_time': '10 minutes' if height <= 52560 else '2 minutes',
+                'block_time': format_block_time(get_pow_block_time_seconds(profile, next_height)),
                 'mining_enabled': self.mining_api_enabled,
                 'background_mining_enabled': self.background_mining_enabled,
                 'mempool_size': len(self.blockchain.mempool),
-                'reward_schedule': 'Balanced Year 1: 400→200→100→50 WEPO, then 12.4 with 4yr halvings'
+                'reward_schedule': describe_reward_schedule(profile),
+                'network': profile.network_label,
+                'network_profile': profile.name,
             }
         
         @self.app.get("/api/mining/getwork")
@@ -1269,6 +1283,9 @@ def main():
                        help='Miner address for block rewards')
     parser.add_argument('--difficulty-override', type=int,
                        help='Fixed PoW difficulty for local testing or smoke environments')
+    parser.add_argument('--network-profile', default=os.getenv("WEPO_NETWORK_PROFILE", "mainnet"),
+                       choices=['mainnet', 'test'],
+                       help='Network profile to apply (mainnet or accelerated test)')
     
     args = parser.parse_args()
     
@@ -1283,6 +1300,7 @@ def main():
     print(f"Data directory: {args.data_dir}")
     print(f"P2P port: {args.p2p_port}")
     print(f"API port: {args.api_port}")
+    print(f"Network profile: {args.network_profile}")
     print(f"Mining API: {'Disabled' if args.no_mining else 'Enabled'}")
     print(
         f"Background mining: "
@@ -1299,6 +1317,7 @@ def main():
         enable_mining=not args.no_mining,
         background_mining_enabled=False if args.no_mining else not args.no_background_mining,
         difficulty_override=args.difficulty_override,
+        network_profile=args.network_profile,
     )
     
     if args.miner_address:

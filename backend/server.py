@@ -28,9 +28,30 @@ load_dotenv(ROOT_DIR / '.env')
 # Add current directory to Python path for security_utils import
 import sys
 sys.path.append(str(ROOT_DIR))
+CORE_DIR = ROOT_DIR.parent / "wepo-blockchain" / "core"
+if str(CORE_DIR) not in sys.path:
+    sys.path.append(str(CORE_DIR))
 
 # Import security utilities
 from security_utils import SecurityManager, init_redis
+try:
+    from network_profile import (
+        build_collateral_schedule,
+        describe_reward_schedule,
+        format_block_time,
+        get_network_profile,
+        get_pow_block_time_seconds,
+        get_pow_reward_for_height,
+        get_reward_phase_label,
+    )
+except ImportError:
+    build_collateral_schedule = None
+    describe_reward_schedule = None
+    format_block_time = None
+    get_network_profile = None
+    get_pow_block_time_seconds = None
+    get_pow_reward_for_height = None
+    get_reward_phase_label = None
 
 # Initialize security features
 init_redis()  # Initialize Redis for rate limiting (fallback to in-memory if Redis unavailable)
@@ -40,6 +61,7 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 WEPO_NODE_API_URL = os.getenv("WEPO_NODE_API_URL", "http://127.0.0.1:8122")
+WEPO_NETWORK_PROFILE_NAME = os.getenv("WEPO_NETWORK_PROFILE", "mainnet").strip().lower() or "mainnet"
 WEPO_CANONICAL_APPLICATION_FEES_ENABLED = os.getenv(
     "WEPO_CANONICAL_APPLICATION_FEES_ENABLED",
     "false",
@@ -59,6 +81,13 @@ DEFAULT_ALLOWED_ORIGINS = [
     "http://127.0.0.1:3000",
 ]
 WEPO_ALLOWED_ORIGINS = parse_csv_env("WEPO_ALLOWED_ORIGINS", DEFAULT_ALLOWED_ORIGINS)
+if get_network_profile is not None:
+    try:
+        WEPO_NETWORK_PROFILE = get_network_profile(WEPO_NETWORK_PROFILE_NAME)
+    except Exception:
+        WEPO_NETWORK_PROFILE = get_network_profile("mainnet")
+else:
+    WEPO_NETWORK_PROFILE = None
 
 # Create the main app with enhanced security
 app = FastAPI(
@@ -324,11 +353,6 @@ def generate_ring_signature() -> str:
     """Simulate ring signature generation"""
     return f"ring_sig_{secrets.token_hex(64)}"
 
-async def get_current_block_height() -> int:
-    """Get current blockchain height"""
-    latest_block = await db.blocks.find_one(sort=[("height", -1)])
-    return latest_block["height"] if latest_block else 0
-
 async def create_block(transactions: List[WepoTransaction], consensus_type: ConsensusType) -> WepoBlock:
     """Create a new block"""
     height = await get_current_block_height() + 1
@@ -367,7 +391,12 @@ async def create_block(transactions: List[WepoTransaction], consensus_type: Cons
 
 @api_router.get("/")
 async def root():
-    return {"message": "WEPO Blockchain API", "version": "1.0.0", "network": "mainnet"}
+    return {
+        "message": "WEPO Blockchain API",
+        "version": "1.0.0",
+        "network": WEPO_NETWORK_PROFILE.network_label if WEPO_NETWORK_PROFILE else "mainnet",
+        "network_profile": WEPO_NETWORK_PROFILE_NAME,
+    }
 
 @api_router.get("/network/status")
 async def get_network_status():
@@ -383,6 +412,8 @@ async def get_network_status():
     
     return {
         "block_height": block_height,
+        "network": WEPO_NETWORK_PROFILE.network_label if WEPO_NETWORK_PROFILE else "mainnet",
+        "network_profile": WEPO_NETWORK_PROFILE_NAME,
         "network_hashrate": "123.45 TH/s",  # Simulated
         "active_masternodes": total_masternodes,
         "total_staked": total_staked_amount,
@@ -971,14 +1002,18 @@ async def quantum_status():
 @api_router.get("/collateral/schedule")
 async def collateral_schedule():
     current_height = await get_current_block_height()
-    HALVING_SCHEDULE = [
-        {"height": 0, "mn": 10000, "pos": 0, "phase": "Phase 1", "desc": "Genesis → PoS Activation (18 months)", "pos_avail": False},
-        {"height": 131400, "mn": 10000, "pos": 1000, "phase": "Phase 2A", "desc": "PoS Activation → 2nd Halving (4.5 years)", "pos_avail": True},
-        {"height": 306600, "mn": 6000, "pos": 600, "phase": "Phase 2B", "desc": "2nd Halving → 3rd Halving (10.5 years)", "pos_avail": True},
-        {"height": 657000, "mn": 3000, "pos": 300, "phase": "Phase 2C", "desc": "3rd Halving → 4th Halving (13.5 years)", "pos_avail": True},
-        {"height": 832200, "mn": 1500, "pos": 150, "phase": "Phase 2D", "desc": "4th Halving → 5th Halving (16.5 years)", "pos_avail": True},
-        {"height": 1007400, "mn": 1000, "pos": 100, "phase": "Phase 3", "desc": "5th Halving+ (Post-PoW Era)", "pos_avail": True},
-    ]
+    HALVING_SCHEDULE = (
+        build_collateral_schedule(WEPO_NETWORK_PROFILE)
+        if WEPO_NETWORK_PROFILE is not None and build_collateral_schedule is not None
+        else [
+            {"height": 0, "mn": 10000, "pos": 0, "phase": "Phase 1", "desc": "Genesis -> PoS Activation", "pos_avail": False},
+            {"height": 131400, "mn": 10000, "pos": 1000, "phase": "Phase 2A", "desc": "PoS Activation -> 2nd Halving", "pos_avail": True},
+            {"height": 306600, "mn": 6000, "pos": 600, "phase": "Phase 2B", "desc": "2nd Halving -> 3rd Halving", "pos_avail": True},
+            {"height": 657000, "mn": 3000, "pos": 300, "phase": "Phase 2C", "desc": "3rd Halving -> 4th Halving", "pos_avail": True},
+            {"height": 832200, "mn": 1500, "pos": 150, "phase": "Phase 2D", "desc": "4th Halving -> 5th Halving", "pos_avail": True},
+            {"height": 1007400, "mn": 1000, "pos": 100, "phase": "Phase 3", "desc": "Post-PoW Era", "pos_avail": True},
+        ]
+    )
     schedule = []
     for entry in HALVING_SCHEDULE:
         schedule.append({
@@ -991,30 +1026,43 @@ async def collateral_schedule():
             "is_current": current_height >= entry["height"],
             "is_next": entry["height"] > current_height
         })
-    return {"success": True, "data": {"current_height": current_height, "schedule": schedule}, "timestamp": int(time.time())}
+    return {
+        "success": True,
+        "data": {
+            "current_height": current_height,
+            "network_profile": WEPO_NETWORK_PROFILE_NAME,
+            "schedule": schedule,
+        },
+        "timestamp": int(time.time()),
+    }
 
 @api_router.get("/mining/info")
 async def get_mining_info():
     """Get mining information"""
     height = await get_current_block_height()
-    
-    # Calculate current reward based on height
-    if height <= 52560:  # First year
-        current_reward = 121.6
-        next_halving = 52560
+    next_height = height + 1
+    if WEPO_NETWORK_PROFILE is not None:
+        reward_phase = get_reward_phase_label(WEPO_NETWORK_PROFILE, next_height)
+        block_time = format_block_time(get_pow_block_time_seconds(WEPO_NETWORK_PROFILE, next_height))
+        reward_schedule = describe_reward_schedule(WEPO_NETWORK_PROFILE)
+        current_reward = get_pow_reward_for_height(WEPO_NETWORK_PROFILE, next_height) / 100000000
     else:
-        years_since_year_2 = (height - 52560) // 262800
-        current_reward = 12.4 / (2 ** (years_since_year_2 // 4))
-        next_halving = 52560 + ((years_since_year_2 // 4) + 1) * 1051200
+        reward_phase = "Legacy"
+        block_time = "10 minutes"
+        reward_schedule = "legacy backend schedule"
+        current_reward = 121.6 if height <= 52560 else 12.4
     
     return {
         "current_block_height": height,
         "current_reward": current_reward,
-        "next_halving_block": next_halving,
-        "blocks_until_halving": max(0, next_halving - height),
+        "next_halving_block": None,
+        "blocks_until_halving": None,
         "difficulty": 1.0,
         "algorithm": "Argon2",
-        "block_time": "2 minutes" if height > 52560 else "10 minutes"
+        "block_time": block_time,
+        "reward_phase": reward_phase,
+        "reward_schedule": reward_schedule,
+        "network_profile": WEPO_NETWORK_PROFILE_NAME,
     }
 
 # Community-Driven AMM System (No Admin)
@@ -1766,9 +1814,17 @@ async def relay_status():
 
 async def get_current_block_height():
     """Get current blockchain height"""
-    # In production, this would query the actual blockchain
-    # For now, return a simple counter
-    return 0
+    latest_block = await db.blocks.find_one(sort=[("height", -1)])
+    db_height = int(latest_block["height"]) if latest_block and latest_block.get("height") is not None else 0
+
+    try:
+        response = requests.get(f"{WEPO_NODE_API_URL}/api/network/status", timeout=2)
+        response.raise_for_status()
+        payload = response.json()
+        node_height = int(payload.get("height", payload.get("chain_height", 0)) or 0)
+        return max(db_height, node_height)
+    except Exception:
+        return db_height
 
 async def get_wallet_balance(address: str) -> float:
     """Get wallet balance for an address"""

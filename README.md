@@ -91,6 +91,7 @@ For manual or deeper local work, the authoritative scripts are:
 - `/home/sparky/WEPO/wepo-blockchain/scripts/run_canonical_fee_smoke.sh`
 - `/home/sparky/WEPO/wepo-blockchain/scripts/run_canonical_fee_soak.sh`
 - `/home/sparky/WEPO/wepo-production-deployment/run-canonical-release-gate.sh`
+- `/home/sparky/WEPO/wepo-blockchain/scripts/run_test_mode_wallet_lab.sh`
 - `/home/sparky/WEPO/wepo-blockchain/scripts/wepo_accelerated_simulation.py`
 
 For repeated local backend/node verification under load, use:
@@ -119,6 +120,26 @@ Useful env overrides:
 - `BACKEND_RESTART_ITERATION=<n>`
 - `NODE_RESTART_ITERATION=<n>`
 - `RESTART_SETTLE_SECONDS=<n>`
+
+## Accelerated Test Chain
+
+For wallet, masternode, staking, privacy, and RWA feature testing on an accelerated chain profile, use:
+
+```bash
+/home/sparky/WEPO/wepo-blockchain/scripts/run_test_mode_wallet_lab.sh
+```
+
+That launcher starts a local node and backend on a `test` network profile with:
+
+- compressed PoS activation height
+- reduced collateral requirements
+- low-difficulty mining for rapid funding and progression
+- isolated node data under `/tmp/wepo-test-wallet-lab`
+- isolated Mongo database defaulting to `wepo_test_wallet_lab`
+
+The node and backend both report `network_profile=test` when that mode is active.
+The default `mainnet` profile remains unchanged; stopping the lab and running the normal
+node/backend without `WEPO_NETWORK_PROFILE=test` returns the system to its intended chain behavior.
 
 The active backend/frontend runtime files no longer carry a built-in preview-host
 default. Set explicit allowlists through env when needed:

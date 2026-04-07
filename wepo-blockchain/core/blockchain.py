@@ -31,6 +31,28 @@ try:
     from .address_utils import generate_wepo_address, validate_wepo_address, is_quantum_address, is_regular_address
 except ImportError:
     from address_utils import generate_wepo_address, validate_wepo_address, is_quantum_address, is_regular_address
+try:
+    from .network_profile import (
+        format_block_time,
+        MAINNET_GENESIS_TIMESTAMP as PROFILE_MAINNET_GENESIS_TIMESTAMP,
+        PRE_POS_REWARD as PROFILE_PRE_POS_REWARD,
+        PHASE_2A_REWARD as PROFILE_PHASE_2A_REWARD,
+        PHASE_2B_REWARD as PROFILE_PHASE_2B_REWARD,
+        PHASE_2C_REWARD as PROFILE_PHASE_2C_REWARD,
+        PHASE_2D_REWARD as PROFILE_PHASE_2D_REWARD,
+        get_network_profile,
+    )
+except ImportError:
+    from network_profile import (
+        format_block_time,
+        MAINNET_GENESIS_TIMESTAMP as PROFILE_MAINNET_GENESIS_TIMESTAMP,
+        PRE_POS_REWARD as PROFILE_PRE_POS_REWARD,
+        PHASE_2A_REWARD as PROFILE_PHASE_2A_REWARD,
+        PHASE_2B_REWARD as PROFILE_PHASE_2B_REWARD,
+        PHASE_2C_REWARD as PROFILE_PHASE_2C_REWARD,
+        PHASE_2D_REWARD as PROFILE_PHASE_2D_REWARD,
+        get_network_profile,
+    )
 
 # WEPO Network Constants
 WEPO_VERSION = 70001
@@ -42,7 +64,7 @@ MAX_FUTURE_BLOCK_TIME_DRIFT = 2 * 60 * 60  # 2 hours
 
 # WEPO 20-YEAR MINING SCHEDULE - SUSTAINABLE LONG-TERM POW
 # Genesis timing is controlled by the configured mainnet timestamp.
-GENESIS_TIME = 1735138800  # configured genesis timestamp
+GENESIS_TIME = PROFILE_MAINNET_GENESIS_TIMESTAMP  # configured genesis timestamp
 
 # Total Supply - DEFINITIVE VALUE
 TOTAL_SUPPLY = 69000003  # 69,000,003 WEPO total supply
@@ -58,7 +80,7 @@ BLOCK_TIME_POW_HYBRID = 540        # 9 minutes per PoW block (in hybrid mode)
 
 # PHASE 1: Pre-PoS Mining (Months 1-18) - 10% of total supply
 PRE_POS_DURATION_BLOCKS = 131400    # 18 months in 6-minute blocks
-PRE_POS_REWARD = int(6900000 * COIN / PRE_POS_DURATION_BLOCKS)  # 52.51 WEPO per block
+PRE_POS_REWARD = PROFILE_PRE_POS_REWARD  # 52.51 WEPO per block
 PRE_POS_TOTAL_SUPPLY = 6900000 * COIN  # 6.9M WEPO (10% of total)
 
 # Long-term PoW phases (alongside PoS/Masternodes) - 20% of total supply
@@ -66,22 +88,22 @@ BLOCKS_PER_YEAR_LONGTERM = int(365.25 * 24 * 60 / 9)  # 58,400 blocks per year (
 
 # PHASE 2A: Post-PoS Years 1-3 (Months 19-54)
 PHASE_2A_BLOCKS = 3 * BLOCKS_PER_YEAR_LONGTERM  # 175,200 blocks
-PHASE_2A_REWARD = int(33.17 * COIN)  # 33.17 WEPO per block
+PHASE_2A_REWARD = PROFILE_PHASE_2A_REWARD  # 33.17 WEPO per block
 PHASE_2A_END_HEIGHT = PRE_POS_DURATION_BLOCKS + PHASE_2A_BLOCKS
 
 # PHASE 2B: Post-PoS Years 4-9 (Months 55-126) - First Halving
 PHASE_2B_BLOCKS = 6 * BLOCKS_PER_YEAR_LONGTERM  # 350,400 blocks
-PHASE_2B_REWARD = int(16.58 * COIN)  # 16.58 WEPO per block (halved)
+PHASE_2B_REWARD = PROFILE_PHASE_2B_REWARD  # 16.58 WEPO per block (halved)
 PHASE_2B_END_HEIGHT = PHASE_2A_END_HEIGHT + PHASE_2B_BLOCKS
 
 # PHASE 2C: Post-PoS Years 10-12 (Months 127-162) - Second Halving
 PHASE_2C_BLOCKS = 3 * BLOCKS_PER_YEAR_LONGTERM  # 175,200 blocks
-PHASE_2C_REWARD = int(8.29 * COIN)  # 8.29 WEPO per block (halved)
+PHASE_2C_REWARD = PROFILE_PHASE_2C_REWARD  # 8.29 WEPO per block (halved)
 PHASE_2C_END_HEIGHT = PHASE_2B_END_HEIGHT + PHASE_2C_BLOCKS
 
 # PHASE 2D: Post-PoS Years 13-15 (Months 163-198) - Final Halving
 PHASE_2D_BLOCKS = 3 * BLOCKS_PER_YEAR_LONGTERM  # 175,200 blocks
-PHASE_2D_REWARD = int(4.15 * COIN)  # 4.15 WEPO per block (final halving)
+PHASE_2D_REWARD = PROFILE_PHASE_2D_REWARD  # 4.15 WEPO per block (final halving)
 PHASE_2D_END_HEIGHT = PHASE_2C_END_HEIGHT + PHASE_2D_BLOCKS
 
 # Total PoW ends at block 1,007,400 (16.5 years after PoS activation)
@@ -103,75 +125,77 @@ REWARD_Q4 = 50 * COIN         # OLD: 50 WEPO per block Q4 (not used in new sched
 REWARD_YEAR2_BASE = 12.4 * COIN # OLD: 12.4 WEPO per block year 2+ (not used in new schedule)
 HALVING_INTERVAL = 1051200    # OLD: Blocks between halvings (not used in new schedule)
 
-# MAINNET CONFIGURATION - GENESIS TIMING
-MAINNET_GENESIS_TIMESTAMP = 1735138800  # configured mainnet genesis timestamp
-STAKING_ACTIVATION_DELAY = 18 * 30 * 24 * 60 * 60  # 18 months in seconds
-PRODUCTION_MODE = False  # Set to False for mainnet (True only for development testing)
-
-# Calculate PoS activation based on genesis launch
-if PRODUCTION_MODE:
-    # For development testing only: activate staking immediately
-    POS_ACTIVATION_HEIGHT = 1  # Activate after first block
-    print("🧪 DEVELOPMENT MODE: Staking activated immediately for testing")
-else:
-    # MAINNET CONFIGURATION: activate after 18 months from configured genesis
-    POS_ACTIVATION_HEIGHT = TOTAL_INITIAL_BLOCKS  # 131,400 blocks (18 months)
-    print(f"MAINNET CONFIGURED: Staking activates at block {POS_ACTIVATION_HEIGHT} (18 months post-genesis)")
-    print(f"🔄 PoW CONTINUES: Mining continues for 198 months total alongside PoS/Masternodes")
-
-MIN_STAKE_AMOUNT = 1000 * COIN  # 1,000 WEPO minimum stake - accessible to community
-
-# DYNAMIC COLLATERAL SYSTEM - TIED TO POW HALVINGS
-# Automatically adjusts masternode and PoS requirements at each halving event
-
-# Dynamic Masternode Collateral Schedule (tied to PoW halvings)
-DYNAMIC_MASTERNODE_COLLATERAL_SCHEDULE = {
-    # Genesis → PoS Activation (0-18 months): 10,000 WEPO baseline
-    0: 10000 * COIN,
-    
-    # PoS Activation → 2nd Halving (18 months-4.5 years): Keep 10,000 WEPO
-    PRE_POS_DURATION_BLOCKS: 10000 * COIN,  # Block 131,400
-    
-    # 2nd Halving (4.5-10.5 years): Reduce to 6,000 WEPO (-40%)
-    PHASE_2A_END_HEIGHT: 6000 * COIN,  # Block 306,600
-    
-    # 3rd Halving (10.5-13.5 years): Reduce to 3,000 WEPO (-50%)
-    PHASE_2B_END_HEIGHT: 3000 * COIN,  # Block 657,000
-    
-    # 4th Halving (13.5-16.5 years): Reduce to 1,500 WEPO (-50%)
-    PHASE_2C_END_HEIGHT: 1500 * COIN,  # Block 832,200
-    
-    # 5th Halving (16.5+ years): Floor minimum 1,000 WEPO (-33%)
-    PHASE_2D_END_HEIGHT: 1000 * COIN,  # Block 1,007,400+
-}
-
-# Dynamic PoS Staking Collateral Schedule (tied to PoW halvings)
-DYNAMIC_POS_COLLATERAL_SCHEDULE = {
-    # Genesis → PoS Activation: PoS not available
-    0: 0,  # PoS not available
-    
-    # PoS Activation → 2nd Halving (18 months-4.5 years): 1,000 WEPO baseline
-    PRE_POS_DURATION_BLOCKS: 1000 * COIN,  # Block 131,400
-    
-    # 2nd Halving (4.5-10.5 years): Reduce to 600 WEPO (-40%)
-    PHASE_2A_END_HEIGHT: 600 * COIN,  # Block 306,600
-    
-    # 3rd Halving (10.5-13.5 years): Reduce to 300 WEPO (-50%)
-    PHASE_2B_END_HEIGHT: 300 * COIN,  # Block 657,000
-    
-    # 4th Halving (13.5-16.5 years): Reduce to 150 WEPO (-50%)
-    PHASE_2C_END_HEIGHT: 150 * COIN,  # Block 832,200
-    
-    # 5th Halving (16.5+ years): Floor minimum 100 WEPO (-33%)
-    PHASE_2D_END_HEIGHT: 100 * COIN,  # Block 1,007,400+
-}
-
-# Minimum collateral floors (never go below these values)
-MIN_MASTERNODE_COLLATERAL = 1000 * COIN  # Absolute minimum for masternodes
-MIN_POS_COLLATERAL = 100 * COIN          # Absolute minimum for PoS staking
-
-# Legacy constant for backward compatibility (now dynamic)
+# NETWORK PROFILE CONFIGURATION
+MAINNET_GENESIS_TIMESTAMP = PROFILE_MAINNET_GENESIS_TIMESTAMP
+STAKING_ACTIVATION_DELAY = 18 * 30 * 24 * 60 * 60
+PRODUCTION_MODE = False
+NETWORK_PROFILE_NAME = "mainnet"
+NETWORK_NAME = "mainnet"
+MIN_STAKE_AMOUNT = 1000 * COIN
+DYNAMIC_MASTERNODE_COLLATERAL_SCHEDULE = {}
+DYNAMIC_POS_COLLATERAL_SCHEDULE = {}
+MIN_MASTERNODE_COLLATERAL = 1000 * COIN
+MIN_POS_COLLATERAL = 100 * COIN
 MASTERNODE_COLLATERAL = 10000 * COIN
+POS_ACTIVATION_HEIGHT = TOTAL_INITIAL_BLOCKS
+
+
+def apply_network_profile(profile_name: str = "mainnet") -> None:
+    """Apply a shared chain profile to module-level schedule constants."""
+    global BLOCK_TIME_TARGET, BLOCK_TIME_INITIAL_18_MONTHS, BLOCK_TIME_YEAR1
+    global BLOCK_TIME_LONGTERM, BLOCK_TIME_POS, BLOCK_TIME_POW_HYBRID
+    global PRE_POS_DURATION_BLOCKS, TOTAL_INITIAL_BLOCKS, POS_ACTIVATION_HEIGHT
+    global BLOCKS_PER_YEAR_LONGTERM, PHASE_2A_BLOCKS, PHASE_2A_END_HEIGHT
+    global PHASE_2B_BLOCKS, PHASE_2B_END_HEIGHT, PHASE_2C_BLOCKS, PHASE_2C_END_HEIGHT
+    global PHASE_2D_BLOCKS, PHASE_2D_END_HEIGHT, POW_END_HEIGHT
+    global MAINNET_GENESIS_TIMESTAMP, GENESIS_TIME, STAKING_ACTIVATION_DELAY
+    global MIN_STAKE_AMOUNT, MIN_MASTERNODE_COLLATERAL, MIN_POS_COLLATERAL
+    global DYNAMIC_MASTERNODE_COLLATERAL_SCHEDULE, DYNAMIC_POS_COLLATERAL_SCHEDULE
+    global MASTERNODE_COLLATERAL, NETWORK_PROFILE_NAME, NETWORK_NAME
+
+    profile = get_network_profile(profile_name)
+    NETWORK_PROFILE_NAME = profile.name
+    NETWORK_NAME = profile.network_label
+
+    BLOCK_TIME_TARGET = BLOCK_TIME_INITIAL_18_MONTHS = profile.block_time_initial
+    BLOCK_TIME_YEAR1 = BLOCK_TIME_INITIAL_18_MONTHS
+    BLOCK_TIME_LONGTERM = profile.block_time_longterm
+    BLOCK_TIME_POS = profile.block_time_pos
+    BLOCK_TIME_POW_HYBRID = profile.block_time_pow_hybrid
+    PRE_POS_DURATION_BLOCKS = profile.pre_pos_duration_blocks
+    TOTAL_INITIAL_BLOCKS = profile.total_initial_blocks
+    POS_ACTIVATION_HEIGHT = profile.pos_activation_height
+    BLOCKS_PER_YEAR_LONGTERM = max(1, profile.phase_2b_blocks)
+    PHASE_2A_BLOCKS = profile.phase_2a_blocks
+    PHASE_2A_END_HEIGHT = profile.phase_2a_end_height
+    PHASE_2B_BLOCKS = profile.phase_2b_blocks
+    PHASE_2B_END_HEIGHT = profile.phase_2b_end_height
+    PHASE_2C_BLOCKS = profile.phase_2c_blocks
+    PHASE_2C_END_HEIGHT = profile.phase_2c_end_height
+    PHASE_2D_BLOCKS = profile.phase_2d_blocks
+    PHASE_2D_END_HEIGHT = profile.phase_2d_end_height
+    POW_END_HEIGHT = profile.pow_end_height
+    MAINNET_GENESIS_TIMESTAMP = profile.genesis_timestamp
+    GENESIS_TIME = profile.genesis_timestamp
+    STAKING_ACTIVATION_DELAY = profile.staking_activation_delay
+    MIN_STAKE_AMOUNT = profile.min_stake_amount
+    MIN_MASTERNODE_COLLATERAL = profile.min_masternode_collateral
+    MIN_POS_COLLATERAL = profile.min_pos_collateral
+    DYNAMIC_MASTERNODE_COLLATERAL_SCHEDULE = profile.masternode_schedule
+    DYNAMIC_POS_COLLATERAL_SCHEDULE = profile.pos_schedule
+    MASTERNODE_COLLATERAL = profile.masternode_collateral_initial
+
+    if profile.name == "test":
+        print(
+            f"🧪 TEST MODE CONFIGURED: PoS activates at block {POS_ACTIVATION_HEIGHT} "
+            f"on accelerated '{NETWORK_NAME}' profile"
+        )
+    else:
+        print(f"MAINNET CONFIGURED: Staking activates at block {POS_ACTIVATION_HEIGHT} (18 months post-genesis)")
+        print("🔄 PoW CONTINUES: Mining continues for 198 months total alongside PoS/Masternodes")
+
+
+apply_network_profile(os.getenv("WEPO_NETWORK_PROFILE", "mainnet"))
 
 @dataclass
 class StakeInfo:
@@ -519,7 +543,9 @@ class WepoArgon2Miner:
 class WepoBlockchain:
     """WEPO Blockchain Core"""
     
-    def __init__(self, data_dir: str = "/tmp/wepo"):
+    def __init__(self, data_dir: str = "/tmp/wepo", network_profile: Optional[str] = None):
+        self.network_profile_name = (network_profile or os.getenv("WEPO_NETWORK_PROFILE", NETWORK_PROFILE_NAME)).strip().lower()
+        apply_network_profile(self.network_profile_name)
         self.data_dir = data_dir
         self.db_path = os.path.join(data_dir, "blockchain.db")
         self.chain: List[Block] = []
@@ -2000,6 +2026,8 @@ class WepoBlockchain:
                 "current_height": current_height,
                 "blocks_until_activation": max(0, (POS_ACTIVATION_HEIGHT + 1) - current_height),
                 "production_mode": PRODUCTION_MODE,
+                "network_profile": NETWORK_PROFILE_NAME,
+                "network": NETWORK_NAME,
                 "genesis_launch": datetime.fromtimestamp(MAINNET_GENESIS_TIMESTAMP).isoformat(),
                 "staking_activation_date": activation_info["activation_date"],
                 "days_until_staking": activation_info["days_until_activation"],
@@ -2023,6 +2051,15 @@ class WepoBlockchain:
     def get_pos_activation_info(self) -> dict:
         """Get PoS activation timing information"""
         try:
+            if NETWORK_PROFILE_NAME == "test":
+                activation_timestamp = MAINNET_GENESIS_TIMESTAMP + STAKING_ACTIVATION_DELAY
+                activation_date = datetime.fromtimestamp(activation_timestamp).isoformat()
+                return {
+                    "activation_date": activation_date,
+                    "days_until_activation": 0,
+                    "activation_timestamp": activation_timestamp,
+                    "mode": "accelerated_test_profile",
+                }
             if PRODUCTION_MODE:
                 return {
                     "activation_date": "Immediately (Production Mode)",
@@ -2167,7 +2204,8 @@ class WepoBlockchain:
             'difficulty': self.current_difficulty,
             'mempool_size': len(self.mempool),
             'total_supply': sum(self.calculate_block_reward(i) for i in range(len(self.chain))),
-            'network': 'mainnet',
+            'network': NETWORK_NAME,
+            'network_profile': NETWORK_PROFILE_NAME,
             'version': WEPO_VERSION,
             'consensus_type': consensus_type
         }
@@ -2176,8 +2214,8 @@ class WepoBlockchain:
         if consensus_type == "hybrid":
             network_info.update({
                 'hybrid_consensus': {
-                    'pow_block_time': f"{BLOCK_TIME_POW_HYBRID // 60} minutes",
-                    'pos_block_time': f"{BLOCK_TIME_POS // 60} minutes",
+                    'pow_block_time': format_block_time(BLOCK_TIME_POW_HYBRID),
+                    'pos_block_time': format_block_time(BLOCK_TIME_POS),
                     'pos_activated': True,
                     'pos_activation_height': POS_ACTIVATION_HEIGHT,
                     'total_staked': self.get_total_staked(),
