@@ -1,0 +1,23 @@
+[Unit]
+Description=WEPO Canonical Full Node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wepo
+Group=wepo
+WorkingDirectory=/opt/wepo
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/wepo/.venv/bin/python /opt/wepo/wepo-blockchain/core/wepo_node.py --data-dir /var/lib/wepo/node --p2p-port 22567 --api-port 8122 --miner-address wepo1replacewithfundedstagingaddress
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/wepo /var/log/wepo
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target

@@ -26,6 +26,12 @@ Runbook:
 /home/sparky/WEPO/wepo-production-deployment/CANONICAL_RELEASE_GATE.md
 ```
 
+Canonical staging layout:
+
+```text
+/home/sparky/WEPO/wepo-production-deployment/CANONICAL_STAGING_DEPLOYMENT.md
+```
+
 ## 🎯 Complete Deployment in 30 Minutes
 
 This guide will get your WEPO blockchain network live on the internet in about 30 minutes.

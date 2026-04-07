@@ -158,6 +158,7 @@ The current pre-release operator gate lives at:
 See also:
 
 - `wepo-production-deployment/CANONICAL_RELEASE_GATE.md`
+- `wepo-production-deployment/CANONICAL_STAGING_DEPLOYMENT.md`
 
 ## Related Repositories
 
