@@ -44,6 +44,13 @@ Host-level verifier for the canonical staging install:
 /home/sparky/WEPO/wepo-production-deployment/verify-canonical-staging-host.sh
 ```
 
+After the verifier passes, use:
+
+```text
+/home/sparky/WEPO/wepo-production-deployment/PUBLIC_RELEASE_CHECKLIST.md
+/home/sparky/WEPO/wepo-production-deployment/MULTI_WALLET_TEST_MATRIX.md
+```
+
 ## 🎯 Complete Deployment in 30 Minutes
 
 This guide will get your WEPO blockchain network live on the internet in about 30 minutes.

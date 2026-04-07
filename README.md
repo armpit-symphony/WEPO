@@ -161,6 +161,8 @@ See also:
 - `wepo-production-deployment/CANONICAL_STAGING_DEPLOYMENT.md`
 - `wepo-production-deployment/bootstrap-canonical-staging.sh`
 - `wepo-production-deployment/verify-canonical-staging-host.sh`
+- `wepo-production-deployment/PUBLIC_RELEASE_CHECKLIST.md`
+- `wepo-production-deployment/MULTI_WALLET_TEST_MATRIX.md`
 
 ## Related Repositories
 

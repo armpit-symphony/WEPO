@@ -123,6 +123,11 @@ For a single operator command that checks systemd, nginx, env values, local heal
 sudo /home/sparky/WEPO/wepo-production-deployment/verify-canonical-staging-host.sh
 ```
 
+Once that passes, move immediately to:
+
+- `/home/sparky/WEPO/wepo-production-deployment/PUBLIC_RELEASE_CHECKLIST.md`
+- `/home/sparky/WEPO/wepo-production-deployment/MULTI_WALLET_TEST_MATRIX.md`
+
 Required pass matrix before calling staging valid:
 
 - `happy_path`
