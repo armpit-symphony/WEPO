@@ -933,7 +933,13 @@ class WepoBlockchain:
             # After PoW ends, PoS continues with fee redistribution only
             return 0
     
-    def create_coinbase_transaction(self, height: int, recipient_address: str, consensus_type: str = "pow") -> Transaction:
+    def create_coinbase_transaction(
+        self,
+        height: int,
+        recipient_address: str,
+        consensus_type: str = "pow",
+        candidate_transactions: Optional[List[Transaction]] = None,
+    ) -> Transaction:
         """Create coinbase transaction for new block with canonical fee redistribution."""
         # Get appropriate reward based on consensus type
         if consensus_type == "pow":
@@ -945,9 +951,9 @@ class WepoBlockchain:
         else:
             base_reward = 0
         
-        # Calculate total transaction fees from pending transactions
+        # Calculate total transaction fees from the transactions actually selected for the block.
         total_transaction_fees = 0
-        for txid, tx in self.mempool.items():
+        for tx in candidate_transactions or []:
             if hasattr(tx, 'fee') and tx.fee:
                 total_transaction_fees += tx.fee
         
@@ -985,7 +991,7 @@ class WepoBlockchain:
                     distributed_masternode_fees += fee_amount
                     fee_outputs.append(TransactionOutput(
                         value=fee_amount,
-                        script_pubkey=b"masternode_fee_output",
+                        script_pubkey=f"masternode_fee_output:{masternode.masternode_id}".encode(),
                         address=masternode.operator_address
                     ))
                     print(
@@ -1009,7 +1015,7 @@ class WepoBlockchain:
                     distributed_staker_fees += staker_reward
                     fee_outputs.append(TransactionOutput(
                         value=staker_reward,
-                        script_pubkey=b"staker_fee_output",
+                        script_pubkey=f"staker_fee_output:{staker.stake_id}".encode(),
                         address=staker.staker_address
                     ))
                     print(
@@ -1065,28 +1071,39 @@ class WepoBlockchain:
         height = self.get_block_height() + 1
         latest_block = self.get_latest_block()
         prev_hash = latest_block.get_block_hash() if latest_block else "0" * 64
-        
-        # Collect transaction fees before creating coinbase
-        total_transaction_fees = 0
+
+        selected_transactions = []
+        selected_txids = []
+        provisional_coinbase = self.create_coinbase_transaction(
+            height,
+            miner_address,
+            consensus_type="pow",
+            candidate_transactions=[],
+        )
+        current_size = self._estimate_transaction_size(provisional_coinbase)
+
         for txid, tx in list(self.mempool.items()):
-            if hasattr(tx, 'fee') and tx.fee:
-                total_transaction_fees += tx.fee
-        
-        # Fees are redistributed canonically via the block coinbase outputs.
-        coinbase_tx = self.create_coinbase_transaction(height, miner_address, consensus_type="pow")
-        
-        # Add transactions from mempool (up to block size limit)
-        transactions = [coinbase_tx]
-        current_size = self._estimate_transaction_size(coinbase_tx)
-        
-        for txid, tx in list(self.mempool.items()):
+            if not self.validate_transaction(tx):
+                continue
+
             tx_size = self._estimate_transaction_size(tx)
             if current_size + tx_size <= MAX_BLOCK_SIZE:
-                transactions.append(tx)
+                selected_transactions.append(tx)
+                selected_txids.append(txid)
                 current_size += tx_size
-                del self.mempool[txid]
             else:
                 break
+
+        coinbase_tx = self.create_coinbase_transaction(
+            height,
+            miner_address,
+            consensus_type="pow",
+            candidate_transactions=selected_transactions,
+        )
+        transactions = [coinbase_tx, *selected_transactions]
+
+        for txid in selected_txids:
+            del self.mempool[txid]
         
         # Determine block time target
         if height <= TOTAL_INITIAL_BLOCKS:
@@ -1147,21 +1164,48 @@ class WepoBlockchain:
     
     def create_pos_block(self, validator_address: str) -> Optional[Block]:
         """Create a PoS block (no mining required)"""
-        if not self.is_valid_pos_validator(validator_address, len(self.chain)):
+        next_height = self.get_block_height() + 1
+        if not self.is_valid_pos_validator(validator_address, next_height):
             return None
         
         # Create block with PoS consensus
-        height = len(self.chain)
+        height = next_height
         prev_hash = self.chain[-1].get_block_hash() if self.chain else "0" * 64
         
         # Create coinbase transaction for PoS rewards
-        coinbase_tx = self.create_coinbase_transaction(height, validator_address, consensus_type="pos")
-        transactions = [coinbase_tx]
+        selected_transactions = []
+        provisional_coinbase = self.create_coinbase_transaction(
+            height,
+            validator_address,
+            consensus_type="pos",
+            candidate_transactions=[],
+        )
+        current_size = self._estimate_transaction_size(provisional_coinbase)
+        selected_txids = []
         
         # Add transactions from mempool
-        for tx in list(self.mempool.values()):
-            if self.validate_transaction(tx):
-                transactions.append(tx)
+        for txid, tx in list(self.mempool.items()):
+            if not self.validate_transaction(tx):
+                continue
+
+            tx_size = self._estimate_transaction_size(tx)
+            if current_size + tx_size > MAX_BLOCK_SIZE:
+                continue
+
+            selected_transactions.append(tx)
+            current_size += tx_size
+            selected_txids.append(txid)
+
+        coinbase_tx = self.create_coinbase_transaction(
+            height,
+            validator_address,
+            consensus_type="pos",
+            candidate_transactions=selected_transactions,
+        )
+        transactions = [coinbase_tx, *selected_transactions]
+
+        for txid in selected_txids:
+            self.mempool.pop(txid, None)
         
         # Set appropriate block time for PoS
         if height <= PRE_POS_DURATION_BLOCKS:
@@ -1235,6 +1279,7 @@ class WepoBlockchain:
         # Save to database
         self.save_block(block)
         self.current_difficulty = self.calculate_expected_difficulty()
+        self.record_fee_distribution_rewards(block)
         
         # Distribute staking rewards if PoS is active
         if block.height > POS_ACTIVATION_HEIGHT:
@@ -1538,7 +1583,17 @@ class WepoBlockchain:
     def get_balance(self, address: str) -> int:
         """Get balance for an address"""
         cursor = self.conn.execute('''
-            SELECT SUM(amount) FROM utxos WHERE address = ? AND spent = FALSE
+            SELECT SUM(amount)
+            FROM utxos
+            WHERE address = ?
+              AND spent = FALSE
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM masternodes
+                  WHERE status = 'active'
+                    AND collateral_txid = utxos.txid
+                    AND collateral_vout = utxos.vout
+              )
         ''', (address,))
         result = cursor.fetchone()
         return result[0] if result[0] else 0
@@ -1550,8 +1605,17 @@ class WepoBlockchain:
     def get_utxos_for_address(self, address: str) -> List[dict]:
         """Get all unspent UTXOs for an address"""
         cursor = self.conn.execute('''
-            SELECT txid, vout, amount, script_pubkey FROM utxos 
-            WHERE address = ? AND spent = FALSE
+            SELECT txid, vout, amount, script_pubkey
+            FROM utxos 
+            WHERE address = ?
+              AND spent = FALSE
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM masternodes
+                  WHERE status = 'active'
+                    AND collateral_txid = utxos.txid
+                    AND collateral_vout = utxos.vout
+              )
         ''', (address,))
         
         utxos = []
@@ -1663,9 +1727,21 @@ class WepoBlockchain:
         balance = self.get_balance(staker_address)
         if balance < amount:
             raise ValueError(f"Insufficient balance: {balance / COIN} WEPO")
-        
+
+        selected_utxos = []
+        locked_total = 0
+        for utxo in self.get_utxos_for_address(staker_address):
+            selected_utxos.append(utxo)
+            locked_total += utxo['amount']
+            if locked_total >= amount:
+                break
+
+        if locked_total < amount:
+            raise ValueError(f"Insufficient spendable balance: {locked_total / COIN} WEPO")
+
         # Create stake
         stake_id = f"stake_{staker_address}_{int(time.time())}"
+        stake_lock_txid = f"{stake_id}_lock"
         current_height = self.get_block_height()
         
         stake = StakeInfo(
@@ -1681,7 +1757,21 @@ class WepoBlockchain:
             INSERT INTO stakes (stake_id, staker_address, amount, start_height, start_time)
             VALUES (?, ?, ?, ?, ?)
         ''', (stake_id, staker_address, amount, current_height, int(time.time())))
-        
+
+        for utxo in selected_utxos:
+            self.conn.execute('''
+                UPDATE utxos
+                SET spent = TRUE, spent_txid = ?, spent_height = ?
+                WHERE txid = ? AND vout = ?
+            ''', (stake_lock_txid, current_height, utxo['txid'], utxo['vout']))
+
+        change_amount = locked_total - amount
+        if change_amount > 0:
+            self.conn.execute('''
+                INSERT INTO utxos (txid, vout, address, amount, script_pubkey, spent)
+                VALUES (?, ?, ?, ?, ?, FALSE)
+            ''', (stake_lock_txid, 0, staker_address, change_amount, b"stake_change"))
+
         self.conn.commit()
         
         # Store in memory
@@ -1689,8 +1779,63 @@ class WepoBlockchain:
         
         print(f"Created stake: {stake_id} for {amount / COIN} WEPO")
         return stake_id
+
+    def deactivate_stake(self, stake_id: str, staker_address: str) -> dict:
+        """Deactivate an active stake and release the principal back to spendable balance."""
+        cursor = self.conn.execute('''
+            SELECT stake_id, staker_address, amount, status, total_rewards
+            FROM stakes
+            WHERE stake_id = ?
+        ''', (stake_id,))
+
+        row = cursor.fetchone()
+        if not row:
+            raise ValueError("Stake not found")
+
+        if row[1] != staker_address:
+            raise ValueError("Stake does not belong to staker")
+
+        if row[3] != 'active':
+            raise ValueError("Stake is not active")
+
+        current_height = self.get_block_height()
+        unlock_txid = f"{stake_id}_unlock_{int(time.time())}"
+
+        self.conn.execute('''
+            UPDATE stakes
+            SET status = 'inactive', unlock_height = ?
+            WHERE stake_id = ?
+        ''', (current_height, stake_id))
+
+        self.conn.execute('''
+            INSERT INTO utxos (txid, vout, address, amount, script_pubkey, spent)
+            VALUES (?, ?, ?, ?, ?, FALSE)
+        ''', (unlock_txid, 0, staker_address, row[2], b"stake_unlock"))
+
+        self.conn.commit()
+
+        if stake_id in self.stakes:
+            self.stakes[stake_id]['status'] = 'inactive'
+            self.stakes[stake_id]['unlock_height'] = current_height
+
+        return {
+            'stake_id': row[0],
+            'staker_address': row[1],
+            'amount': row[2],
+            'total_rewards': row[4],
+            'status': 'inactive',
+            'unlock_height': current_height,
+            'unlock_txid': unlock_txid,
+        }
     
-    def create_masternode(self, operator_address: str, collateral_txid: str, collateral_vout: int, ip_address: str = None) -> str:
+    def create_masternode(
+        self,
+        operator_address: str,
+        collateral_txid: str,
+        collateral_vout: int,
+        ip_address: str = None,
+        port: int = 22567,
+    ) -> str:
         """Create a new masternode"""
         current_height = self.get_block_height()
         required_collateral = self.get_masternode_collateral_for_height(current_height)
@@ -1703,6 +1848,14 @@ class WepoBlockchain:
         utxo = cursor.fetchone()
         if not utxo or utxo[1] or utxo[0] < required_collateral:
             raise ValueError(f"Invalid collateral UTXO or insufficient amount")
+
+        existing_cursor = self.conn.execute('''
+            SELECT masternode_id
+            FROM masternodes
+            WHERE status = 'active' AND collateral_txid = ? AND collateral_vout = ?
+        ''', (collateral_txid, collateral_vout))
+        if existing_cursor.fetchone():
+            raise ValueError("Collateral UTXO is already assigned to an active masternode")
         
         # Create masternode
         masternode_id = f"mn_{operator_address}_{int(time.time())}"
@@ -1713,15 +1866,16 @@ class WepoBlockchain:
             collateral_txid=collateral_txid,
             collateral_vout=collateral_vout,
             ip_address=ip_address,
+            port=port,
             start_height=current_height,
             start_time=int(time.time())
         )
         
         # Save to database
         self.conn.execute('''
-            INSERT INTO masternodes (masternode_id, operator_address, collateral_txid, collateral_vout, ip_address, start_height, start_time)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (masternode_id, operator_address, collateral_txid, collateral_vout, ip_address, current_height, int(time.time())))
+            INSERT INTO masternodes (masternode_id, operator_address, collateral_txid, collateral_vout, ip_address, port, start_height, start_time)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (masternode_id, operator_address, collateral_txid, collateral_vout, ip_address, port, current_height, int(time.time())))
         
         self.conn.commit()
         
@@ -1730,6 +1884,44 @@ class WepoBlockchain:
         
         print(f"Created masternode: {masternode_id}")
         return masternode_id
+
+    def deactivate_masternode(self, masternode_id: str, operator_address: str) -> dict:
+        """Deactivate an active masternode and release its collateral back to spendable balance."""
+        self.get_active_masternodes()
+
+        cursor = self.conn.execute('''
+            SELECT masternode_id, operator_address, collateral_txid, collateral_vout, status
+            FROM masternodes
+            WHERE masternode_id = ?
+        ''', (masternode_id,))
+
+        row = cursor.fetchone()
+        if not row:
+            raise ValueError("Masternode not found")
+
+        if row[1] != operator_address:
+            raise ValueError("Masternode does not belong to operator")
+
+        if row[4] != 'active':
+            raise ValueError("Masternode is not active")
+
+        self.conn.execute('''
+            UPDATE masternodes
+            SET status = 'inactive'
+            WHERE masternode_id = ?
+        ''', (masternode_id,))
+        self.conn.commit()
+
+        if masternode_id in self.masternodes:
+            self.masternodes[masternode_id]['status'] = 'inactive'
+
+        return {
+            'masternode_id': row[0],
+            'operator_address': row[1],
+            'collateral_txid': row[2],
+            'collateral_vout': row[3],
+            'status': 'inactive',
+        }
     
     def get_masternode_collateral_for_height(self, height: int) -> int:
         """Get required masternode collateral for a specific height (tied to PoW halvings)"""
@@ -1892,6 +2084,42 @@ class WepoBlockchain:
     
     def get_active_masternodes(self) -> List[MasternodeInfo]:
         """Get all active masternodes"""
+        self.conn.execute('''
+            UPDATE masternodes
+            SET status = 'inactive'
+            WHERE status = 'active'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM utxos
+                  WHERE utxos.txid = masternodes.collateral_txid
+                    AND utxos.vout = masternodes.collateral_vout
+                    AND utxos.spent = FALSE
+              )
+        ''')
+
+        duplicate_cursor = self.conn.execute('''
+            SELECT masternode_id, collateral_txid, collateral_vout
+            FROM masternodes
+            WHERE status = 'active'
+            ORDER BY start_height ASC, start_time ASC, masternode_id ASC
+        ''')
+        seen_collateral = set()
+        duplicate_ids = []
+        for row in duplicate_cursor.fetchall():
+            collateral_key = (row[1], row[2])
+            if collateral_key in seen_collateral:
+                duplicate_ids.append(row[0])
+            else:
+                seen_collateral.add(collateral_key)
+
+        if duplicate_ids:
+            placeholders = ",".join("?" for _ in duplicate_ids)
+            self.conn.execute(
+                f"UPDATE masternodes SET status = 'inactive' WHERE masternode_id IN ({placeholders})",
+                tuple(duplicate_ids),
+            )
+        self.conn.commit()
+
         cursor = self.conn.execute('''
             SELECT masternode_id, operator_address, collateral_txid, collateral_vout, ip_address, port, start_height, start_time, last_ping, status, total_rewards
             FROM masternodes WHERE status = 'active'
@@ -1914,48 +2142,104 @@ class WepoBlockchain:
             ))
         
         return masternodes
+
+    def get_masternodes_for_operator(self, operator_address: str) -> List[MasternodeInfo]:
+        """Get masternodes for a specific operator, newest first."""
+        self.get_active_masternodes()
+
+        cursor = self.conn.execute('''
+            SELECT masternode_id, operator_address, collateral_txid, collateral_vout, ip_address, port, start_height, start_time, last_ping, status, total_rewards
+            FROM masternodes
+            WHERE operator_address = ?
+            ORDER BY start_time DESC, masternode_id DESC
+        ''', (operator_address,))
+
+        masternodes = []
+        for row in cursor.fetchall():
+            masternodes.append(MasternodeInfo(
+                masternode_id=row[0],
+                operator_address=row[1],
+                collateral_txid=row[2],
+                collateral_vout=row[3],
+                ip_address=row[4],
+                port=row[5],
+                start_height=row[6],
+                start_time=row[7],
+                last_ping=row[8],
+                status=row[9],
+                total_rewards=row[10]
+            ))
+
+        return masternodes
+
+    def calculate_staking_reward_entries(self, block_height: int) -> List[Dict[str, Union[str, int]]]:
+        """Calculate detailed PoS reward entries for active stakes and masternodes."""
+        reward_entries = []
+
+        if block_height <= POS_ACTIVATION_HEIGHT:
+            return reward_entries
+
+        active_stakes = self.get_active_stakes()
+        active_masternodes = self.get_active_masternodes()
+
+        if not active_stakes and not active_masternodes:
+            return reward_entries
+
+        total_pos_reward = self.calculate_pos_reward(block_height)
+        if total_pos_reward <= 0:
+            return reward_entries
+
+        staking_reward_pool = int(total_pos_reward * 0.6)
+        masternode_reward_pool = int(total_pos_reward * 0.4)
+
+        if active_stakes and staking_reward_pool > 0:
+            total_stake_amount = sum(stake.amount for stake in active_stakes)
+            remaining_rewards = staking_reward_pool
+
+            for index, stake in enumerate(active_stakes):
+                if index == len(active_stakes) - 1:
+                    reward_amount = remaining_rewards
+                else:
+                    reward_amount = int(staking_reward_pool * (stake.amount / total_stake_amount))
+                    reward_amount = min(reward_amount, remaining_rewards)
+
+                if reward_amount <= 0:
+                    continue
+
+                remaining_rewards -= reward_amount
+                reward_entries.append({
+                    'reward_id': f"reward_staker_{block_height}_{stake.stake_id}",
+                    'recipient_address': stake.staker_address,
+                    'recipient_type': 'staker',
+                    'recipient_reference': stake.stake_id,
+                    'amount': reward_amount,
+                })
+
+        if active_masternodes and masternode_reward_pool > 0:
+            reward_per_masternode = masternode_reward_pool // len(active_masternodes)
+            reward_remainder = masternode_reward_pool % len(active_masternodes)
+
+            for index, masternode in enumerate(active_masternodes):
+                reward_amount = reward_per_masternode + (1 if index < reward_remainder else 0)
+                if reward_amount <= 0:
+                    continue
+
+                reward_entries.append({
+                    'reward_id': f"reward_masternode_{block_height}_{masternode.masternode_id}",
+                    'recipient_address': masternode.operator_address,
+                    'recipient_type': 'masternode',
+                    'recipient_reference': masternode.masternode_id,
+                    'amount': reward_amount,
+                })
+
+        return reward_entries
     
     def calculate_staking_rewards(self, block_height: int) -> Dict[str, int]:
         """Calculate staking rewards for a block"""
         rewards = {}
-        
-        # Only distribute PoS rewards after activation
-        if block_height <= POS_ACTIVATION_HEIGHT:
-            return rewards
-        
-        # Get active stakes and masternodes
-        active_stakes = self.get_active_stakes()
-        active_masternodes = self.get_active_masternodes()
-        
-        if not active_stakes and not active_masternodes:
-            return rewards
-        
-        # Calculate total block reward for PoS (50% of total after year 1)
-        total_pos_reward = self.calculate_pos_reward(block_height)
-        
-        if total_pos_reward <= 0:
-            return rewards
-        
-        # 60% to stakers, 40% to masternodes
-        staking_reward_pool = int(total_pos_reward * 0.6)
-        masternode_reward_pool = int(total_pos_reward * 0.4)
-        
-        # Distribute staking rewards proportionally
-        if active_stakes and staking_reward_pool > 0:
-            total_stake_amount = sum(stake.amount for stake in active_stakes)
-            
-            for stake in active_stakes:
-                proportion = stake.amount / total_stake_amount
-                reward = int(staking_reward_pool * proportion)
-                if reward > 0:
-                    rewards[stake.staker_address] = rewards.get(stake.staker_address, 0) + reward
-        
-        # Distribute masternode rewards equally
-        if active_masternodes and masternode_reward_pool > 0:
-            reward_per_masternode = masternode_reward_pool // len(active_masternodes)
-            for masternode in active_masternodes:
-                rewards[masternode.operator_address] = rewards.get(masternode.operator_address, 0) + reward_per_masternode
-        
+        for reward_entry in self.calculate_staking_reward_entries(block_height):
+            address = reward_entry['recipient_address']
+            rewards[address] = rewards.get(address, 0) + reward_entry['amount']
         return rewards
     
     def calculate_pos_reward(self, block_height: int) -> int:
@@ -1987,27 +2271,109 @@ class WepoBlockchain:
     def distribute_staking_rewards(self, block_height: int, block_hash: str):
         """Distribute staking rewards for a block"""
         try:
-            rewards = self.calculate_staking_rewards(block_height)
+            reward_entries = self.calculate_staking_reward_entries(block_height)
             
-            for address, reward_amount in rewards.items():
+            for reward_entry in reward_entries:
+                address = reward_entry['recipient_address']
+                reward_amount = reward_entry['amount']
                 # Create reward UTXO
-                reward_txid = f"pos_reward_{block_height}_{address}_{int(time.time())}"
+                reward_txid = f"pos_reward_{reward_entry['reward_id']}"
                 
                 self.conn.execute('''
                     INSERT INTO utxos (txid, vout, address, amount, script_pubkey, spent)
                     VALUES (?, ?, ?, ?, ?, FALSE)
                 ''', (reward_txid, 0, address, reward_amount, b"pos_reward"))
+
+                if reward_entry['recipient_type'] == 'staker':
+                    self.conn.execute('''
+                        UPDATE stakes
+                        SET total_rewards = total_rewards + ?, last_reward_height = ?
+                        WHERE stake_id = ?
+                    ''', (reward_amount, block_height, reward_entry['recipient_reference']))
+                elif reward_entry['recipient_type'] == 'masternode':
+                    self.conn.execute('''
+                        UPDATE masternodes
+                        SET total_rewards = total_rewards + ?, last_ping = ?
+                        WHERE masternode_id = ?
+                    ''', (reward_amount, int(time.time()), reward_entry['recipient_reference']))
                 
                 # Record reward in history
                 self.conn.execute('''
                     INSERT INTO staking_rewards (reward_id, recipient_address, recipient_type, amount, block_height, block_hash, timestamp)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (f"reward_{block_height}_{address}", address, "staker", reward_amount, block_height, block_hash, int(time.time())))
+                ''', (
+                    reward_entry['reward_id'],
+                    address,
+                    reward_entry['recipient_type'],
+                    reward_amount,
+                    block_height,
+                    block_hash,
+                    int(time.time()),
+                ))
             
             self.conn.commit()
             
         except Exception as e:
             print(f"Error distributing staking rewards: {e}")
+
+    def record_fee_distribution_rewards(self, block: Block):
+        """Record staking and masternode fee distributions from a block coinbase."""
+        try:
+            if not block.transactions:
+                return
+
+            coinbase_tx = block.transactions[0]
+            if not coinbase_tx.is_coinbase():
+                return
+
+            for output_index, output in enumerate(coinbase_tx.outputs[1:], start=1):
+                script_marker = output.script_pubkey.decode(errors='ignore') if output.script_pubkey else ''
+                reward_timestamp = int(time.time())
+
+                if script_marker.startswith("staker_fee_output:"):
+                    stake_id = script_marker.split(":", 1)[1]
+                    reward_id = f"fee_reward_staker_{block.height}_{output_index}_{stake_id}"
+                    self.conn.execute('''
+                        UPDATE stakes
+                        SET total_rewards = total_rewards + ?, last_reward_height = ?
+                        WHERE stake_id = ?
+                    ''', (output.value, block.height, stake_id))
+                    self.conn.execute('''
+                        INSERT OR IGNORE INTO staking_rewards (reward_id, recipient_address, recipient_type, amount, block_height, block_hash, timestamp)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        reward_id,
+                        output.address,
+                        'staker',
+                        output.value,
+                        block.height,
+                        block.get_block_hash(),
+                        reward_timestamp,
+                    ))
+                elif script_marker.startswith("masternode_fee_output:"):
+                    masternode_id = script_marker.split(":", 1)[1]
+                    reward_id = f"fee_reward_masternode_{block.height}_{output_index}_{masternode_id}"
+                    self.conn.execute('''
+                        UPDATE masternodes
+                        SET total_rewards = total_rewards + ?, last_ping = ?
+                        WHERE masternode_id = ?
+                    ''', (output.value, reward_timestamp, masternode_id))
+                    self.conn.execute('''
+                        INSERT OR IGNORE INTO staking_rewards (reward_id, recipient_address, recipient_type, amount, block_height, block_hash, timestamp)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        reward_id,
+                        output.address,
+                        'masternode',
+                        output.value,
+                        block.height,
+                        block.get_block_hash(),
+                        reward_timestamp,
+                    ))
+
+            self.conn.commit()
+        except Exception as e:
+            print(f"Error recording fee distribution rewards: {e}")
     
     def get_staking_info(self) -> dict:
         """Get staking system information"""
@@ -2047,6 +2413,54 @@ class WepoBlockchain:
         except Exception as e:
             print(f"Error getting staking info: {e}")
             return {"error": str(e)}
+
+    def get_reward_summary_for_address(self, address: str) -> dict:
+        """Get credited reward totals and recent reward history for a wallet."""
+        totals_cursor = self.conn.execute('''
+            SELECT recipient_type, COALESCE(SUM(amount), 0)
+            FROM staking_rewards
+            WHERE recipient_address = ?
+            GROUP BY recipient_type
+        ''', (address,))
+
+        staker_total = 0
+        masternode_total = 0
+        for recipient_type, total_amount in totals_cursor.fetchall():
+            if recipient_type == 'staker':
+                staker_total = total_amount or 0
+            elif recipient_type == 'masternode':
+                masternode_total = total_amount or 0
+
+        rewards_cursor = self.conn.execute('''
+            SELECT reward_id, recipient_type, amount, block_height, block_hash, timestamp
+            FROM staking_rewards
+            WHERE recipient_address = ?
+            ORDER BY block_height DESC, timestamp DESC
+            LIMIT 25
+        ''', (address,))
+
+        recent_rewards = []
+        for row in rewards_cursor.fetchall():
+            recent_rewards.append({
+                'reward_id': row[0],
+                'recipient_type': row[1],
+                'amount': row[2] / COIN,
+                'amount_atomic': row[2],
+                'block_height': row[3],
+                'block_hash': row[4],
+                'timestamp': row[5],
+            })
+
+        total_rewards = staker_total + masternode_total
+        return {
+            'address': address,
+            'total_rewards': total_rewards / COIN,
+            'total_rewards_atomic': total_rewards,
+            'staker_rewards': staker_total / COIN,
+            'masternode_rewards': masternode_total / COIN,
+            'reward_events': len(recent_rewards),
+            'recent_rewards': recent_rewards,
+        }
     
     def get_pos_activation_info(self) -> dict:
         """Get PoS activation timing information"""
@@ -2234,9 +2648,58 @@ class WepoBlockchain:
         })
         return info
 
+    def get_last_block_timestamp(self, consensus_type: Optional[str] = None) -> Optional[int]:
+        """Return the latest block timestamp, optionally filtered by consensus type."""
+        for block in reversed(self.chain):
+            if consensus_type is None or block.header.consensus_type == consensus_type:
+                return block.header.timestamp
+        return None
+
     def mine_next_block(self, miner_address: str) -> Optional[Block]:
-        """Backward-compatible wrapper used by the full-node mining loop"""
-        return self.mine_block(miner_address)
+        """Mine or validate the next due block for the active consensus schedule."""
+        current_height = self.get_block_height()
+        if current_height < POS_ACTIVATION_HEIGHT:
+            return self.mine_block(miner_address)
+
+        latest_block = self.get_latest_block()
+        if latest_block is None:
+            return self.mine_block(miner_address)
+
+        now = int(time.time())
+        next_height = current_height + 1
+        last_pow_timestamp = self.get_last_block_timestamp("pow")
+        last_pos_timestamp = self.get_last_block_timestamp("pos")
+        fallback_timestamp = latest_block.header.timestamp
+
+        pow_due_at = (last_pow_timestamp if last_pow_timestamp is not None else fallback_timestamp) + BLOCK_TIME_POW_HYBRID
+
+        pos_due_at = None
+        active_stakes = self.get_active_stakes()
+        if active_stakes:
+            pos_anchor = last_pos_timestamp if last_pos_timestamp is not None else fallback_timestamp
+            pos_due_at = pos_anchor + BLOCK_TIME_POS
+
+        pos_ready = pos_due_at is not None and now >= pos_due_at
+        pow_ready = now >= pow_due_at
+
+        if pos_ready and (not pow_ready or pos_due_at <= pow_due_at):
+            validator = self.select_pos_validator(next_height)
+            if validator:
+                pos_block = self.create_pos_block(validator)
+                if pos_block and self.add_block(pos_block):
+                    return pos_block
+
+        if pow_ready:
+            return self.mine_block(miner_address)
+
+        if pos_ready:
+            validator = self.select_pos_validator(next_height)
+            if validator:
+                pos_block = self.create_pos_block(validator)
+                if pos_block and self.add_block(pos_block):
+                    return pos_block
+
+        return None
 
 def main():
     """Main function for testing"""

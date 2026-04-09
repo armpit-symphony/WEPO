@@ -29,7 +29,16 @@ from network_profile import (
     get_reward_phase_label,
 )
 from p2p_network import WepoP2PNode
-from privacy import privacy_engine, create_privacy_proof, verify_privacy_proof, ZK_STARK_PROOF_SIZE, RING_SIGNATURE_SIZE, CONFIDENTIAL_PROOF_SIZE
+from privacy import (
+    privacy_engine,
+    create_privacy_proof,
+    create_ring_signature_proof,
+    generate_real_private_key,
+    verify_privacy_proof,
+    ZK_STARK_PROOF_SIZE,
+    RING_SIGNATURE_SIZE,
+    CONFIDENTIAL_PROOF_SIZE,
+)
 from atomic_swaps import atomic_swap_engine, SwapType, SwapState, validate_btc_address, validate_wepo_address
 
 # Import quantum-resistant components
@@ -305,27 +314,33 @@ class WepoFullNode:
                 # Add privacy features based on privacy level
                 if privacy_level in ['high', 'maximum']:
                     try:
+                        ephemeral_private_key = generate_real_private_key()
+
                         # Generate privacy proof
                         privacy_data = {
-                            'sender_private_key': from_address.encode(),  # In real impl, derive from wallet
+                            'sender_private_key': ephemeral_private_key,
                             'recipient_address': to_address,
-                            'amount': int(amount * 100000000),  # Convert to satoshis
-                            'decoy_keys': [f"wepo1decoy{i}".encode() for i in range(5)]  # Generate decoy keys
+                            'amount': int(round(amount * COIN)),
                         }
                         
                         privacy_proof = create_privacy_proof(privacy_data)
-                        tx.privacy_proof = privacy_proof
+                        if privacy_proof:
+                            tx.privacy_proof = privacy_proof
                         
                         # Generate ring signature for maximum privacy
                         if privacy_level == 'maximum':
-                            ring_signature_data = privacy_engine.ring_signature.generate_ring_signature(
+                            ring_signature = create_ring_signature_proof(
                                 tx.calculate_txid().encode(),
-                                from_address.encode(),
-                                [f"wepo1ring{i}".encode() for i in range(6)]
+                                ephemeral_private_key,
+                                ring_size=6,
                             )
-                            tx.ring_signature = ring_signature_data.serialize()
+                            if ring_signature:
+                                tx.ring_signature = ring_signature
                         
-                        print(f"🔒 Privacy features added: {privacy_level}")
+                        if tx.privacy_proof or tx.ring_signature:
+                            print(f"🔒 Privacy features added: {privacy_level}")
+                        else:
+                            print(f"⚠️ Privacy feature generation returned empty output for: {privacy_level}")
                         
                     except Exception as e:
                         print(f"⚠️ Privacy feature generation failed: {e}")
@@ -394,32 +409,49 @@ class WepoFullNode:
                 # Search through all blocks
                 for block in self.blockchain.chain:
                     for tx in block.transactions:
-                        # Check if this transaction involves the address
                         involved = False
                         tx_type = "unknown"
                         amount = 0
-                        
-                        # Check outputs (receiving)
-                        for output in tx.outputs:
-                            if output.address == address:
-                                involved = True
-                                tx_type = "receive"
-                                amount = output.value / 100000000  # Convert to WEPO
-                                break
-                        
-                        # Check inputs (sending) - simplified
-                        if not involved and not tx.is_coinbase():
-                            # For now, just check if any input could be from this address
-                            # TODO: Proper input address resolution
-                            pass
-                        
+                        from_address = "coinbase" if tx.is_coinbase() else "unknown"
+                        to_address = address
+
+                        input_addresses = []
+                        if not tx.is_coinbase():
+                            for inp in tx.inputs:
+                                cursor = self.blockchain.conn.execute(
+                                    '''
+                                    SELECT address FROM utxos WHERE txid = ? AND vout = ?
+                                    ''',
+                                    (inp.prev_txid, inp.prev_vout),
+                                )
+                                prev_utxo = cursor.fetchone()
+                                if prev_utxo and prev_utxo[0]:
+                                    input_addresses.append(prev_utxo[0])
+
+                        received_outputs = [output for output in tx.outputs if output.address == address]
+                        sent_outputs = [output for output in tx.outputs if output.address != address]
+                        is_sender = address in input_addresses
+
+                        if is_sender and sent_outputs:
+                            involved = True
+                            tx_type = "send"
+                            amount = sum(output.value for output in sent_outputs) / COIN
+                            from_address = address
+                            to_address = sent_outputs[0].address
+                        elif received_outputs:
+                            involved = True
+                            tx_type = "receive"
+                            amount = sum(output.value for output in received_outputs) / COIN
+                            if input_addresses:
+                                from_address = input_addresses[0]
+
                         if involved:
                             transactions.append({
                                 'txid': tx.calculate_txid(),
                                 'type': tx_type,
                                 'amount': amount,
-                                'from_address': "coinbase" if tx.is_coinbase() else "unknown",
-                                'to_address': address,
+                                'from_address': from_address,
+                                'to_address': to_address,
                                 'timestamp': tx.timestamp,
                                 'status': 'confirmed',
                                 'confirmations': len(self.blockchain.chain) - block.height,
@@ -447,24 +479,62 @@ class WepoFullNode:
                 if not all([staker_address, amount]):
                     raise HTTPException(status_code=400, detail="Missing required fields: staker_address, amount")
                 
-                # Validate amount
-                if not isinstance(amount, (int, float)) or amount < 1000:
-                    raise HTTPException(status_code=400, detail="Minimum stake amount is 1000 WEPO")
+                if not isinstance(amount, (int, float)) or amount <= 0:
+                    raise HTTPException(status_code=400, detail="Stake amount must be a positive WEPO value")
+
+                amount_atomic = int(round(float(amount) * COIN))
                 
                 # Create stake through blockchain
-                stake_id = self.blockchain.create_stake(staker_address, amount)
+                stake_id = self.blockchain.create_stake(staker_address, amount_atomic)
                 
                 if stake_id:
                     return {
                         'success': True,
                         'stake_id': stake_id,
                         'staker_address': staker_address,
-                        'amount': amount,
+                        'amount': amount_atomic / COIN,
+                        'amount_atomic': amount_atomic,
                         'message': 'Stake created successfully'
                     }
                 else:
                     raise HTTPException(status_code=400, detail="Failed to create stake")
                     
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/api/stake/deactivate")
+        async def deactivate_stake(request: dict):
+            """Deactivate a stake and release principal back to the wallet."""
+            try:
+                stake_id = request.get('stake_id')
+                staker_address = request.get('staker_address')
+
+                if not all([stake_id, staker_address]):
+                    raise HTTPException(status_code=400, detail="Missing required fields: stake_id, staker_address")
+
+                result = self.blockchain.deactivate_stake(
+                    stake_id=stake_id,
+                    staker_address=staker_address,
+                )
+
+                return {
+                    'success': True,
+                    'stake_id': result['stake_id'],
+                    'staker_address': result['staker_address'],
+                    'amount': result['amount'] / COIN,
+                    'amount_atomic': result['amount'],
+                    'total_rewards': result['total_rewards'] / COIN,
+                    'status': result['status'],
+                    'unlock_height': result['unlock_height'],
+                    'unlock_txid': result['unlock_txid'],
+                    'message': 'Stake deactivated successfully',
+                }
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
             except HTTPException:
                 raise
             except Exception as e:
@@ -507,6 +577,38 @@ class WepoFullNode:
                 
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.get("/api/wallet/{address}/rewards")
+        async def get_wallet_rewards(address: str):
+            """Get reward totals and recent reward history for a wallet."""
+            try:
+                return self.blockchain.get_reward_summary_for_address(address)
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.get("/api/wallet/{address}/masternodes")
+        async def get_wallet_masternodes(address: str):
+            """Get masternodes registered for a wallet/operator."""
+            try:
+                masternodes = self.blockchain.get_masternodes_for_operator(address)
+                return [
+                    {
+                        'masternode_id': mn.masternode_id,
+                        'operator_address': mn.operator_address,
+                        'collateral_txid': mn.collateral_txid,
+                        'collateral_vout': mn.collateral_vout,
+                        'ip_address': mn.ip_address,
+                        'port': mn.port,
+                        'start_height': mn.start_height,
+                        'start_time': mn.start_time,
+                        'last_ping': mn.last_ping,
+                        'status': mn.status,
+                        'total_rewards': mn.total_rewards / COIN,
+                    }
+                    for mn in masternodes
+                ]
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.post("/api/masternode")
         async def create_masternode(request: dict):
@@ -523,7 +625,11 @@ class WepoFullNode:
                 
                 # Create masternode through blockchain
                 masternode_id = self.blockchain.create_masternode(
-                    operator_address, collateral_txid, collateral_vout, ip_address, port
+                    operator_address,
+                    collateral_txid,
+                    collateral_vout,
+                    ip_address=ip_address,
+                    port=port,
                 )
                 
                 if masternode_id:
@@ -540,11 +646,40 @@ class WepoFullNode:
                 else:
                     raise HTTPException(status_code=400, detail="Failed to create masternode")
                     
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
             except HTTPException:
                 raise
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))
-        
+
+        @self.app.post("/api/masternode/deactivate")
+        async def deactivate_masternode(request: dict):
+            """Deactivate a masternode and release its collateral back to spendable balance."""
+            try:
+                masternode_id = request.get('masternode_id')
+                operator_address = request.get('operator_address')
+
+                if not all([masternode_id, operator_address]):
+                    raise HTTPException(status_code=400, detail="Missing required fields: masternode_id, operator_address")
+
+                result = self.blockchain.deactivate_masternode(
+                    masternode_id=masternode_id,
+                    operator_address=operator_address,
+                )
+
+                return {
+                    'success': True,
+                    'message': 'Masternode deactivated successfully',
+                    **result,
+                }
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e))
+
         @self.app.get("/api/masternodes")
         async def get_masternodes():
             """Get all masternodes"""
@@ -1209,6 +1344,8 @@ class WepoFullNode:
                             'hash': mined_block.get_block_hash()
                         }
                         self.p2p_node.broadcast_block(block_data)
+                    else:
+                        time.sleep(1)
                     
                 except Exception as e:
                     print(f"Mining error: {e}")

@@ -51,6 +51,7 @@ class SecurityManager:
         "wallet_create": 3,      # 3 per minute
         "wallet_login": 5,       # 5 per minute  
         "transaction_send": 10,  # 10 per minute
+        "global_api": 60,        # General API traffic
         "default": 10           # Default rate limit
     }
     
