@@ -23,7 +23,6 @@ const QuantumMessaging = ({ onBack }) => {
   const { wallet } = useWallet();
   
   const [activeTab, setActiveTab] = useState('inbox');
-  const [messages, setMessages] = useState([]);
   const [conversations, setConversations] = useState([]);
   const [selectedConversation, setSelectedConversation] = useState(null);
   const [conversationMessages, setConversationMessages] = useState([]);
@@ -56,8 +55,7 @@ const QuantumMessaging = ({ onBack }) => {
       const response = await fetch(`${backendUrl}/api/messaging/inbox/${currentAddress}`);
       if (response.ok) {
         const data = await response.json();
-        setMessages(data.messages || []);
-        
+
         // Extract unique conversations
         const uniqueConversations = new Map();
         data.messages?.forEach(msg => {
@@ -203,13 +201,13 @@ const QuantumMessaging = ({ onBack }) => {
                   <h3 className="text-white font-medium">
                     {selectedConversation.substring(0, 20)}...
                   </h3>
-                  <p className="text-xs text-gray-400">Quantum-encrypted conversation</p>
+                  <p className="text-xs text-gray-400">Experimental messaging preview</p>
                 </div>
               </div>
             </div>
             <div className="flex items-center gap-2 bg-green-900/20 px-3 py-1 rounded-full">
               <Zap className="h-3 w-3 text-green-400" />
-              <span className="text-xs text-green-400">Quantum Secure</span>
+              <span className="text-xs text-green-400">Preview</span>
             </div>
           </div>
         </div>
@@ -253,7 +251,7 @@ const QuantumMessaging = ({ onBack }) => {
                 content: e.target.value,
                 to_address: selectedConversation 
               }))}
-              placeholder="Type a quantum-encrypted message..."
+              placeholder="Type a message..."
               className="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500"
               onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
             />
@@ -286,7 +284,7 @@ const QuantumMessaging = ({ onBack }) => {
               <MessageCircle className="h-6 w-6 text-purple-400" />
               <div>
                 <h2 className="text-xl font-bold">Quantum Messages</h2>
-                <p className="text-sm text-gray-400">End-to-end quantum encryption</p>
+                <p className="text-sm text-gray-400">Experimental public-test messaging preview</p>
               </div>
             </div>
           </div>
@@ -294,7 +292,7 @@ const QuantumMessaging = ({ onBack }) => {
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2 bg-purple-900/30 px-3 py-1 rounded-full">
               <Zap className="h-4 w-4 text-yellow-400" />
-              <span className="text-sm text-yellow-400">Universal Quantum</span>
+              <span className="text-sm text-yellow-400">Experimental</span>
             </div>
             <button
               onClick={() => setShowNewMessage(true)}
@@ -304,6 +302,15 @@ const QuantumMessaging = ({ onBack }) => {
               New Message
             </button>
           </div>
+        </div>
+      </div>
+
+      <div className="bg-blue-900/30 border-b border-blue-500/20 p-4">
+        <div className="flex items-start gap-2">
+          <AlertTriangle className="h-4 w-4 text-blue-300 mt-0.5" />
+          <p className="text-sm text-gray-300">
+            Messaging endpoints are available on the public-test backend, but this web UI has not had the same broader validation pass as the main wallet flow. Treat this screen as an experimental preview rather than a finished secure messaging product.
+          </p>
         </div>
       </div>
 
@@ -345,7 +352,7 @@ const QuantumMessaging = ({ onBack }) => {
       {showNewMessage && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-gray-800 rounded-xl p-6 w-full max-w-md mx-4">
-            <h3 className="text-xl font-bold mb-4">New Quantum Message</h3>
+            <h3 className="text-xl font-bold mb-4">New Message</h3>
             
             <div className="space-y-4">
               <div>
@@ -384,7 +391,7 @@ const QuantumMessaging = ({ onBack }) => {
                 <textarea
                   value={newMessage.content}
                   onChange={(e) => setNewMessage(prev => ({ ...prev, content: e.target.value }))}
-                  placeholder="Your quantum-encrypted message..."
+                  placeholder="Your message..."
                   rows={4}
                   className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500"
                 />
@@ -412,7 +419,7 @@ const QuantumMessaging = ({ onBack }) => {
                 ) : (
                   <Send size={16} />
                 )}
-                Send Quantum Message
+                Send Message
               </button>
             </div>
           </div>
@@ -431,7 +438,7 @@ const QuantumMessaging = ({ onBack }) => {
             <div className="text-center py-12">
               <MessageCircle className="h-16 w-16 text-gray-500 mx-auto mb-4" />
               <h3 className="text-xl font-medium text-gray-300 mb-2">No Messages Yet</h3>
-              <p className="text-gray-500 mb-4">Start a quantum-encrypted conversation</p>
+              <p className="text-gray-500 mb-4">Start a messaging preview conversation</p>
               <button
                 onClick={() => setShowNewMessage(true)}
                 className="bg-purple-600 hover:bg-purple-700 text-white px-6 py-2 rounded-lg"

@@ -1,8 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-// Temporarily disable heavy crypto imports to fix loading issue
-// import * as bip39 from 'bip39';
 import CryptoJS from 'crypto-js';
-import { sessionManager, secureLog } from '../utils/securityUtils';
+import { sessionManager, secureLog, secureStorage } from '../utils/securityUtils';
 // import { generateWepoAddress, generateBitcoinAddress, validateAddress } from '../utils/addressUtils';
 // Temporarily comment out Bitcoin wallet import to prevent runtime errors
 // import * as bitcoin from 'bitcoinjs-lib';
@@ -28,7 +26,6 @@ export const WalletProvider = ({ children }) => {
   const [transactions, setTransactions] = useState([]);
   const [btcTransactions, setBtcTransactions] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [posEnabled, setPosEnabled] = useState(false);
   const [masternodesEnabled, setMasternodesEnabled] = useState(false);
   const [showSeedPhrase, setShowSeedPhrase] = useState(false);
   
@@ -39,18 +36,41 @@ export const WalletProvider = ({ children }) => {
   const [btcWalletFingerprint, setBtcWalletFingerprint] = useState(null);
   const [isBtcLoading, setIsBtcLoading] = useState(false);
 
+  const getWalletAddress = (walletData) => walletData?.address || walletData?.wepo?.address || '';
+
+  const persistWalletSession = (walletData, password, authSession) => {
+    const walletAddress = getWalletAddress(walletData);
+    if (!walletAddress) {
+      throw new Error('Wallet address missing from session data');
+    }
+
+    if (!authSession?.token || !authSession?.expiresAt) {
+      throw new Error('Authenticated session missing from login response');
+    }
+
+    if (!secureStorage.setSecureItem('wallet_data', walletData, password)) {
+      throw new Error('Failed to store encrypted wallet data');
+    }
+
+    sessionManager.createSecureSession(walletAddress, password);
+    if (!sessionManager.setAuthSession({
+      token: authSession.token,
+      expiresAt: authSession.expiresAt,
+      walletAddress,
+      username: walletData.username
+    })) {
+      throw new Error('Failed to store authenticated session');
+    }
+    sessionManager.set('wepo_current_wallet', walletData);
+    sessionManager.remove('wepo_locked');
+    sessionStorage.setItem('wepo_current_wallet', JSON.stringify(walletData));
+    sessionStorage.setItem('wepo_session_active', 'true');
+  };
+
   // Enable masternodes immediately (require 10,000 WEPO collateral)
-  // Enable PoS after 18 months
   useEffect(() => {
     // Masternodes enabled now with 10,000 WEPO requirement
     setMasternodesEnabled(true);
-    
-    // PoS still requires 18-month timeline
-    const timer = setTimeout(() => {
-      setPosEnabled(true);
-    }, 100000); // For demo - in production this would be actual 18 months
-
-    return () => clearTimeout(timer);
   }, []);
 
   useEffect(() => {
@@ -100,15 +120,10 @@ export const WalletProvider = ({ children }) => {
     };
   }, []);
 
+  const getBackendUrl = () => process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
+
   const generateMnemonic = () => {
-    try {
-      // Simplified mnemonic generation for testing
-      const words = ['abandon', 'ability', 'able', 'about', 'above', 'absent', 'absorb', 'abstract', 'absurd', 'abuse', 'access', 'accident'];
-      return words.join(' ');
-    } catch (error) {
-      console.error('❌ Mnemonic generation failed:', error);
-      throw new Error('Critical error: Unable to generate secure seed phrase');
-    }
+    throw new Error('Recovery phrases are not available in the current public test build');
   };
 
   const deriveSeedFromMnemonic = async (mnemonic, passphrase = '') => {
@@ -164,67 +179,55 @@ export const WalletProvider = ({ children }) => {
 
     try {
       setIsLoading(true);
-      
-      // Generate cryptographically secure BIP-39 mnemonic
-      const mnemonic = generateMnemonic();
-      
-      // Derive seed from mnemonic
-      const seed = await deriveSeedFromMnemonic(mnemonic);
-      
-      // Generate wallet addresses and keys from seed
-      const walletKeys = await generateWalletFromSeed(seed);
-      
+
+      const response = await fetch(`${getBackendUrl()}/api/wallet/create`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          username,
+          password,
+        }),
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.detail || payload.error || 'Wallet creation failed');
+      }
+
       const walletData = {
-        username,
-        mnemonic,
-        wepo: walletKeys.wepo,
-        btc: walletKeys.btc,
-        // Add top-level address for UI compatibility
-        address: walletKeys.wepo.address,
+        username: payload.username || username,
+        address: payload.address,
         createdAt: new Date().toISOString(),
-        version: '3.0', // Updated version for proper BIP-39 implementation
-        entropy: seed.toString('hex').substring(0, 32) + '...', // Store first part for verification (not the full seed!)
-        bip39: true // Flag to indicate proper BIP-39 implementation
+        version: payload.version || 'public-test',
+        securityLevel: payload.security_level || 'backend_account',
+        recoveryPhraseAvailable: false,
+        custodyMode: 'backend_account',
       };
 
-      // Store wallet existence and username (NOT the seed or private keys!)
       localStorage.setItem('wepo_wallet_exists', 'true');
-      localStorage.setItem('wepo_wallet_username', username);
-      localStorage.setItem('wepo_wallet_version', '3.0');
-      
+      localStorage.setItem('wepo_wallet_username', walletData.username);
+      localStorage.setItem('wepo_wallet_version', walletData.version);
+
+      persistWalletSession(walletData, password, {
+        token: payload.session_token,
+        expiresAt: payload.session_expires_at
+      });
       setWallet(walletData);
-      
-      // Initialize Bitcoin wallet with the same seed (now enabled with real backend)
-      console.log('🔐 Initializing Bitcoin wallet with real backend integration...');
-      try {
-        const btcResult = await loadBitcoinWallet(mnemonic, password);
-        if (btcResult.success) {
-          console.log('✅ Bitcoin wallet initialized successfully');
-        } else {
-          console.warn('⚠️  Bitcoin wallet initialization failed, using placeholder:', btcResult.error);
-          // Fallback to placeholder
-          setBtcBalance(0.0);
-          setBtcAddresses([]);
-          setBtcTransactions([]);
-          setBtcUtxos([]);
-        }
-      } catch (btcError) {
-        console.warn('⚠️  Bitcoin wallet initialization error:', btcError.message);
-        // Fallback to placeholder
-        setBtcBalance(0.0);
-        setBtcAddresses([]);
-        setBtcTransactions([]);
-        setBtcUtxos([]);
-      }
-      
-      setIsLoading(false);
-      
-      secureLog.info('Secure BIP-39 wallet created successfully');
+      await loadWalletData(walletData.address);
+
+      setBtcBalance(0.0);
+      setBtcAddresses([]);
+      setBtcTransactions([]);
+      setBtcUtxos([]);
+
+      secureLog.info('Backend wallet created successfully');
       return { 
-        mnemonic, 
-        address: walletData.wepo.address,
-        bip39: true,
-        security: 'cryptographically_secure' 
+        address: walletData.address,
+        username: walletData.username,
+        recoveryPhraseAvailable: false,
+        custodyMode: walletData.custodyMode,
       };
       
     } catch (error) {
@@ -235,104 +238,71 @@ export const WalletProvider = ({ children }) => {
   };
 
   const loginWallet = async (username, password) => {
-    const storedUsername = localStorage.getItem('wepo_wallet_username');
-    if (storedUsername !== username) {
-      throw new Error('Invalid username');
-    }
-
     try {
       setIsLoading(true);
-      
-      // In a real implementation, you would:
-      // 1. Load encrypted wallet data from secure storage
-      // 2. Decrypt using the password
-      // 3. Validate the mnemonic and restore wallet
-      
-      // For now, simulating successful login
-      // Note: In production, never store the actual seed phrase
-      console.log('🔐 Wallet login attempted - in production this would decrypt stored wallet data');
-      
-      setIsLoading(false);
-      throw new Error('Login functionality requires encrypted wallet storage implementation');
+
+      const response = await fetch(`${getBackendUrl()}/api/wallet/login`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          username,
+          password,
+        }),
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.detail || payload.error || 'Invalid username or password');
+      }
+
+      const walletData = {
+        username: payload.username || username,
+        address: payload.address,
+        createdAt: payload.created_at ? new Date(payload.created_at * 1000).toISOString() : new Date().toISOString(),
+        version: payload.version || 'public-test',
+        securityLevel: payload.security_level || 'backend_account',
+        recoveryPhraseAvailable: false,
+        custodyMode: 'backend_account',
+      };
+
+      if (!walletData.address) {
+        throw new Error('Wallet is missing a WEPO address');
+      }
+
+      localStorage.setItem('wepo_wallet_exists', 'true');
+      localStorage.setItem('wepo_wallet_username', walletData.username);
+      localStorage.setItem('wepo_wallet_version', walletData.version);
+
+      persistWalletSession(walletData, password, {
+        token: payload.session_token,
+        expiresAt: payload.session_expires_at
+      });
+
+      setWallet(walletData);
+      setBtcBalance(0.0);
+      setBtcAddresses([]);
+      setBtcTransactions([]);
+      setBtcUtxos([]);
+
+      await loadWalletData(walletData.address);
+      return walletData;
       
     } catch (error) {
-      setIsLoading(false);
       console.error('❌ Login error:', error);
       throw error;
+    } finally {
+      setIsLoading(false);
     }
   };
 
   const validateMnemonic = (mnemonic) => {
-    try {
-      // Simplified validation for testing
-      const words = mnemonic.trim().split(' ');
-      return words.length >= 12;
-    } catch (error) {
-      console.error('❌ Mnemonic validation error:', error);
-      return false;
-    }
+    return false;
   };
 
   const recoverWallet = async (mnemonic, password) => {
-    try {
-      setIsLoading(true);
-      
-      // Validate the provided mnemonic
-      if (!validateMnemonic(mnemonic)) {
-        throw new Error('Invalid seed phrase. Please check your words and try again.');
-      }
-      
-      // Derive seed from mnemonic
-      const seed = await deriveSeedFromMnemonic(mnemonic.trim());
-      
-      // Generate wallet from seed
-      const walletKeys = await generateWalletFromSeed(seed);
-      
-      const recoveredWallet = {
-        mnemonic: mnemonic.trim(),
-        wepo: walletKeys.wepo,
-        btc: walletKeys.btc,
-        recoveredAt: new Date().toISOString(),
-        version: '3.0',
-        bip39: true,
-        recovered: true
-      };
-      
-      setWallet(recoveredWallet);
-      
-      // Initialize Bitcoin wallet with recovered seed
-      console.log('🔐 Initializing Bitcoin wallet for recovered wallet...');
-      try {
-        const btcResult = await loadBitcoinWallet(mnemonic.trim(), password);
-        if (btcResult.success) {
-          console.log('✅ Bitcoin wallet recovered successfully');
-        } else {
-          console.warn('⚠️  Bitcoin wallet recovery failed, using placeholder:', btcResult.error);
-          // Fallback to placeholder
-          setBtcBalance(0.0);
-          setBtcAddresses([]);
-          setBtcTransactions([]);
-          setBtcUtxos([]);
-        }
-      } catch (btcError) {
-        console.warn('⚠️  Bitcoin wallet recovery error:', btcError.message);
-        // Fallback to placeholder
-        setBtcBalance(0.0);
-        setBtcAddresses([]);
-        setBtcTransactions([]);
-        setBtcUtxos([]);
-      }
-      
-      setIsLoading(false);
-      
-      console.log('✅ Wallet recovered successfully from BIP-39 seed phrase');
-      return { success: true, address: recoveredWallet.wepo.address };
-      
-    } catch (error) {
-      setIsLoading(false);
-      console.error('❌ Wallet recovery error:', error);
-      throw error;
-    }
+    throw new Error('Recovery phrase import is not available in the current public test build');
   };
 
   const changePassword = async (currentPassword, newPassword, confirmNewPassword) => {
@@ -340,13 +310,11 @@ export const WalletProvider = ({ children }) => {
       throw new Error('New passwords do not match');
     }
 
-    try {
-      // Simplified password change for isolation testing
-      console.log('Password change simulated');
-      return true;
-    } catch (error) {
-      throw new Error('Invalid current password');
+    if (!currentPassword) {
+      throw new Error('Current password is required');
     }
+
+    throw new Error('Password changes are not available in the current public test build');
   };
 
   // Remove old generateWepoAddress - now handled by addressUtils
@@ -362,30 +330,42 @@ export const WalletProvider = ({ children }) => {
         const response = await fetch(`${backendUrl}/api/wallet/${address}`);
         if (response.ok) {
           const data = await response.json();
-          setBalance(data.balance || 0);
+          const walletBalance = Number(data.balance || 0);
+          setBalance(walletBalance);
+          sessionManager.set('wepo_balance', walletBalance);
           
           // Get real transaction history
           const txResponse = await fetch(`${backendUrl}/api/wallet/${address}/transactions`);
           if (txResponse.ok) {
             const txData = await txResponse.json();
             setTransactions(txData || []);
+            sessionManager.set('wepo_transactions', txData || []);
+          } else {
+            setTransactions([]);
+            sessionManager.set('wepo_transactions', []);
           }
         } else {
           // If blockchain not available, start with zero balance
           setBalance(0);
           setTransactions([]);
+          sessionManager.set('wepo_balance', 0);
+          sessionManager.set('wepo_transactions', []);
         }
       } catch (error) {
         console.log('Blockchain not connected, starting with zero balance');
         // Real cryptocurrency behavior - zero balance until actual transactions
         setBalance(0);
         setTransactions([]);
+        sessionManager.set('wepo_balance', 0);
+        sessionManager.set('wepo_transactions', []);
       }
       
     } catch (error) {
       console.error('Failed to load wallet data:', error);
       setBalance(0);
       setTransactions([]);
+      sessionManager.set('wepo_balance', 0);
+      sessionManager.set('wepo_transactions', []);
     } finally {
       setIsLoading(false);
     }
@@ -633,21 +613,46 @@ export const WalletProvider = ({ children }) => {
   const sendWepo = async (toAddress, amount, password) => {
     setIsLoading(true);
     try {
-      // Simplified transaction for isolation testing
-      const transaction = {
-        id: Date.now().toString(),
-        type: 'send',
-        amount: parseFloat(amount),
-        from: wallet.wepo.address,
-        to: toAddress,
-        timestamp: new Date().toISOString(),
-        status: 'confirmed'
-      };
-      
-      setTransactions(prev => [transaction, ...prev]);
-      setBalance(prev => prev - parseFloat(amount));
-      
-      return transaction;
+      const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
+      const walletAddress = getWalletAddress(wallet);
+      if (!walletAddress) {
+        throw new Error('No active wallet loaded');
+      }
+
+      const unlockedWallet = secureStorage.getSecureItem('wallet_data', password);
+      if (!unlockedWallet) {
+        throw new Error('Invalid wallet password');
+      }
+
+      if (getWalletAddress(unlockedWallet) !== walletAddress) {
+        throw new Error('Unlocked wallet does not match the active session');
+      }
+
+      const authSession = sessionManager.getAuthSession();
+      if (!authSession?.token) {
+        throw new Error('Session expired. Please log in again.');
+      }
+
+      const response = await fetch(`${backendUrl}/api/transaction/send`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authSession.token}`,
+        },
+        body: JSON.stringify({
+          from_address: walletAddress,
+          to_address: toAddress,
+          amount: parseFloat(amount),
+        })
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.detail || payload.error || 'Transaction failed');
+      }
+
+      await loadWalletData(walletAddress);
+      return payload;
     } catch (error) {
       throw new Error('Transaction failed: ' + error.message);
     } finally {
@@ -655,8 +660,22 @@ export const WalletProvider = ({ children }) => {
     }
   };
 
-  const logout = () => {
+  const logout = async () => {
     secureLog.info('User logout initiated');
+
+    const authSession = sessionManager.getAuthSession();
+    if (authSession?.token) {
+      try {
+        await fetch(`${getBackendUrl()}/api/wallet/logout`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${authSession.token}`,
+          },
+        });
+      } catch (error) {
+        secureLog.warn('Backend logout request failed; clearing local session only');
+      }
+    }
     
     // Clear all wallet data
     setWallet(null);
@@ -671,7 +690,12 @@ export const WalletProvider = ({ children }) => {
     setBtcUtxos([]);
     
     // Clear secure session data
+    secureStorage.removeSecureItem('wallet_data');
+    sessionManager.clearAuthSession();
     sessionManager.clearSecureSession();
+    sessionManager.remove('wepo_current_wallet');
+    sessionManager.remove('wepo_locked');
+    sessionStorage.removeItem('wepo_current_wallet');
     
     // Clear any remaining localStorage items (except wallet existence flag)
     // Keep 'wepo_wallet_exists' and 'wepo_wallet_username' for login page
@@ -687,7 +711,6 @@ export const WalletProvider = ({ children }) => {
     transactions,
     btcTransactions,
     isLoading,
-    posEnabled,
     masternodesEnabled,
     showSeedPhrase,
     setShowSeedPhrase,
@@ -712,7 +735,6 @@ export const WalletProvider = ({ children }) => {
     setTransactions,
     validateMnemonic,
     recoverWallet,
-    createWallet,
     deriveSeedFromMnemonic,
     generateWalletFromSeed,
     

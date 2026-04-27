@@ -314,6 +314,56 @@ export const sessionManager = {
     sessionStorage.removeItem('wepo_secure_session');
     sessionStorage.removeItem('wepo_session_active');
   },
+
+  setAuthSession: ({ token, expiresAt, walletAddress, username }) => {
+    if (!token || !expiresAt) {
+      return false;
+    }
+
+    try {
+      sessionStorage.setItem('wepo_auth_session', JSON.stringify({
+        token,
+        expiresAt,
+        walletAddress,
+        username
+      }));
+      sessionStorage.setItem('wepo_session_active', 'true');
+      return true;
+    } catch (error) {
+      console.error('Auth session set failed:', error);
+      return false;
+    }
+  },
+
+  getAuthSession: () => {
+    try {
+      const raw = sessionStorage.getItem('wepo_auth_session');
+      if (!raw) return null;
+
+      const session = JSON.parse(raw);
+      const expiresAtMs = Number(session?.expiresAt) * 1000;
+      if (!session?.token || !Number.isFinite(expiresAtMs)) {
+        sessionManager.clearAuthSession();
+        return null;
+      }
+
+      if (Date.now() >= expiresAtMs) {
+        sessionManager.clearAuthSession();
+        return null;
+      }
+
+      return session;
+    } catch (error) {
+      console.error('Auth session get failed:', error);
+      sessionManager.clearAuthSession();
+      return null;
+    }
+  },
+
+  clearAuthSession: () => {
+    sessionStorage.removeItem('wepo_auth_session');
+    sessionStorage.removeItem('wepo_session_active');
+  },
   
   // Check if session is valid
   isSessionValid: (password) => {

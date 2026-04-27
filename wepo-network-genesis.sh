@@ -5,7 +5,7 @@
 
 set -e
 
-echo "🎄 WEPO Blockchain Genesis Launch - Christmas Day 2025 Ready!"
+echo "🎄 WEPO Blockchain Genesis Launch - genesis date Ready!"
 echo "============================================================"
 
 # Network Configuration
@@ -149,7 +149,7 @@ echo "✅ Genesis block created successfully"
 # Step 3: Create network configuration for nodes
 echo "🌐 Step 3: Creating network node configurations..."
 
-# Create systemd service file for production deployment
+# Create systemd service file for deployment review
 cat > wepo-node.service << 'EOF'
 [Unit]
 Description=WEPO Blockchain Node
@@ -398,4 +398,4 @@ echo "  1. Test locally: ./launch-local-network.sh"
 echo "  2. Deploy to servers: ./launch-production-network.sh"
 echo "  3. Update wallet backends to use your API endpoints"
 echo ""
-echo "🎄 Ready for Christmas Day 2025 Genesis Launch!"
+echo "🎄 Ready for genesis launch!"

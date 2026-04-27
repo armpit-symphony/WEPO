@@ -29,7 +29,7 @@ import random
 import string
 
 # Use preview backend URL from frontend/.env
-BACKEND_URL = "https://blockchain-sectest.preview.emergentagent.com"
+BACKEND_URL = "http://127.0.0.1:18021"
 API_URL = f"{BACKEND_URL}/api"
 
 print(f"🔐 COMPREHENSIVE API SECURITY AUDIT - WEPO CRYPTOCURRENCY SYSTEM")

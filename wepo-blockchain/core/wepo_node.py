@@ -4,7 +4,6 @@ WEPO Full Node
 Complete blockchain node with P2P networking, mining, and API
 """
 
-import asyncio
 import time
 import threading
 import signal
@@ -20,7 +19,12 @@ import os
 import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from blockchain import WepoBlockchain, Transaction, Block, COIN
+from blockchain import (
+    WepoBlockchain,
+    COIN,
+    TX_TYPE_STAKE_CREATE,
+    TX_TYPE_MASTERNODE_CREATE,
+)
 from network_profile import (
     describe_reward_schedule,
     format_block_time,
@@ -39,12 +43,12 @@ from privacy import (
     RING_SIGNATURE_SIZE,
     CONFIDENTIAL_PROOF_SIZE,
 )
-from atomic_swaps import atomic_swap_engine, SwapType, SwapState, validate_btc_address, validate_wepo_address
+from atomic_swaps import atomic_swap_engine, SwapType, validate_btc_address, validate_wepo_address
 
 # Import quantum-resistant components
 from quantum_blockchain import QuantumWepoBlockchain
-from quantum_transaction import QuantumTransaction, QuantumWallet
-from dilithium import generate_dilithium_keypair, generate_wepo_address, validate_wepo_address as validate_quantum_address, get_dilithium_info
+from quantum_transaction import QuantumWallet
+from dilithium import generate_wepo_address, validate_wepo_address as validate_quantum_address, get_dilithium_info as get_dilithium_info_impl
 
 class WepoFullNode:
     """WEPO Full Blockchain Node"""
@@ -79,6 +83,10 @@ class WepoFullNode:
         self.p2p_node.on_new_block = self.handle_new_block
         self.p2p_node.on_new_transaction = self.handle_new_transaction
         self.p2p_node.get_block_callback = self.get_block_data
+        self.p2p_node.get_headers_callback = self.get_headers_data
+        self.p2p_node.get_block_hashes_callback = self.get_block_hashes
+        self.p2p_node.get_height_callback = self.blockchain.get_block_height
+        self.p2p_node.get_locator_callback = self.get_block_locator
         
         # FastAPI app for RPC/API
         self.app = FastAPI(title="WEPO Full Node API", version="1.0.0")
@@ -164,74 +172,31 @@ class WepoFullNode:
         @self.app.get("/api/blocks/latest")
         async def get_latest_blocks(limit: int = 10):
             """Get latest blocks"""
-            latest_blocks = []
-            chain_length = len(self.blockchain.chain)
-            
-            for i in range(min(limit, chain_length)):
-                block = self.blockchain.chain[-(i+1)]
-                latest_blocks.append({
-                    'height': block.height,
-                    'hash': block.get_block_hash(),
-                    'timestamp': block.header.timestamp,
-                    'tx_count': len(block.transactions),
-                    'size': block.size,
-                    'consensus_type': block.header.consensus_type
-                })
-            
-            return latest_blocks
+            return self.blockchain.get_latest_blocks_summary(limit)
         
         @self.app.get("/api/block/{block_hash}")
         async def get_block(block_hash: str):
             """Get block by hash"""
-            for block in self.blockchain.chain:
-                if block.get_block_hash() == block_hash:
-                    return {
-                        'height': block.height,
-                        'hash': block.get_block_hash(),
-                        'prev_hash': block.header.prev_hash,
-                        'merkle_root': block.header.merkle_root,
-                        'timestamp': block.header.timestamp,
-                        'bits': block.header.bits,
-                        'nonce': block.header.nonce,
-                        'consensus_type': block.header.consensus_type,
-                        'size': block.size,
-                        'transactions': [tx.calculate_txid() for tx in block.transactions]
-                    }
-            
-            raise HTTPException(status_code=404, detail="Block not found")
+            block = self.blockchain.get_block_summary(block_hash=block_hash)
+            if not block:
+                raise HTTPException(status_code=404, detail="Block not found")
+            return block
         
         @self.app.get("/api/block/height/{height}")
         async def get_block_by_height(height: int):
             """Get block by height"""
-            if 0 <= height < len(self.blockchain.chain):
-                block = self.blockchain.chain[height]
-                return await get_block(block.get_block_hash())
-            
-            raise HTTPException(status_code=404, detail="Block not found")
+            block = self.blockchain.get_block_summary(height=height)
+            if not block:
+                raise HTTPException(status_code=404, detail="Block not found")
+            return block
         
         # Transaction operations
         @self.app.get("/api/tx/{txid}")
         async def get_transaction(txid: str):
             """Get transaction by ID"""
-            # Search in blockchain
-            for block in self.blockchain.chain:
-                for tx in block.transactions:
-                    if tx.calculate_txid() == txid:
-                        return {
-                            'txid': txid,
-                            'version': tx.version,
-                            'lock_time': tx.lock_time,
-                            'fee': tx.fee,
-                            'timestamp': tx.timestamp,
-                            'block_height': block.height,
-                            'confirmations': len(self.blockchain.chain) - block.height,
-                            'inputs': [{'prev_txid': inp.prev_txid, 'prev_vout': inp.prev_vout} 
-                                     for inp in tx.inputs],
-                            'outputs': [{'value': out.value, 'address': out.address} 
-                                      for out in tx.outputs],
-                            'privacy_proof': bool(tx.privacy_proof),
-                            'ring_signature': bool(tx.ring_signature)
-                        }
+            transaction = self.blockchain.get_transaction_summary(txid)
+            if transaction:
+                return transaction
             
             # Search in mempool
             if txid in self.blockchain.mempool:
@@ -239,6 +204,8 @@ class WepoFullNode:
                 return {
                     'txid': txid,
                     'version': tx.version,
+                    'tx_type': getattr(tx, 'tx_type', 'transfer'),
+                    'extra_data': getattr(tx, 'extra_data', {}) or {},
                     'lock_time': tx.lock_time,
                     'fee': tx.fee,
                     'timestamp': tx.timestamp,
@@ -311,8 +278,10 @@ class WepoFullNode:
                 if not tx:
                     raise HTTPException(status_code=400, detail="Failed to create transaction")
                 
-                # Add privacy features based on privacy level
-                if privacy_level in ['high', 'maximum']:
+                # Add privacy features based on privacy level.
+                # `enhanced` should produce an actual privacy proof rather than silently
+                # degrading to a standard transfer.
+                if privacy_level in ['enhanced', 'high', 'maximum']:
                     try:
                         ephemeral_private_key = generate_real_private_key()
 
@@ -370,6 +339,16 @@ class WepoFullNode:
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
         
+        def build_wallet_activity(address: str, limit: Optional[int] = 50):
+            """Collect wallet activity from the indexed chain ledger."""
+            transactions = self.blockchain.get_wallet_activity_for_address(address, limit=limit)
+            totals = self.blockchain.get_wallet_activity_totals(address)
+            return (
+                transactions,
+                totals['total_received_atomic'],
+                totals['total_sent_atomic'],
+            )
+
         # Wallet operations 
         @self.app.get("/api/wallet/{address}")
         async def get_wallet_info(address: str):
@@ -381,13 +360,16 @@ class WepoFullNode:
                 
                 balance = self.blockchain.get_balance_wepo(address)
                 utxos = self.blockchain.get_utxos_for_address(address)
+                _, total_received_atomic, total_sent_atomic = build_wallet_activity(address, limit=None)
                 
                 return {
                     'address': address,
                     'balance': balance,
                     'utxo_count': len(utxos),
-                    'total_received': balance,  # Simplified
-                    'total_sent': 0,  # TODO: Calculate from transaction history
+                    'total_received': total_received_atomic / COIN,
+                    'total_received_atomic': total_received_atomic,
+                    'total_sent': total_sent_atomic / COIN,
+                    'total_sent_atomic': total_sent_atomic,
                     'unconfirmed_balance': 0
                 }
                 
@@ -404,64 +386,8 @@ class WepoFullNode:
                 if not address.startswith("wepo1") or len(address) < 30:
                     raise HTTPException(status_code=400, detail="Invalid address format")
                 
-                transactions = []
-                
-                # Search through all blocks
-                for block in self.blockchain.chain:
-                    for tx in block.transactions:
-                        involved = False
-                        tx_type = "unknown"
-                        amount = 0
-                        from_address = "coinbase" if tx.is_coinbase() else "unknown"
-                        to_address = address
-
-                        input_addresses = []
-                        if not tx.is_coinbase():
-                            for inp in tx.inputs:
-                                cursor = self.blockchain.conn.execute(
-                                    '''
-                                    SELECT address FROM utxos WHERE txid = ? AND vout = ?
-                                    ''',
-                                    (inp.prev_txid, inp.prev_vout),
-                                )
-                                prev_utxo = cursor.fetchone()
-                                if prev_utxo and prev_utxo[0]:
-                                    input_addresses.append(prev_utxo[0])
-
-                        received_outputs = [output for output in tx.outputs if output.address == address]
-                        sent_outputs = [output for output in tx.outputs if output.address != address]
-                        is_sender = address in input_addresses
-
-                        if is_sender and sent_outputs:
-                            involved = True
-                            tx_type = "send"
-                            amount = sum(output.value for output in sent_outputs) / COIN
-                            from_address = address
-                            to_address = sent_outputs[0].address
-                        elif received_outputs:
-                            involved = True
-                            tx_type = "receive"
-                            amount = sum(output.value for output in received_outputs) / COIN
-                            if input_addresses:
-                                from_address = input_addresses[0]
-
-                        if involved:
-                            transactions.append({
-                                'txid': tx.calculate_txid(),
-                                'type': tx_type,
-                                'amount': amount,
-                                'from_address': from_address,
-                                'to_address': to_address,
-                                'timestamp': tx.timestamp,
-                                'status': 'confirmed',
-                                'confirmations': len(self.blockchain.chain) - block.height,
-                                'block_height': block.height,
-                                'block_hash': block.get_block_hash()
-                            })
-                
-                # Sort by timestamp (newest first) and limit
-                transactions.sort(key=lambda x: x['timestamp'], reverse=True)
-                return transactions[:limit]
+                transactions, _, _ = build_wallet_activity(address, limit=limit)
+                return transactions
                 
             except HTTPException:
                 raise
@@ -471,7 +397,7 @@ class WepoFullNode:
         # Staking operations
         @self.app.post("/api/stake")
         async def create_stake(request: dict):
-            """Create staking position"""
+            """Submit a canonical staking transaction."""
             try:
                 staker_address = request.get('staker_address')
                 amount = request.get('amount')
@@ -484,20 +410,32 @@ class WepoFullNode:
 
                 amount_atomic = int(round(float(amount) * COIN))
                 
-                # Create stake through blockchain
+                # Submit stake through the canonical transaction path.
                 stake_id = self.blockchain.create_stake(staker_address, amount_atomic)
+                txid = next(
+                    (
+                        candidate_txid
+                        for candidate_txid, tx in self.blockchain.mempool.items()
+                        if getattr(tx, 'tx_type', None) == TX_TYPE_STAKE_CREATE
+                        and (getattr(tx, 'extra_data', {}) or {}).get('stake_id') == stake_id
+                    ),
+                    None,
+                )
                 
                 if stake_id:
                     return {
                         'success': True,
+                        'status': 'pending',
                         'stake_id': stake_id,
+                        'txid': txid,
+                        'tx_hash': txid,
                         'staker_address': staker_address,
                         'amount': amount_atomic / COIN,
                         'amount_atomic': amount_atomic,
-                        'message': 'Stake created successfully'
+                        'message': 'Stake transaction submitted to mempool'
                     }
                 else:
-                    raise HTTPException(status_code=400, detail="Failed to create stake")
+                    raise HTTPException(status_code=400, detail="Failed to submit stake transaction")
                     
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
@@ -508,7 +446,7 @@ class WepoFullNode:
 
         @self.app.post("/api/stake/deactivate")
         async def deactivate_stake(request: dict):
-            """Deactivate a stake and release principal back to the wallet."""
+            """Submit stake deactivation through the canonical transaction path."""
             try:
                 stake_id = request.get('stake_id')
                 staker_address = request.get('staker_address')
@@ -523,15 +461,21 @@ class WepoFullNode:
 
                 return {
                     'success': True,
+                    'status': result['status'],
                     'stake_id': result['stake_id'],
                     'staker_address': result['staker_address'],
                     'amount': result['amount'] / COIN,
                     'amount_atomic': result['amount'],
                     'total_rewards': result['total_rewards'] / COIN,
-                    'status': result['status'],
-                    'unlock_height': result['unlock_height'],
+                    'unlock_height': result.get('unlock_height'),
                     'unlock_txid': result['unlock_txid'],
-                    'message': 'Stake deactivated successfully',
+                    'txid': result.get('txid', result['unlock_txid']),
+                    'source': result.get('source'),
+                    'message': (
+                        'Stake deactivated successfully'
+                        if result['status'] == 'inactive'
+                        else 'Stake deactivation transaction submitted to mempool'
+                    ),
                 }
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
@@ -612,7 +556,7 @@ class WepoFullNode:
         
         @self.app.post("/api/masternode")
         async def create_masternode(request: dict):
-            """Create masternode"""
+            """Submit masternode registration through the canonical transaction path."""
             try:
                 operator_address = request.get('operator_address')
                 collateral_txid = request.get('collateral_txid')
@@ -623,7 +567,7 @@ class WepoFullNode:
                 if not all([operator_address, collateral_txid, collateral_vout is not None]):
                     raise HTTPException(status_code=400, detail="Missing required fields: operator_address, collateral_txid, collateral_vout")
                 
-                # Create masternode through blockchain
+                # Submit the masternode registration through the canonical transaction path.
                 masternode_id = self.blockchain.create_masternode(
                     operator_address,
                     collateral_txid,
@@ -631,20 +575,32 @@ class WepoFullNode:
                     ip_address=ip_address,
                     port=port,
                 )
+                txid = next(
+                    (
+                        candidate_txid
+                        for candidate_txid, tx in self.blockchain.mempool.items()
+                        if getattr(tx, 'tx_type', None) == TX_TYPE_MASTERNODE_CREATE
+                        and (getattr(tx, 'extra_data', {}) or {}).get('masternode_id') == masternode_id
+                    ),
+                    None,
+                )
                 
                 if masternode_id:
                     return {
                         'success': True,
+                        'status': 'pending',
                         'masternode_id': masternode_id,
+                        'txid': txid,
+                        'tx_hash': txid,
                         'operator_address': operator_address,
                         'collateral_txid': collateral_txid,
                         'collateral_vout': collateral_vout,
                         'ip_address': ip_address,
                         'port': port,
-                        'message': 'Masternode created successfully'
+                        'message': 'Masternode registration transaction submitted to mempool'
                     }
                 else:
-                    raise HTTPException(status_code=400, detail="Failed to create masternode")
+                    raise HTTPException(status_code=400, detail="Failed to submit masternode transaction")
                     
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
@@ -655,7 +611,7 @@ class WepoFullNode:
 
         @self.app.post("/api/masternode/deactivate")
         async def deactivate_masternode(request: dict):
-            """Deactivate a masternode and release its collateral back to spendable balance."""
+            """Submit masternode deactivation through the canonical transaction path."""
             try:
                 masternode_id = request.get('masternode_id')
                 operator_address = request.get('operator_address')
@@ -670,7 +626,11 @@ class WepoFullNode:
 
                 return {
                     'success': True,
-                    'message': 'Masternode deactivated successfully',
+                    'message': (
+                        'Masternode deactivated successfully'
+                        if result['status'] == 'inactive'
+                        else 'Masternode deactivation transaction submitted to mempool'
+                    ),
                     **result,
                 }
             except ValueError as e:
@@ -712,20 +672,35 @@ class WepoFullNode:
         async def create_privacy_proof_endpoint(request: dict):
             """Create privacy proof for transaction"""
             try:
-                transaction_data = request.get('transaction_data')
-                if not transaction_data:
+                raw_transaction_data = request.get('transaction_data')
+                if raw_transaction_data is None:
                     raise HTTPException(status_code=400, detail="Missing transaction_data")
-                
-                # Create privacy proof
+
+                if isinstance(raw_transaction_data, dict):
+                    transaction_data = dict(raw_transaction_data)
+                else:
+                    serialized_input = str(raw_transaction_data).strip()
+                    if not serialized_input:
+                        raise HTTPException(status_code=400, detail="transaction_data must not be empty")
+                    transaction_data = {
+                        'recipient_address': 'wepo1privacyprooflab000000000000000',
+                        'amount': 0,
+                        'memo': serialized_input,
+                    }
+
                 proof = create_privacy_proof(transaction_data)
-                
+                if not proof:
+                    raise HTTPException(status_code=500, detail="Privacy proof generation returned empty result")
+
                 return {
                     'success': True,
                     'privacy_proof': proof.hex(),
                     'proof_size': len(proof),
                     'privacy_level': 'maximum'
                 }
-                
+
+            except HTTPException:
+                raise
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))
         
@@ -735,22 +710,26 @@ class WepoFullNode:
             try:
                 proof_data = request.get('proof_data')
                 message = request.get('message')
-                
-                if not proof_data or not message:
-                    raise HTTPException(status_code=400, detail="Missing proof_data or message")
-                
-                # Verify privacy proof
+
+                if not proof_data:
+                    raise HTTPException(status_code=400, detail="Missing proof_data")
+
+                verification_message = message.encode() if isinstance(message, str) and message else b''
                 is_valid = verify_privacy_proof(
                     bytes.fromhex(proof_data),
-                    message.encode()
+                    verification_message
                 )
-                
+
                 return {
                     'valid': is_valid,
                     'proof_verified': is_valid,
                     'privacy_level': 'maximum' if is_valid else 'none'
                 }
-                
+
+            except HTTPException:
+                raise
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))
         
@@ -939,24 +918,6 @@ class WepoFullNode:
                     'accepted': False,
                     'reason': str(e)
                 }
-        
-        # Wallet operations (basic)
-        @self.app.get("/api/wallet/{address}")
-        async def get_wallet_info(address: str):
-            """Get wallet information"""
-            # Calculate balance (simplified)
-            balance = 0
-            for block in self.blockchain.chain:
-                for tx in block.transactions:
-                    for output in tx.outputs:
-                        if output.address == address:
-                            balance += output.value
-            
-            return {
-                'address': address,
-                'balance': balance / 100000000,  # Convert to WEPO
-                'transaction_count': 0  # TODO: Calculate actual count
-            }
         
         # P2P network info
         @self.app.get("/api/network/peers")
@@ -1196,7 +1157,7 @@ class WepoFullNode:
         async def get_dilithium_info():
             """Get Dilithium implementation details"""
             try:
-                return get_dilithium_info()
+                return get_dilithium_info_impl()
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))
         
@@ -1303,8 +1264,13 @@ class WepoFullNode:
     
     def handle_new_block(self, block_data: dict):
         """Handle new block from P2P network"""
-        print(f"Received new block from network: {block_data.get('hash', 'unknown')}")
-        # TODO: Validate and add block to chain
+        try:
+            incoming_block = self.blockchain.deserialize_block(block_data)
+            block_hash = incoming_block.get_block_hash()
+            print(f"Received new block from network: {block_hash}")
+            self.blockchain.add_block_with_priority(incoming_block)
+        except Exception as e:
+            print(f"Failed to process incoming network block: {e}")
     
     def handle_new_transaction(self, tx_data: dict):
         """Handle new transaction from P2P network"""
@@ -1313,17 +1279,29 @@ class WepoFullNode:
     
     def get_block_data(self, block_hash: str) -> Optional[dict]:
         """Get block data for P2P requests"""
-        for block in self.blockchain.chain:
-            if block.get_block_hash() == block_hash:
-                return {
-                    'height': block.height,
-                    'hash': block.get_block_hash(),
-                    'prev_hash': block.header.prev_hash,
-                    'merkle_root': block.header.merkle_root,
-                    'timestamp': block.header.timestamp,
-                    'transactions': [tx.calculate_txid() for tx in block.transactions]
-                }
-        return None
+        return self.blockchain.get_block_payload(block_hash)
+
+    def get_headers_data(
+        self,
+        locator_hashes: Optional[list],
+        stop_hash: Optional[str] = None,
+        limit: int = 2000,
+    ) -> list[dict]:
+        """Get canonical headers after a peer locator."""
+        return self.blockchain.get_headers_after_locator(locator_hashes, stop_hash=stop_hash, limit=limit)
+
+    def get_block_hashes(
+        self,
+        locator_hashes: Optional[list],
+        stop_hash: Optional[str] = None,
+        limit: int = 500,
+    ) -> list[str]:
+        """Get canonical block hashes after a peer locator."""
+        return self.blockchain.get_block_hashes_after_locator(locator_hashes, stop_hash=stop_hash, limit=limit)
+
+    def get_block_locator(self) -> list[str]:
+        """Get the local canonical block locator for peer sync."""
+        return self.blockchain.get_block_locator_hashes()
     
     def start_mining(self):
         """Start mining in background thread"""
@@ -1395,7 +1373,7 @@ class WepoFullNode:
         
         print("WEPO Full Node stopped")
 
-def signal_handler(signum, frame):
+def signal_handler(_signum, _frame):
     """Handle shutdown signals"""
     print("\nReceived shutdown signal...")
     global node

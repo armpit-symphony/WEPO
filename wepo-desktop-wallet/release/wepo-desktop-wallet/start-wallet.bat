@@ -11,7 +11,7 @@ echo  ╚███╔███╔╝███████╗██║     ╚█
 echo   ╚══╝╚══╝ ╚══════╝╚═╝      ╚═════╝ 
 echo.
 echo        Desktop Wallet v1.0.0
-echo      Christmas Day 2025 Launch Ready
+echo      Launch Status
 echo.
 
 REM Check if Node.js is installed

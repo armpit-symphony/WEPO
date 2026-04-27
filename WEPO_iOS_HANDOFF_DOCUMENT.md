@@ -2,7 +2,7 @@
 
 ## 🎯 Project Overview
 
-**WEPO** is a decentralized cryptocurrency wallet with Bitcoin integration, privacy features, and network participation capabilities. The project is **production-ready** with working desktop and web wallets. Your task is to create an iOS app for TestFlight distribution.
+**WEPO** is a decentralized cryptocurrency wallet project with Bitcoin integration, privacy features, and network participation capabilities. The current desktop and web wallet surfaces should be treated as active development work, not production-approved releases. Your task is to create an iOS app suitable for staged TestFlight evaluation.
 
 ## ✅ Current Project Status (What's Already Built)
 
@@ -39,7 +39,7 @@ Create a native iOS app that provides the same functionality as the web/desktop 
 ### **Target Users**
 - Cryptocurrency enthusiasts
 - Privacy-focused users
-- Early adopters for Christmas Day 2025 genesis launch
+- Early adopters for genesis launch
 - Beta testers through TestFlight
 
 ### **Core Features to Implement**
@@ -358,7 +358,7 @@ Marketing URL: https://wepo.network
 ### **Target Dates**
 - **TestFlight Beta**: 2-3 months from start
 - **App Store Review**: Add 2-4 weeks buffer
-- **Christmas Day 2025**: Genesis launch ready
+- **Network Launch**: TBD pending production readiness
 
 ### **Pre-Launch Requirements**
 - [ ] Comprehensive testing completed
@@ -399,7 +399,7 @@ Marketing URL: https://wepo.network
 - [ ] 4.0+ app store rating
 - [ ] 1000+ TestFlight users
 - [ ] All core features working
-- [ ] Ready for Christmas 2025 launch
+- [ ] Public launch criteria reviewed and approved
 
 ## 🆘 Support and Resources
 
@@ -426,4 +426,4 @@ Marketing URL: https://wepo.network
 
 **The backend is 100% ready - you can start iOS development immediately!**
 
-**Christmas Day 2025 Genesis Launch - Let's make it happen! 🎄**
+**Network launch timing remains under review.**

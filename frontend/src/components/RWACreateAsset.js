@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 
 const RWACreateAsset = ({ onBack, userAddress, onAssetCreated }) => {
+  const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
   const [step, setStep] = useState(1);
   const [formData, setFormData] = useState({
     name: '',
@@ -41,14 +42,14 @@ const RWACreateAsset = ({ onBack, userAddress, onAssetCreated }) => {
   const loadFeeInfoAndBalance = async () => {
     try {
       // Get fee info
-      const feeResponse = await fetch('/api/rwa/fee-info');
+      const feeResponse = await fetch(`${backendUrl}/api/rwa/fee-info`);
       const feeData = await feeResponse.json();
       if (feeData.success) {
         setFeeInfo(feeData.fee_info);
       }
 
       // Get user balance (from wallet context or API)
-      const balanceResponse = await fetch(`/api/wallet/${userAddress}`);
+      const balanceResponse = await fetch(`${backendUrl}/api/wallet/${userAddress}`);
       const balanceData = await balanceResponse.json();
       if (balanceData.balance !== undefined) {
         setUserBalance(balanceData.balance);
@@ -157,7 +158,7 @@ const RWACreateAsset = ({ onBack, userAddress, onAssetCreated }) => {
       }
 
       // Create asset
-      const response = await fetch('/api/rwa/create-asset', {
+      const response = await fetch(`${backendUrl}/api/rwa/create-asset`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -201,7 +202,7 @@ const RWACreateAsset = ({ onBack, userAddress, onAssetCreated }) => {
         total_supply: 1000000000000 // 10,000 tokens with 8 decimals
       };
 
-      const response = await fetch('/api/rwa/tokenize', {
+      const response = await fetch(`${backendUrl}/api/rwa/tokenize`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

@@ -101,7 +101,7 @@ class CommunityMiningCoordinator:
         self.stats = MiningStats()
         self.dual_layer_engine = DualLayerMiningEngine()
         
-        # Christmas Day 2025 3pm EST = 8pm UTC
+        # genesis date 3pm EST = 8pm UTC
         launch_datetime = datetime(2025, 12, 25, 20, 0, 0, tzinfo=timezone.utc)
         self.LAUNCH_TIMESTAMP = int(launch_datetime.timestamp())
         
@@ -441,7 +441,7 @@ if __name__ == "__main__":
     async def root():
         return {
             "message": "WEPO Community Mining API",
-            "genesis_launch": "December 25, 2025 3:00 PM EST",
+            "genesis_launch": "TBD pending production readiness",
             "status": mining_coordinator.get_mining_status()
         }
     

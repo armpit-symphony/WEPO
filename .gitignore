@@ -27,10 +27,17 @@ next-env.d.ts
 
 # Production builds
 /build
+frontend/build/
 dist/
 dist
 
 # Environment files (comprehensive coverage)
+.env
+.env.*
+frontend/.env
+backend/.env
+!*.env.example
+!*.env.sample
 
 *token.json*
 *credentials.json*
@@ -45,6 +52,7 @@ dump.rdb
 # System files
 .DS_Store
 *.pem
+*.backup
 
 # Python
 __pycache__/
@@ -62,6 +70,7 @@ chainlit.md
 .vercel
 
 # Data and databases
+.local/
 agenthub/agents/youtube/db
 
 # Archive files and large assets

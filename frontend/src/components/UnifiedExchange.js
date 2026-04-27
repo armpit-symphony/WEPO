@@ -22,12 +22,14 @@ import {
 } from 'lucide-react';
 import { useWallet } from '../contexts/WalletContext';
 
-const UnifiedExchange = ({ onBack }) => {
+const UnifiedExchange = ({ onBack, onClose }) => {
   const { wallet } = useWallet();
+  const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
   
   // Get current wallet address
-  const currentAddress = wallet?.wepo?.address;
-  const btcAddress = wallet?.btc?.address;
+  const currentAddress = wallet?.address || wallet?.wepo?.address || '';
+  const btcAddress = wallet?.btc?.address || '';
+  const handleBack = onBack || onClose;
   
   const [activeTab, setActiveTab] = useState('btc'); // 'btc', 'rwa', or 'liquidity'
   const [swapType, setSwapType] = useState('buy'); // 'buy' or 'sell'
@@ -98,7 +100,6 @@ const UnifiedExchange = ({ onBack }) => {
 
   const fetchExchangeRate = async () => {
     try {
-      const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
       const response = await fetch(`${backendUrl}/api/swap/rate`);
       const data = await response.json();
       
@@ -141,7 +142,7 @@ const UnifiedExchange = ({ onBack }) => {
 
   const fetchTradeableTokens = async () => {
     try {
-      const response = await fetch('/api/rwa/tokens/tradeable');
+      const response = await fetch(`${backendUrl}/api/rwa/tokens/tradeable`);
       const data = await response.json();
       if (data.success) {
         setTradeableTokens(data.tokens);
@@ -168,7 +169,6 @@ const UnifiedExchange = ({ onBack }) => {
 
   const fetchPoolStats = async () => {
     try {
-      const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
       const response = await fetch(`${backendUrl}/api/liquidity/stats`);
       const data = await response.json();
       setPoolStats(data);
@@ -180,7 +180,6 @@ const UnifiedExchange = ({ onBack }) => {
   // Privacy mixing functions
   const fetchAvailableMixers = async () => {
     try {
-      const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
       const response = await fetch(`${backendUrl}/api/masternode/get_available_mixers`);
       const data = await response.json();
       
@@ -198,7 +197,6 @@ const UnifiedExchange = ({ onBack }) => {
 
   const submitMixingRequest = async (amount, inputAddress, outputAddress) => {
     try {
-      const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
       const response = await fetch(`${backendUrl}/api/masternode/mix_btc`, {
         method: 'POST',
         headers: {
@@ -234,7 +232,6 @@ const UnifiedExchange = ({ onBack }) => {
 
   const fetchMixingStatus = async (requestId) => {
     try {
-      const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
       const response = await fetch(`${backendUrl}/api/masternode/mixing_status/${requestId}`);
       const data = await response.json();
       
@@ -261,7 +258,6 @@ const UnifiedExchange = ({ onBack }) => {
 
   const performQuickMix = async (amount, fromAddress, toAddress) => {
     try {
-      const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
       const response = await fetch(`${backendUrl}/api/masternode/quick_mix_btc`, {
         method: 'POST',
         headers: {
@@ -309,8 +305,6 @@ const UnifiedExchange = ({ onBack }) => {
     setError('');
     
     try {
-      const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
-      
       const response = await fetch(`${backendUrl}/api/liquidity/add`, {
         method: 'POST',
         headers: {
@@ -382,8 +376,6 @@ const UnifiedExchange = ({ onBack }) => {
     setSuccess('');
     
     try {
-      const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
-      
       // Determine swap direction and currency
       const fromCurrency = swapType === 'buy' ? 'BTC' : 'WEPO';
       const inputAmount = swapType === 'buy' ? parseFloat(btcAmount) : parseFloat(wepoAmount);
@@ -421,7 +413,7 @@ const UnifiedExchange = ({ onBack }) => {
             const swapData = await response.json();
             
             if (response.ok && swapData.status === 'completed') {
-              setSuccess(`🔒 Privacy-enhanced swap completed! Mixed ${mixResult.mixed_amount} ${fromCurrency} → ${swapData.output_amount} ${swapData.to_currency}. Privacy mixing fee: ${mixResult.mixing_fee} BTC. Swap fee: ${swapData.fee_amount} ${fromCurrency}. Your funds are now in your self-custodial wallet with enhanced privacy!`);
+              setSuccess(`🔒 Privacy-enhanced swap completed. Mixed ${mixResult.mixed_amount} ${fromCurrency} → ${swapData.output_amount} ${swapData.to_currency}. Privacy mixing fee: ${mixResult.mixing_fee} BTC. Swap fee: ${swapData.fee_amount} ${fromCurrency}. Review the updated balances in your public test account.`);
               
               // Update exchange rate with new market price
               setExchangeRate(swapData.market_price);
@@ -534,7 +526,6 @@ const UnifiedExchange = ({ onBack }) => {
       }
 
       // Execute RWA trade (with or without prior mixing)
-      const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
       const response = await fetch(`${backendUrl}/api/dex/rwa-trade`, {
         method: 'POST',
         headers: {
@@ -554,7 +545,7 @@ const UnifiedExchange = ({ onBack }) => {
       
       if (response.ok && data.success) {
         const privacyNote = privacyEnabled && isBtcBacked ? ' with enhanced privacy' : '';
-        setSuccess(`${swapType === 'buy' ? 'Purchase' : 'Sale'} completed successfully${privacyNote}! Trade ID: ${data.trade_id}${privacyNote ? '. Your RWA tokens are in your self-custodial wallet.' : ''}`);
+        setSuccess(`${swapType === 'buy' ? 'Purchase' : 'Sale'} completed successfully${privacyNote}! Trade ID: ${data.trade_id}. Portfolio balances have been updated in your public test account.`);
         
         // Reset form
         setTokenAmount('');
@@ -589,7 +580,7 @@ const UnifiedExchange = ({ onBack }) => {
           <span className="text-sm font-medium text-blue-200">Bitcoin DEX</span>
         </div>
         <p className="text-sm text-gray-300">
-          Swap Bitcoin for WEPO using atomic swaps. Your funds are never held by a third party.
+          Public-test BTC swap flow for WEPO exchange validation. Do not treat this build as live BTC self-custody or a finished production atomic-swap surface.
         </p>
       </div>
 
@@ -1140,7 +1131,7 @@ const UnifiedExchange = ({ onBack }) => {
       {/* Header */}
       <div className="flex items-center gap-3 mb-6">
         <button
-          onClick={onBack}
+          onClick={handleBack}
           className="text-gray-400 hover:text-white transition-colors"
         >
           <ArrowLeft size={24} />
@@ -1231,13 +1222,13 @@ const UnifiedExchange = ({ onBack }) => {
           {activeTab === 'btc' ? (
             <>
               <p className="text-sm text-gray-300">
-                🔒 <strong>Privacy-Enhanced Trading:</strong> BTC swaps can be routed through masternode mixers for enhanced privacy
+                🔒 <strong>Privacy-Enhanced Trading:</strong> BTC-linked swap privacy features are still under active public-test validation
               </p>
               <p className="text-sm text-gray-300">
-                💰 <strong>Self-Custodial:</strong> Your funds go directly to your self-custodial wallet - no third party holds your assets
+                💰 <strong>Public Test Custody:</strong> This build uses the WEPO public test account flow rather than live BTC self-custody
               </p>
               <p className="text-sm text-gray-300">
-                ⚡ <strong>Atomic Swaps:</strong> Trustless exchange ensures secure peer-to-peer trading
+                ⚡ <strong>Atomic Swap Status:</strong> The BTC swap path is a public-test feature and should not be presented as a finished production exchange surface
               </p>
             </>
           ) : activeTab === 'rwa' ? (
@@ -1249,7 +1240,7 @@ const UnifiedExchange = ({ onBack }) => {
                 🔒 <strong>Privacy for Bitcoin-backed Assets:</strong> Bitcoin-backed RWA trades support privacy mixing
               </p>
               <p className="text-sm text-gray-300">
-                💰 <strong>Self-Custodial Storage:</strong> All RWA tokens are stored in your self-custodial wallet
+                💰 <strong>Portfolio Storage:</strong> RWA balances in this build are reflected through your WEPO public test account session
               </p>
             </>
           ) : (

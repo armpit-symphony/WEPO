@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Shield, Eye, EyeOff, LogIn, AlertTriangle } from 'lucide-react';
 import { useWallet } from '../contexts/WalletContext';
-import { validateTransactionPassword, sessionManager, secureLog } from '../utils/securityUtils';
+import { validateTransactionPassword, secureLog } from '../utils/securityUtils';
 
 const WalletLogin = ({ onWalletLoaded, onCreateNew }) => {
   const [formData, setFormData] = useState({
@@ -12,7 +12,7 @@ const WalletLogin = ({ onWalletLoaded, onCreateNew }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [validationErrors, setValidationErrors] = useState([]);
-  const { setWallet } = useWallet();
+  const { loginWallet } = useWallet();
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
@@ -59,39 +59,10 @@ const WalletLogin = ({ onWalletLoaded, onCreateNew }) => {
     try {
       secureLog.info('Login attempt initiated', { username: formData.username });
       
-      // Validate against stored username
-      const storedUsername = localStorage.getItem('wepo_wallet_username');
-      if (storedUsername !== formData.username) {
-        throw new Error('Invalid username or password');
-      }
-
-      // In a real implementation, you would verify the password against backend
-      // For now, we'll simulate the login process with improved security
-      
-      // Create secure session
-      const sessionToken = sessionManager.createSecureSession(formData.username, formData.password);
-      
-      // Mock wallet data (in real implementation, this would come from backend after authentication)
-      const walletData = {
-        wepo: {
-          address: `wepo1${Math.random().toString(36).substring(2, 34)}`,
-          publicKey: 'mock_public_key',
-        },
-        btc: {
-          address: `bc1${Math.random().toString(36).substring(2, 31)}`,
-          publicKey: 'mock_btc_public_key',
-        },
-        username: formData.username,
-        createdAt: new Date().toISOString(),
-        version: '3.1',
-        bip39: true,
-        securityLevel: 'enhanced'
-      };
-
-      setWallet(walletData);
+      await loginWallet(formData.username, formData.password);
       secureLog.info('Login successful');
-      
-      onWalletLoaded(walletData);
+
+      onWalletLoaded();
       
     } catch (error) {
       secureLog.error('Login error', error);
@@ -215,7 +186,7 @@ const WalletLogin = ({ onWalletLoaded, onCreateNew }) => {
           {/* Security Note */}
           <div className="mt-8 p-4 bg-gray-700/50 rounded-lg border border-purple-500/30">
             <p className="text-xs text-purple-200 text-center">
-              🔒 Your wallet is secured with end-to-end encryption. WEPO never stores your password or private keys.
+              Public test mode: sign-in uses your WEPO test account on the live backend. Recovery phrase import/export is not available in this build.
             </p>
           </div>
         </div>

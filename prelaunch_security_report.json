@@ -1,7 +1,7 @@
 {
   "suite": "prelaunch_security_suite",
   "timestamp": 1755084401,
-  "backend_url": "https://14c9bc0f-13ae-417c-9268-1c5489ce57d7.preview.emergentagent.com/api",
+  "backend_url": "http://127.0.0.1:18021/api",
   "scope": "full",
   "final_score": 87.0,
   "categories": {

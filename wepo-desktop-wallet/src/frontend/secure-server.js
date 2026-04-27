@@ -15,6 +15,10 @@ const DEFAULT_CONNECT_SRC = [
   "'self'",
   "https:",
   "wss:",
+  "http://localhost:18021",
+  "http://127.0.0.1:18021",
+  "http://localhost:18212",
+  "http://127.0.0.1:18212",
   "http://localhost:8011",
   "http://127.0.0.1:8011",
   "http://localhost:8122",
@@ -33,17 +37,13 @@ app.use(helmet({
       defaultSrc: ["'self'"],
       scriptSrc: [
         "'self'", 
-        "'unsafe-inline'", 
-        "https://us.i.posthog.com",
-        "https://app.emergent.sh",
-        "https://d33sy5i8bnduwe.cloudfront.net"
+        "'unsafe-inline'"
       ],
       styleSrc: ["'self'", "'unsafe-inline'"],
       imgSrc: [
         "'self'", 
-        "data:", 
-        "https:",
-        "https://avatars.githubusercontent.com"
+        "data:",
+        "https:"
       ],
       connectSrc: [
         ...CSP_CONNECT_SRC

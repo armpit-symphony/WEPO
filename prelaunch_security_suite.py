@@ -529,9 +529,9 @@ def main():
         print(f"\n⚠️ Failed to write report: {e}")
 
     # Launch readiness banner
-    print("\n🎄 Christmas Day Launch Assessment:")
+    print("\nLaunch Readiness Assessment:")
     if score >= 85:
-        print("✅ GO - Ready for production launch")
+        print("✅ GO - Ready for public launch")
     elif score >= 70:
         print("⚠️ CONDITIONAL GO - Address minor issues")
     else:

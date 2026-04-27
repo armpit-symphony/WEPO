@@ -3,34 +3,20 @@
 WEPO Core Blockchain Implementation
 Revolutionary cryptocurrency with hybrid PoW/PoS consensus and privacy features
 """
-try:
-    from .dilithium import dilithium_system
-    from .quantum_transaction import QuantumTransaction
-except ImportError:
-    # Fallback for direct execution
-    from dilithium import dilithium_system
-    from quantum_transaction import QuantumTransaction
-
-
 import hashlib
 import json
 import time
 import struct
-import socket
-import threading
-from typing import List, Dict, Optional, Union
+from typing import Any, List, Dict, Optional, Set, Tuple, Union
 from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta
-import secrets
+from datetime import datetime
 import argon2
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa, padding
 import sqlite3
 import os
 try:
-    from .address_utils import generate_wepo_address, validate_wepo_address, is_quantum_address, is_regular_address
+    from .address_utils import generate_wepo_address, validate_wepo_address, is_quantum_address
 except ImportError:
-    from address_utils import generate_wepo_address, validate_wepo_address, is_quantum_address, is_regular_address
+    from address_utils import generate_wepo_address, validate_wepo_address, is_quantum_address
 try:
     from .network_profile import (
         format_block_time,
@@ -138,6 +124,19 @@ MIN_MASTERNODE_COLLATERAL = 1000 * COIN
 MIN_POS_COLLATERAL = 100 * COIN
 MASTERNODE_COLLATERAL = 10000 * COIN
 POS_ACTIVATION_HEIGHT = TOTAL_INITIAL_BLOCKS
+
+TX_TYPE_TRANSFER = "transfer"
+TX_TYPE_STAKE_CREATE = "stake_create"
+TX_TYPE_STAKE_DEACTIVATE = "stake_deactivate"
+TX_TYPE_MASTERNODE_CREATE = "masternode_create"
+TX_TYPE_MASTERNODE_DEACTIVATE = "masternode_deactivate"
+
+PROTOCOL_LIFECYCLE_TX_TYPES = {
+    TX_TYPE_STAKE_CREATE,
+    TX_TYPE_STAKE_DEACTIVATE,
+    TX_TYPE_MASTERNODE_CREATE,
+    TX_TYPE_MASTERNODE_DEACTIVATE,
+}
 
 
 def apply_network_profile(profile_name: str = "mainnet") -> None:
@@ -282,11 +281,17 @@ class Transaction:
     fee: int = 0
     privacy_proof: Optional[bytes] = None
     ring_signature: Optional[bytes] = None
+    tx_type: str = TX_TYPE_TRANSFER
+    extra_data: Optional[Dict[str, Any]] = None
     timestamp: int = 0
     
     def __post_init__(self):
         if self.timestamp == 0:
             self.timestamp = int(time.time())
+        if self.extra_data is None:
+            self.extra_data = {}
+        else:
+            self.extra_data = dict(self.extra_data)
     
     def has_quantum_signatures(self) -> bool:
         """Check if transaction contains quantum signatures"""
@@ -362,7 +367,9 @@ class Transaction:
             if out.script_pubkey:
                 tx_string += out.script_pubkey.hex()
         
-        tx_string += f"{self.lock_time}{self.timestamp}"
+        tx_string += f"{self.lock_time}{self.timestamp}{self.tx_type}"
+        if self.extra_data:
+            tx_string += json.dumps(self.extra_data, sort_keys=True, separators=(",", ":"))
         
         return hashlib.sha256(tx_string.encode()).hexdigest()
     
@@ -513,7 +520,7 @@ class WepoArgon2Miner:
                     print(f"Nonce: {nonce}, Time: {mining_time:.2f}s, Hashrate: {hashrate:.2f} H/s")
                     return block
                     
-            except Exception as e:
+            except Exception:
                 # Argon2 error, continue with next nonce
                 pass
             
@@ -553,6 +560,9 @@ class WepoBlockchain:
         self.utxo_set: Dict[str, TransactionOutput] = {}
         self.stakes: Dict[str, dict] = {}
         self.masternodes: Dict[str, dict] = {}
+        self.block_index: Dict[str, Block] = {}
+        self.main_chain_hashes: Set[str] = set()
+        self.pending_blocks_by_prev_hash: Dict[str, Set[str]] = {}
         self.current_difficulty = 4  # Start with 4 leading zeros
         self.fixed_difficulty: Optional[int] = None
         self.miner = WepoArgon2Miner()
@@ -565,8 +575,12 @@ class WepoBlockchain:
         
         # Load existing chain or create genesis
         self.load_chain()
+        self._refresh_main_chain_index()
+        if self.chain:
+            self.rebuild_protocol_state_from_chain()
         if not self.chain:
             self.create_genesis_block()
+        self.backfill_wallet_activity_ledger()
     
     def init_database(self):
         """Initialize SQLite database"""
@@ -665,9 +679,726 @@ class WepoBlockchain:
                 FOREIGN KEY(block_height) REFERENCES blocks(height)
             )
         ''')
+
+        self.conn.execute('''
+            CREATE TABLE IF NOT EXISTS wallet_activity (
+                activity_id TEXT PRIMARY KEY,
+                address TEXT NOT NULL,
+                txid TEXT NOT NULL,
+                activity_type TEXT NOT NULL,
+                amount INTEGER NOT NULL,
+                counterparty_address TEXT,
+                block_height INTEGER NOT NULL,
+                block_hash TEXT NOT NULL,
+                timestamp INTEGER NOT NULL
+            )
+        ''')
+
+        self.conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_utxos_address_spent
+            ON utxos(address, spent)
+        ''')
+        self.conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_masternodes_status_collateral
+            ON masternodes(status, collateral_txid, collateral_vout)
+        ''')
+        self.conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_staking_rewards_recipient_height
+            ON staking_rewards(recipient_address, block_height DESC, timestamp DESC)
+        ''')
+        self.conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_wallet_activity_address_height
+            ON wallet_activity(address, block_height DESC, timestamp DESC)
+        ''')
+        self.conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_wallet_activity_address_type_height
+            ON wallet_activity(address, activity_type, block_height DESC, timestamp DESC)
+        ''')
+
+        self._ensure_table_column("stakes", "lock_txid", "TEXT")
+        self._ensure_table_column("stakes", "lock_vout", "INTEGER")
+        self._ensure_table_column("stakes", "deactivation_txid", "TEXT")
+        self._ensure_table_column("masternodes", "deactivation_txid", "TEXT")
         
         self.conn.commit()
-    
+
+    def _ensure_table_column(self, table_name: str, column_name: str, column_type_sql: str) -> None:
+        """Add a missing SQLite column in-place for forward-compatible local migrations."""
+        cursor = self.conn.execute(f"PRAGMA table_info({table_name})")
+        existing_columns = {row[1] for row in cursor.fetchall()}
+        if column_name in existing_columns:
+            return
+        self.conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type_sql}")
+
+    @staticmethod
+    def _protocol_tx_type(transaction: Transaction) -> str:
+        """Normalize transaction type access for legacy and upgraded transactions."""
+        tx_type = getattr(transaction, "tx_type", TX_TYPE_TRANSFER) or TX_TYPE_TRANSFER
+        return str(tx_type)
+
+    @staticmethod
+    def _decode_script_marker(script_pubkey: Optional[bytes]) -> str:
+        """Decode a script marker used for synthetic protocol outputs."""
+        if not script_pubkey:
+            return ""
+        if isinstance(script_pubkey, (bytes, bytearray)):
+            return bytes(script_pubkey).decode(errors="ignore")
+        return str(script_pubkey)
+
+    def _find_protocol_output(self, transaction: Transaction, marker_prefix: str) -> Optional[tuple]:
+        """Return the first output matching a protocol marker prefix."""
+        for output_index, output in enumerate(transaction.outputs):
+            if self._decode_script_marker(output.script_pubkey).startswith(marker_prefix):
+                return output_index, output
+        return None
+
+    def _parse_reward_reference(self, reward_id: str) -> Optional[tuple]:
+        """Recover a stake or masternode reference from persisted reward IDs."""
+        if reward_id.startswith("reward_staker_"):
+            parts = reward_id.split("_", 3)
+            if len(parts) == 4:
+                return "staker", parts[3]
+        elif reward_id.startswith("reward_masternode_"):
+            parts = reward_id.split("_", 3)
+            if len(parts) == 4:
+                return "masternode", parts[3]
+        elif reward_id.startswith("fee_reward_staker_"):
+            parts = reward_id.split("_", 5)
+            if len(parts) == 6:
+                return "staker", parts[5]
+        elif reward_id.startswith("fee_reward_masternode_"):
+            parts = reward_id.split("_", 5)
+            if len(parts) == 6:
+                return "masternode", parts[5]
+        return None
+
+    def _replay_protocol_reward_totals(self) -> None:
+        """Reapply persisted reward history onto rebuilt stake and masternode state."""
+        self.conn.execute("UPDATE stakes SET total_rewards = 0, last_reward_height = 0")
+        self.conn.execute("UPDATE masternodes SET total_rewards = 0, last_ping = 0")
+
+        reward_cursor = self.conn.execute('''
+            SELECT reward_id, amount, block_height, timestamp
+            FROM staking_rewards
+            ORDER BY block_height ASC, timestamp ASC
+        ''')
+        for reward_id, amount, block_height, timestamp in reward_cursor.fetchall():
+            parsed = self._parse_reward_reference(reward_id)
+            if not parsed:
+                continue
+
+            recipient_type, reference_id = parsed
+            if recipient_type == "staker":
+                self.conn.execute('''
+                    UPDATE stakes
+                    SET total_rewards = total_rewards + ?,
+                        last_reward_height = CASE
+                            WHEN last_reward_height < ? THEN ?
+                            ELSE last_reward_height
+                        END
+                    WHERE stake_id = ?
+                ''', (amount, block_height, block_height, reference_id))
+            elif recipient_type == "masternode":
+                self.conn.execute('''
+                    UPDATE masternodes
+                    SET total_rewards = total_rewards + ?,
+                        last_ping = CASE
+                            WHEN last_ping < ? THEN ?
+                            ELSE last_ping
+                        END
+                    WHERE masternode_id = ?
+                ''', (amount, timestamp, timestamp, reference_id))
+
+    def _apply_protocol_state_transition(self, transaction: Transaction, block: Block) -> None:
+        """Apply one confirmed protocol lifecycle transaction to canonical stake/MN state."""
+        tx_type = self._protocol_tx_type(transaction)
+        if tx_type not in PROTOCOL_LIFECYCLE_TX_TYPES:
+            return
+
+        txid = transaction.calculate_txid()
+        metadata = dict(transaction.extra_data or {})
+        timestamp = transaction.timestamp or block.header.timestamp
+
+        if tx_type == TX_TYPE_STAKE_CREATE:
+            stake_id = metadata.get("stake_id")
+            staker_address = metadata.get("staker_address")
+            amount = int(metadata.get("amount", 0) or 0)
+            locked_output = self._find_protocol_output(transaction, f"stake_lock:{stake_id}")
+            if not stake_id or not staker_address or not locked_output or amount <= 0:
+                raise ValueError(f"Invalid canonical stake_create transaction {txid}")
+
+            lock_vout, _ = locked_output
+            self.conn.execute('''
+                INSERT OR REPLACE INTO stakes (
+                    stake_id,
+                    staker_address,
+                    amount,
+                    start_height,
+                    start_time,
+                    last_reward_height,
+                    total_rewards,
+                    status,
+                    unlock_height,
+                    lock_txid,
+                    lock_vout,
+                    deactivation_txid
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                stake_id,
+                staker_address,
+                amount,
+                block.height,
+                timestamp,
+                0,
+                0,
+                'active',
+                None,
+                txid,
+                lock_vout,
+                None,
+            ))
+
+            self.stakes[stake_id] = {
+                'stake_id': stake_id,
+                'staker_address': staker_address,
+                'amount': amount,
+                'start_height': block.height,
+                'start_time': timestamp,
+                'last_reward_height': 0,
+                'total_rewards': 0,
+                'status': 'active',
+                'unlock_height': None,
+                'lock_txid': txid,
+                'lock_vout': lock_vout,
+                'deactivation_txid': None,
+            }
+        elif tx_type == TX_TYPE_STAKE_DEACTIVATE:
+            stake_id = metadata.get("stake_id")
+            if not stake_id:
+                raise ValueError(f"Invalid canonical stake_deactivate transaction {txid}")
+
+            self.conn.execute('''
+                UPDATE stakes
+                SET status = 'inactive',
+                    unlock_height = ?,
+                    deactivation_txid = ?
+                WHERE stake_id = ?
+            ''', (block.height, txid, stake_id))
+
+            if stake_id in self.stakes:
+                self.stakes[stake_id]['status'] = 'inactive'
+                self.stakes[stake_id]['unlock_height'] = block.height
+                self.stakes[stake_id]['deactivation_txid'] = txid
+        elif tx_type == TX_TYPE_MASTERNODE_CREATE:
+            masternode_id = metadata.get("masternode_id")
+            operator_address = metadata.get("operator_address")
+            ip_address = metadata.get("ip_address")
+            port = int(metadata.get("port", 22567) or 22567)
+            locked_output = self._find_protocol_output(transaction, f"masternode_lock:{masternode_id}")
+            if not masternode_id or not operator_address or not locked_output:
+                raise ValueError(f"Invalid canonical masternode_create transaction {txid}")
+
+            collateral_vout, _ = locked_output
+            self.conn.execute('''
+                INSERT OR REPLACE INTO masternodes (
+                    masternode_id,
+                    operator_address,
+                    collateral_txid,
+                    collateral_vout,
+                    ip_address,
+                    port,
+                    start_height,
+                    start_time,
+                    last_ping,
+                    status,
+                    total_rewards,
+                    deactivation_txid
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                masternode_id,
+                operator_address,
+                txid,
+                collateral_vout,
+                ip_address,
+                port,
+                block.height,
+                timestamp,
+                0,
+                'active',
+                0,
+                None,
+            ))
+
+            self.masternodes[masternode_id] = {
+                'masternode_id': masternode_id,
+                'operator_address': operator_address,
+                'collateral_txid': txid,
+                'collateral_vout': collateral_vout,
+                'ip_address': ip_address,
+                'port': port,
+                'start_height': block.height,
+                'start_time': timestamp,
+                'last_ping': 0,
+                'status': 'active',
+                'total_rewards': 0,
+                'deactivation_txid': None,
+            }
+        elif tx_type == TX_TYPE_MASTERNODE_DEACTIVATE:
+            masternode_id = metadata.get("masternode_id")
+            if not masternode_id:
+                raise ValueError(f"Invalid canonical masternode_deactivate transaction {txid}")
+
+            self.conn.execute('''
+                UPDATE masternodes
+                SET status = 'inactive',
+                    deactivation_txid = ?
+                WHERE masternode_id = ?
+            ''', (txid, masternode_id))
+
+            if masternode_id in self.masternodes:
+                self.masternodes[masternode_id]['status'] = 'inactive'
+                self.masternodes[masternode_id]['deactivation_txid'] = txid
+
+    def _apply_protocol_state_transitions(self, block: Block) -> None:
+        """Apply all protocol lifecycle state transitions confirmed in a block."""
+        for transaction in block.transactions:
+            self._apply_protocol_state_transition(transaction, block)
+
+    def rebuild_protocol_state_from_chain(self) -> None:
+        """Reconstruct stake and masternode state from canonical lifecycle transactions."""
+        has_canonical_lifecycle = any(
+            self._protocol_tx_type(transaction) in PROTOCOL_LIFECYCLE_TX_TYPES
+            for block in self.chain
+            for transaction in block.transactions
+        )
+        if not has_canonical_lifecycle:
+            return
+
+        self.conn.execute("DELETE FROM stakes")
+        self.conn.execute("DELETE FROM masternodes")
+        self.stakes.clear()
+        self.masternodes.clear()
+
+        for block in self.chain:
+            for transaction in block.transactions:
+                self._apply_protocol_state_transition(transaction, block)
+
+        self._replay_protocol_reward_totals()
+        self.conn.commit()
+
+    def _refresh_main_chain_index(self) -> None:
+        """Refresh in-memory indexes for main-chain and side-chain block lookups."""
+        self.main_chain_hashes = set()
+        for block in self.chain:
+            block_hash = block.get_block_hash()
+            self.block_index[block_hash] = block
+            self.main_chain_hashes.add(block_hash)
+
+    def _remember_noncanonical_block(self, block: Block) -> None:
+        """Store a side-branch or orphan block for later branch assembly."""
+        block_hash = block.get_block_hash()
+        self.block_index[block_hash] = block
+        self.pending_blocks_by_prev_hash.setdefault(block.header.prev_hash, set()).add(block_hash)
+
+    def _forget_pending_block(self, block: Block) -> None:
+        """Remove a block from pending-branch bookkeeping once it is adopted."""
+        block_hash = block.get_block_hash()
+        children = self.pending_blocks_by_prev_hash.get(block.header.prev_hash)
+        if not children:
+            return
+        children.discard(block_hash)
+        if not children:
+            self.pending_blocks_by_prev_hash.pop(block.header.prev_hash, None)
+
+    def _chain_score(self, blocks: List[Block]) -> int:
+        """Approximate cumulative chainwork for main-branch selection."""
+        score = 0
+        for block in blocks:
+            if block.header.is_pow_block():
+                score += max(1, int(block.header.bits))
+            else:
+                score += 1
+        return score
+
+    def _reset_derived_chain_tables(self) -> None:
+        """Clear canonical chain-derived tables before a deterministic replay."""
+        for table_name in (
+            "wallet_activity",
+            "staking_rewards",
+            "stakes",
+            "masternodes",
+            "utxos",
+            "transactions",
+            "blocks",
+        ):
+            self.conn.execute(f"DELETE FROM {table_name}")
+        self.stakes.clear()
+        self.masternodes.clear()
+
+    def _persist_confirmed_block(self, block: Block) -> None:
+        """Persist one confirmed block into the canonical derived state tables."""
+        self.process_block_transactions(block)
+        self.save_block(block)
+        self._record_block_wallet_activity(block)
+        self.record_fee_distribution_rewards(block)
+
+        if block.height > POS_ACTIVATION_HEIGHT:
+            self.distribute_staking_rewards(block.height, block.get_block_hash())
+
+        self._apply_protocol_state_transitions(block)
+
+    def _rebuild_canonical_state_from_blocks(self, canonical_blocks: List[Block]) -> None:
+        """Rebuild all chain-derived state from an explicit canonical block list."""
+        self._reset_derived_chain_tables()
+        self.chain = []
+        for block in canonical_blocks:
+            if self.chain or block.height != 0:
+                if not self.validate_block(block):
+                    raise ValueError(f"Candidate branch contains invalid block at height {block.height}")
+            self.chain.append(block)
+            self._persist_confirmed_block(block)
+        self.current_difficulty = self.calculate_expected_difficulty()
+        self._refresh_main_chain_index()
+
+    def _build_branch_to_tip(self, tip_hash: str) -> Optional[Tuple[int, List[Block]]]:
+        """Build a candidate suffix from a side-branch tip back to the main-chain ancestor."""
+        candidate_suffix: List[Block] = []
+        current_hash = tip_hash
+        visited: Set[str] = set()
+
+        while current_hash:
+            if current_hash in visited:
+                return None
+            visited.add(current_hash)
+
+            current_block = self.block_index.get(current_hash)
+            if current_block is None:
+                return None
+
+            candidate_suffix.append(current_block)
+            ancestor_hash = current_block.header.prev_hash
+            if ancestor_hash in self.main_chain_hashes:
+                ancestor_block = self.block_index[ancestor_hash]
+                candidate_suffix.reverse()
+                return ancestor_block.height, candidate_suffix
+
+            current_hash = ancestor_hash
+
+        return None
+
+    def _restore_database_from_backup(self, backup_conn: sqlite3.Connection) -> None:
+        """Restore the live SQLite database from an in-memory backup."""
+        try:
+            self.conn.close()
+        except Exception:
+            pass
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        backup_conn.backup(self.conn)
+
+    def _try_adopt_branch_from_tip(self, tip_hash: str) -> bool:
+        """Attempt to adopt a competing branch if it outranks the current main chain."""
+        branch_info = self._build_branch_to_tip(tip_hash)
+        if not branch_info:
+            return False
+
+        ancestor_height, candidate_suffix = branch_info
+        if not candidate_suffix:
+            return False
+
+        candidate_chain = self.chain[:ancestor_height + 1] + candidate_suffix
+        current_score = self._chain_score(self.chain)
+        candidate_score = self._chain_score(candidate_chain)
+
+        if len(candidate_chain) < len(self.chain):
+            return False
+        if len(candidate_chain) == len(self.chain) and candidate_score <= current_score:
+            return False
+
+        backup_conn = sqlite3.connect(":memory:")
+        self.conn.backup(backup_conn)
+        original_chain = list(self.chain)
+        original_main_hashes = set(self.main_chain_hashes)
+
+        try:
+            self._rebuild_canonical_state_from_blocks(candidate_chain)
+            self.conn.commit()
+            print(
+                f"Adopted new canonical branch at height {candidate_chain[-1].height}: "
+                f"old_score={current_score} new_score={candidate_score}"
+            )
+            return True
+        except Exception as e:
+            self.conn.rollback()
+            self._restore_database_from_backup(backup_conn)
+            self.chain = original_chain
+            self.main_chain_hashes = original_main_hashes
+            self.current_difficulty = self.calculate_expected_difficulty()
+            print(f"Failed to adopt competing branch ending {tip_hash}: {e}")
+            return False
+        finally:
+            backup_conn.close()
+
+    def _process_pending_descendants(self, parent_hash: str) -> None:
+        """Try to advance any stored side-chain descendants after a new block is accepted."""
+        pending_children = list(self.pending_blocks_by_prev_hash.get(parent_hash, set()))
+        for child_hash in pending_children:
+            child_block = self.block_index.get(child_hash)
+            if child_block is not None:
+                self.add_block_with_priority(child_block)
+
+    def _record_wallet_activity_entry(
+        self,
+        activity_id: str,
+        address: str,
+        txid: str,
+        activity_type: str,
+        amount: int,
+        counterparty_address: Optional[str],
+        block_height: int,
+        block_hash: str,
+        timestamp: int,
+    ) -> None:
+        """Persist one wallet-facing activity row."""
+        if not address or amount <= 0:
+            return
+
+        self.conn.execute('''
+            INSERT OR REPLACE INTO wallet_activity (
+                activity_id,
+                address,
+                txid,
+                activity_type,
+                amount,
+                counterparty_address,
+                block_height,
+                block_hash,
+                timestamp
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            activity_id,
+            address,
+            txid,
+            activity_type,
+            amount,
+            counterparty_address,
+            block_height,
+            block_hash,
+            timestamp,
+        ))
+
+    def _record_block_wallet_activity(self, block: Block) -> None:
+        """Index wallet activity for the transactions in a confirmed block."""
+        block_hash = block.get_block_hash()
+
+        for tx in block.transactions:
+            txid = tx.calculate_txid()
+            timestamp = tx.timestamp
+            tx_type = self._protocol_tx_type(tx)
+
+            if tx_type == TX_TYPE_STAKE_CREATE:
+                metadata = dict(tx.extra_data or {})
+                stake_id = metadata.get('stake_id')
+                staker_address = metadata.get('staker_address')
+                locked_output = self._find_protocol_output(tx, f"stake_lock:{stake_id}")
+                locked_amount = locked_output[1].value if locked_output else int(metadata.get('amount', 0) or 0)
+                self._record_wallet_activity_entry(
+                    activity_id=f"stake_lock:{stake_id}",
+                    address=staker_address,
+                    txid=txid,
+                    activity_type='stake_lock',
+                    amount=locked_amount,
+                    counterparty_address='staking',
+                    block_height=block.height,
+                    block_hash=block_hash,
+                    timestamp=timestamp,
+                )
+                continue
+            elif tx_type == TX_TYPE_STAKE_DEACTIVATE:
+                metadata = dict(tx.extra_data or {})
+                stake_id = metadata.get('stake_id')
+                staker_address = metadata.get('staker_address')
+                unlocked_amount = tx.outputs[0].value if tx.outputs else int(metadata.get('amount', 0) or 0)
+                self._record_wallet_activity_entry(
+                    activity_id=f"stake_unlock:{stake_id}",
+                    address=staker_address,
+                    txid=txid,
+                    activity_type='stake_unlock',
+                    amount=unlocked_amount,
+                    counterparty_address='staking',
+                    block_height=block.height,
+                    block_hash=block_hash,
+                    timestamp=timestamp,
+                )
+                continue
+            elif tx_type == TX_TYPE_MASTERNODE_CREATE:
+                metadata = dict(tx.extra_data or {})
+                masternode_id = metadata.get('masternode_id')
+                operator_address = metadata.get('operator_address')
+                locked_output = self._find_protocol_output(tx, f"masternode_lock:{masternode_id}")
+                locked_amount = locked_output[1].value if locked_output else 0
+                self._record_wallet_activity_entry(
+                    activity_id=f"masternode_lock:{masternode_id}",
+                    address=operator_address,
+                    txid=txid,
+                    activity_type='masternode_lock',
+                    amount=locked_amount,
+                    counterparty_address='masternode',
+                    block_height=block.height,
+                    block_hash=block_hash,
+                    timestamp=timestamp,
+                )
+                continue
+            elif tx_type == TX_TYPE_MASTERNODE_DEACTIVATE:
+                metadata = dict(tx.extra_data or {})
+                masternode_id = metadata.get('masternode_id')
+                operator_address = metadata.get('operator_address')
+                unlocked_amount = tx.outputs[0].value if tx.outputs else 0
+                self._record_wallet_activity_entry(
+                    activity_id=f"masternode_unlock:{masternode_id}",
+                    address=operator_address,
+                    txid=txid,
+                    activity_type='masternode_unlock',
+                    amount=unlocked_amount,
+                    counterparty_address='masternode',
+                    block_height=block.height,
+                    block_hash=block_hash,
+                    timestamp=timestamp,
+                )
+                continue
+
+            sender_addresses: List[str] = []
+            sender_input_totals: Dict[str, int] = {}
+
+            if not tx.is_coinbase():
+                for inp in tx.inputs:
+                    cursor = self.conn.execute('''
+                        SELECT address, amount FROM utxos WHERE txid = ? AND vout = ?
+                    ''', (inp.prev_txid, inp.prev_vout))
+                    row = cursor.fetchone()
+                    if row and row[0]:
+                        sender_addresses.append(row[0])
+                        sender_input_totals[row[0]] = sender_input_totals.get(row[0], 0) + (row[1] or 0)
+                sender_addresses = list(dict.fromkeys(sender_addresses))
+
+                for sender_address in sender_addresses:
+                    returned_to_sender = sum(
+                        output.value
+                        for output in tx.outputs
+                        if output.address == sender_address
+                    )
+                    sent_amount = (sender_input_totals.get(sender_address, 0) or 0) - returned_to_sender
+                    if sent_amount <= 0:
+                        continue
+
+                    counterparty_address = next(
+                        (output.address for output in tx.outputs if output.address != sender_address),
+                        None,
+                    )
+                    self._record_wallet_activity_entry(
+                        activity_id=f"tx:{txid}:send:{sender_address}",
+                        address=sender_address,
+                        txid=txid,
+                        activity_type='send',
+                        amount=sent_amount,
+                        counterparty_address=counterparty_address,
+                        block_height=block.height,
+                        block_hash=block_hash,
+                        timestamp=timestamp,
+                    )
+
+            receive_entries: Dict[tuple, int] = {}
+            for output in tx.outputs:
+                if output.value <= 0 or not output.address:
+                    continue
+
+                if not tx.is_coinbase() and output.address in sender_addresses:
+                    continue
+
+                marker = output.script_pubkey.decode(errors='ignore') if output.script_pubkey else ''
+                if marker.startswith("staker_fee_output:") or marker.startswith("masternode_fee_output:"):
+                    continue
+
+                if block.header.is_pos_block() and tx.is_coinbase() and output.script_pubkey == b"coinbase_output":
+                    activity_type = 'validator_reward'
+                    counterparty_address = 'protocol'
+                else:
+                    activity_type = 'receive'
+                    counterparty_address = sender_addresses[0] if sender_addresses else 'coinbase'
+
+                key = (output.address, activity_type, counterparty_address)
+                receive_entries[key] = receive_entries.get(key, 0) + output.value
+
+            for (address, activity_type, counterparty_address), amount in receive_entries.items():
+                if activity_type == 'validator_reward':
+                    activity_id = f"validator_reward_{txid}_{address}"
+                else:
+                    activity_id = f"tx:{txid}:{activity_type}:{address}"
+
+                self._record_wallet_activity_entry(
+                    activity_id=activity_id,
+                    address=address,
+                    txid=txid,
+                    activity_type=activity_type,
+                    amount=amount,
+                    counterparty_address=counterparty_address,
+                    block_height=block.height,
+                    block_hash=block_hash,
+                    timestamp=timestamp,
+                )
+
+    def _record_reward_wallet_activity(
+        self,
+        reward_id: str,
+        recipient_address: str,
+        recipient_type: str,
+        amount: int,
+        block_height: int,
+        block_hash: str,
+        timestamp: int,
+    ) -> None:
+        """Index synthetic staking and masternode reward events."""
+        self._record_wallet_activity_entry(
+            activity_id=reward_id,
+            address=recipient_address,
+            txid=reward_id,
+            activity_type=f"{recipient_type}_reward",
+            amount=amount,
+            counterparty_address='protocol',
+            block_height=block_height,
+            block_hash=block_hash,
+            timestamp=timestamp,
+        )
+
+    def backfill_wallet_activity_ledger(self) -> None:
+        """Populate the wallet activity ledger for existing chains once."""
+        cursor = self.conn.execute('SELECT COUNT(1) FROM wallet_activity')
+        row_count = cursor.fetchone()[0] or 0
+        if row_count > 0 or not self.chain:
+            return
+
+        print("Backfilling wallet activity ledger from existing chain data...")
+        for block in self.chain:
+            self._record_block_wallet_activity(block)
+
+        reward_cursor = self.conn.execute('''
+            SELECT reward_id, recipient_address, recipient_type, amount, block_height, block_hash, timestamp
+            FROM staking_rewards
+            ORDER BY block_height ASC, timestamp ASC
+        ''')
+        for reward_id, recipient_address, recipient_type, amount, block_height, block_hash, timestamp in reward_cursor.fetchall():
+            self._record_reward_wallet_activity(
+                reward_id=reward_id,
+                recipient_address=recipient_address,
+                recipient_type=recipient_type,
+                amount=amount,
+                block_height=block_height,
+                block_hash=block_hash,
+                timestamp=timestamp,
+            )
+
+        self.conn.commit()
+
     def create_genesis_block(self):
         """Create the genesis block"""
         print("Creating WEPO genesis block...")
@@ -752,7 +1483,7 @@ class WepoBlockchain:
                 return obj
         
         block_dict = {
-            'header': asdict(block.header),
+            'header': bytes_to_hex(asdict(block.header)),
             'transactions': [],
             'height': block.height,
             'size': block.size
@@ -768,42 +1499,30 @@ class WepoBlockchain:
     
     def deserialize_block(self, data: dict) -> Block:
         """Deserialize block from JSON"""
-        # Convert hex strings back to bytes
-        def hex_to_bytes(obj):
-            if isinstance(obj, str) and len(obj) % 2 == 0:
+        def decode_bytes_field(value):
+            if value in (None, b'', ''):
+                return None if value is None else b''
+            if isinstance(value, (bytes, bytearray)):
+                return bytes(value)
+            if isinstance(value, str):
                 try:
-                    return bytes.fromhex(obj)
+                    return bytes.fromhex(value)
                 except ValueError:
-                    return obj
-            elif isinstance(obj, dict):
-                return {k: hex_to_bytes(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [hex_to_bytes(item) for item in obj]
-            else:
-                return obj
-        
-        header = BlockHeader(**data['header'])
+                    return value.encode()
+            return value
+
+        header_data = dict(data['header'])
+        if 'validator_signature' in header_data:
+            header_data['validator_signature'] = decode_bytes_field(header_data.get('validator_signature'))
+        header = BlockHeader(**header_data)
         transactions = []
         for tx_data in data['transactions']:
-            # Convert hex back to bytes where needed
-            if 'script_sig' in str(tx_data):
-                tx_data = hex_to_bytes(tx_data)
-            
             inputs = []
             for inp_data in tx_data['inputs']:
-                script_sig = inp_data.get('script_sig', b'')
-                if isinstance(script_sig, str):
-                    script_sig = script_sig.encode() if script_sig else b''
-                
-                # Handle quantum signature fields
-                quantum_signature = inp_data.get('quantum_signature')
-                if isinstance(quantum_signature, str) and quantum_signature:
-                    quantum_signature = bytes.fromhex(quantum_signature)
-                
-                quantum_public_key = inp_data.get('quantum_public_key')
-                if isinstance(quantum_public_key, str) and quantum_public_key:
-                    quantum_public_key = bytes.fromhex(quantum_public_key)
-                
+                script_sig = decode_bytes_field(inp_data.get('script_sig', b'')) or b''
+                quantum_signature = decode_bytes_field(inp_data.get('quantum_signature'))
+                quantum_public_key = decode_bytes_field(inp_data.get('quantum_public_key'))
+
                 inputs.append(TransactionInput(
                     prev_txid=inp_data['prev_txid'],
                     prev_vout=inp_data['prev_vout'],
@@ -816,22 +1535,15 @@ class WepoBlockchain:
             
             outputs = []
             for out_data in tx_data['outputs']:
-                script_pubkey = out_data.get('script_pubkey', b'')
-                if isinstance(script_pubkey, str):
-                    script_pubkey = script_pubkey.encode() if script_pubkey else b''
+                script_pubkey = decode_bytes_field(out_data.get('script_pubkey', b'')) or b''
                 outputs.append(TransactionOutput(
                     value=out_data['value'],
                     script_pubkey=script_pubkey,
                     address=out_data.get('address', '')
                 ))
             
-            privacy_proof = tx_data.get('privacy_proof')
-            if isinstance(privacy_proof, str):
-                privacy_proof = privacy_proof.encode() if privacy_proof else None
-                
-            ring_signature = tx_data.get('ring_signature')
-            if isinstance(ring_signature, str):
-                ring_signature = ring_signature.encode() if ring_signature else None
+            privacy_proof = decode_bytes_field(tx_data.get('privacy_proof'))
+            ring_signature = decode_bytes_field(tx_data.get('ring_signature'))
             
             tx = Transaction(
                 version=tx_data['version'],
@@ -841,6 +1553,8 @@ class WepoBlockchain:
                 fee=tx_data.get('fee', 0),
                 privacy_proof=privacy_proof,
                 ring_signature=ring_signature,
+                tx_type=tx_data.get('tx_type', TX_TYPE_TRANSFER),
+                extra_data=tx_data.get('extra_data') or {},
                 timestamp=tx_data.get('timestamp', 0)
             )
             transactions.append(tx)
@@ -855,6 +1569,202 @@ class WepoBlockchain:
     def get_latest_block(self) -> Optional[Block]:
         """Get the latest block in the chain"""
         return self.chain[-1] if self.chain else None
+
+    def get_latest_blocks_summary(self, limit: int = 10) -> List[dict]:
+        """Get recent block summaries from the indexed blocks table."""
+        cursor = self.conn.execute('''
+            SELECT height, hash, timestamp, tx_count, size, consensus_type
+            FROM blocks
+            ORDER BY height DESC
+            LIMIT ?
+        ''', (max(0, limit),))
+        return [
+            {
+                'height': row[0],
+                'hash': row[1],
+                'timestamp': row[2],
+                'tx_count': row[3],
+                'size': row[4],
+                'consensus_type': row[5],
+            }
+            for row in cursor.fetchall()
+        ]
+
+    def get_block_summary(self, *, block_hash: Optional[str] = None, height: Optional[int] = None) -> Optional[dict]:
+        """Get one block summary from the indexed blocks table."""
+        if block_hash is not None:
+            cursor = self.conn.execute('''
+                SELECT height, hash, prev_hash, merkle_root, timestamp, bits, nonce, consensus_type, size
+                FROM blocks
+                WHERE hash = ?
+            ''', (block_hash,))
+        elif height is not None:
+            cursor = self.conn.execute('''
+                SELECT height, hash, prev_hash, merkle_root, timestamp, bits, nonce, consensus_type, size
+                FROM blocks
+                WHERE height = ?
+            ''', (height,))
+        else:
+            return None
+
+        row = cursor.fetchone()
+        if not row:
+            return None
+
+        tx_cursor = self.conn.execute('''
+            SELECT txid
+            FROM transactions
+            WHERE block_hash = ?
+            ORDER BY rowid ASC
+        ''', (row[1],))
+        return {
+            'height': row[0],
+            'hash': row[1],
+            'prev_hash': row[2],
+            'merkle_root': row[3],
+            'timestamp': row[4],
+            'bits': row[5],
+            'nonce': row[6],
+            'consensus_type': row[7],
+            'size': row[8],
+            'transactions': [tx_row[0] for tx_row in tx_cursor.fetchall()],
+        }
+
+    def get_block_payload(self, block_hash: str) -> Optional[dict]:
+        """Get the full serialized block payload for P2P transport or replay."""
+        cursor = self.conn.execute('''
+            SELECT block_data
+            FROM blocks
+            WHERE hash = ?
+        ''', (block_hash,))
+        row = cursor.fetchone()
+        if row:
+            return json.loads(row[0])
+
+        block = self.block_index.get(block_hash)
+        if block is None:
+            return None
+        return json.loads(self.serialize_block(block))
+
+    def get_block_locator_hashes(self, max_entries: int = 32) -> List[str]:
+        """Build a compact block locator from the current canonical tip backwards."""
+        if not self.chain:
+            return []
+
+        locator_hashes: List[str] = []
+        step = 1
+        height = self.get_block_height()
+
+        while height >= 0 and len(locator_hashes) < max_entries:
+            locator_hashes.append(self.chain[height].get_block_hash())
+            if len(locator_hashes) >= 10:
+                step *= 2
+            height -= step
+
+        genesis_hash = self.chain[0].get_block_hash()
+        if genesis_hash not in locator_hashes:
+            locator_hashes.append(genesis_hash)
+
+        return locator_hashes
+
+    def _locator_start_height(self, locator_hashes: Optional[List[str]]) -> int:
+        """Find the first canonical block height after a peer locator match."""
+        if not locator_hashes:
+            return 0
+
+        for locator_hash in locator_hashes:
+            if locator_hash not in self.main_chain_hashes:
+                continue
+            matched_block = self.block_index.get(locator_hash)
+            if matched_block is None:
+                continue
+            return matched_block.height + 1
+        return 0
+
+    def get_headers_after_locator(
+        self,
+        locator_hashes: Optional[List[str]],
+        *,
+        stop_hash: Optional[str] = None,
+        limit: int = 2000,
+    ) -> List[dict]:
+        """Return canonical header summaries after the best locator match."""
+        start_height = self._locator_start_height(locator_hashes)
+        headers: List[dict] = []
+
+        for block in self.chain[start_height:]:
+            headers.append({
+                'hash': block.get_block_hash(),
+                'prev_hash': block.header.prev_hash,
+                'height': block.height,
+                'timestamp': block.header.timestamp,
+                'bits': block.header.bits,
+                'nonce': block.header.nonce,
+                'merkle_root': block.header.merkle_root,
+                'consensus_type': block.header.consensus_type,
+            })
+            if stop_hash and block.get_block_hash() == stop_hash:
+                break
+            if len(headers) >= max(0, limit):
+                break
+
+        return headers
+
+    def get_block_hashes_after_locator(
+        self,
+        locator_hashes: Optional[List[str]],
+        *,
+        stop_hash: Optional[str] = None,
+        limit: int = 500,
+    ) -> List[str]:
+        """Return canonical block hashes after the best locator match."""
+        headers = self.get_headers_after_locator(locator_hashes, stop_hash=stop_hash, limit=limit)
+        return [header['hash'] for header in headers]
+
+    def get_transaction_summary(self, txid: str) -> Optional[dict]:
+        """Get one confirmed transaction summary from the indexed transactions table."""
+        cursor = self.conn.execute('''
+            SELECT txid, block_height, fee, privacy_proof, ring_signature, tx_data
+            FROM transactions
+            WHERE txid = ?
+        ''', (txid,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+
+        tx_data = json.loads(row[5])
+        block_height = row[1]
+        confirmations = 0
+        if block_height is not None:
+            confirmations = max(0, self.get_block_height() - block_height + 1)
+
+        return {
+            'txid': row[0],
+            'version': tx_data.get('version', 1),
+            'tx_type': tx_data.get('tx_type', TX_TYPE_TRANSFER),
+            'extra_data': tx_data.get('extra_data') or {},
+            'lock_time': tx_data.get('lock_time', 0),
+            'fee': row[2],
+            'timestamp': tx_data.get('timestamp', 0),
+            'block_height': block_height,
+            'confirmations': confirmations,
+            'inputs': [
+                {
+                    'prev_txid': inp.get('prev_txid'),
+                    'prev_vout': inp.get('prev_vout'),
+                }
+                for inp in tx_data.get('inputs', [])
+            ],
+            'outputs': [
+                {
+                    'value': out.get('value'),
+                    'address': out.get('address'),
+                }
+                for out in tx_data.get('outputs', [])
+            ],
+            'privacy_proof': bool(row[3]),
+            'ring_signature': bool(row[4]),
+        }
     
     def get_block_height(self) -> int:
         """Get current block height"""
@@ -1105,12 +2015,6 @@ class WepoBlockchain:
         for txid in selected_txids:
             del self.mempool[txid]
         
-        # Determine block time target
-        if height <= TOTAL_INITIAL_BLOCKS:
-            block_time = BLOCK_TIME_INITIAL_18_MONTHS  # 6 minutes per block for first 18 months
-        else:
-            block_time = BLOCK_TIME_LONGTERM  # 9 minutes per block after 18 months
-        
         # Create block header
         header = BlockHeader(
             version=1,
@@ -1207,12 +2111,6 @@ class WepoBlockchain:
         for txid in selected_txids:
             self.mempool.pop(txid, None)
         
-        # Set appropriate block time for PoS
-        if height <= PRE_POS_DURATION_BLOCKS:
-            block_time = BLOCK_TIME_INITIAL_18_MONTHS  # 6 minutes per block for first 18 months
-        else:
-            block_time = BLOCK_TIME_POS  # 3 minutes per PoS block
-        
         # Create PoS block header
         header = BlockHeader(
             version=1,
@@ -1272,41 +2170,71 @@ class WepoBlockchain:
         
         # Add to chain
         self.chain.append(block)
-        
-        # Process transactions and update UTXOs
-        self.process_block_transactions(block)
-        
-        # Save to database
-        self.save_block(block)
-        self.current_difficulty = self.calculate_expected_difficulty()
-        self.record_fee_distribution_rewards(block)
-        
-        # Distribute staking rewards if PoS is active
-        if block.height > POS_ACTIVATION_HEIGHT:
-            self.distribute_staking_rewards(block.height, block.get_block_hash())
-        
-        print(f"Block {block.height} added to chain: {block.get_block_hash()}")
-        return True
+        block_hash = block.get_block_hash()
+        self.block_index[block_hash] = block
+        self.main_chain_hashes.add(block_hash)
+        self._forget_pending_block(block)
+
+        try:
+            # Process transactions and persist atomically so a failed save
+            # cannot leave canonical state partially applied.
+            self._persist_confirmed_block(block)
+            self.conn.commit()
+            self.current_difficulty = self.calculate_expected_difficulty()
+            self._process_pending_descendants(block_hash)
+            print(f"Block {block.height} added to chain: {block_hash}")
+            return True
+        except Exception as e:
+            self.conn.rollback()
+            self.chain.pop()
+            self.main_chain_hashes.discard(block_hash)
+            self.current_difficulty = self.calculate_expected_difficulty()
+            print(f"Failed to add block {block.height}: {e}")
+            return False
     
     def add_block_with_priority(self, new_block: Block) -> bool:
-        """Add block with timestamp-based priority (first valid block wins)"""
-        # Check if block at this height already exists
-        if new_block.height <= len(self.chain):
-            existing_block = self.chain[new_block.height - 1]
-            
-            # If new block has earlier timestamp, it wins
-            if new_block.header.timestamp < existing_block.header.timestamp:
-                print(f"Replacing block {new_block.height} - newer timestamp wins")
-                # Replace the block
-                self.chain[new_block.height - 1] = new_block
-                self.save_block(new_block)
-                return True
-            else:
-                print(f"Rejecting block {new_block.height} - later timestamp loses")
-                return False
-        else:
-            # No existing block, add normally
+        """Add a block while retaining side branches and adopting a better canonical tip when possible."""
+        new_hash = new_block.get_block_hash()
+        self.block_index[new_hash] = new_block
+
+        current_length = len(self.chain)
+        current_tip_hash = self.chain[-1].get_block_hash() if self.chain else None
+
+        if new_hash in self.main_chain_hashes:
+            print(f"Ignoring duplicate canonical block at height {new_block.height}: {new_hash}")
+            return True
+
+        # Normal append case: no block exists at this height yet.
+        if new_block.height == current_length and (
+            current_tip_hash is None or new_block.header.prev_hash == current_tip_hash
+        ):
             return self.add_block(new_block)
+
+        self._remember_noncanonical_block(new_block)
+
+        if new_block.header.prev_hash not in self.block_index and new_block.header.prev_hash not in self.main_chain_hashes:
+            print(
+                f"Stored orphan block {new_hash} at height {new_block.height}; "
+                f"waiting for parent {new_block.header.prev_hash}"
+            )
+            return False
+
+        if self._try_adopt_branch_from_tip(new_hash):
+            return True
+
+        if new_block.height > current_length:
+            print(
+                f"Stored future branch block {new_hash} at height {new_block.height}; "
+                f"canonical tip remains at height {current_length - 1}"
+            )
+            return False
+
+        existing_hash = self.chain[new_block.height].get_block_hash() if 0 <= new_block.height < current_length else "unknown"
+        print(
+            f"Stored competing block at height {new_block.height}: "
+            f"existing={existing_hash} candidate={new_hash}. Canonical tip unchanged."
+        )
+        return False
     
     def get_consensus_type(self, height: int) -> str:
         """Get the consensus type for a given height"""
@@ -1428,8 +2356,6 @@ class WepoBlockchain:
                     INSERT INTO utxos (txid, vout, address, amount, script_pubkey, spent)
                     VALUES (?, ?, ?, ?, ?, FALSE)
                 ''', (tx.calculate_txid(), i, out.address, out.value, out.script_pubkey))
-        
-        self.conn.commit()
     
     def save_block(self, block: Block):
         """Save block to database"""
@@ -1466,10 +2392,8 @@ class WepoBlockchain:
                 tx.fee,
                 tx.privacy_proof,
                 tx.ring_signature,
-                json.dumps(asdict(tx), default=str)
+                json.dumps(asdict(tx), default=self._json_default)
             ))
-        
-        self.conn.commit()
     
     def adjust_difficulty(self):
         """Adjust mining difficulty based on block time"""
@@ -1538,10 +2462,14 @@ class WepoBlockchain:
             
             # Check inputs exist and are unspent
             total_input_value = 0
+            input_rows = []
+            input_addresses = set()
             for inp in transaction.inputs:
                 # Check if UTXO exists and is unspent
                 cursor = self.conn.execute('''
-                    SELECT amount, spent FROM utxos WHERE txid = ? AND vout = ?
+                    SELECT amount, spent, address, script_pubkey
+                    FROM utxos
+                    WHERE txid = ? AND vout = ?
                 ''', (inp.prev_txid, inp.prev_vout))
                 
                 utxo = cursor.fetchone()
@@ -1554,6 +2482,15 @@ class WepoBlockchain:
                     return False
                 
                 total_input_value += utxo[0]
+                input_rows.append({
+                    'txid': inp.prev_txid,
+                    'vout': inp.prev_vout,
+                    'amount': utxo[0],
+                    'address': utxo[2],
+                    'script_pubkey': utxo[3],
+                })
+                if utxo[2]:
+                    input_addresses.add(utxo[2])
             
             # Check outputs
             total_output_value = sum(out.value for out in transaction.outputs)
@@ -1566,6 +2503,157 @@ class WepoBlockchain:
             
             # Set fee on transaction
             transaction.fee = fee
+
+            tx_type = self._protocol_tx_type(transaction)
+            metadata = dict(transaction.extra_data or {})
+            next_height = self.get_block_height() + 1
+
+            if tx_type == TX_TYPE_STAKE_CREATE:
+                stake_id = metadata.get('stake_id')
+                staker_address = metadata.get('staker_address')
+                locked_amount = int(metadata.get('amount', 0) or 0)
+                if next_height <= POS_ACTIVATION_HEIGHT:
+                    print("Staking is not active yet")
+                    return False
+                if not stake_id or not staker_address or locked_amount < MIN_STAKE_AMOUNT:
+                    print("Stake create transaction missing required metadata")
+                    return False
+                if input_addresses != {staker_address}:
+                    print("Stake create transaction inputs do not belong to staker")
+                    return False
+                lock_output = self._find_protocol_output(transaction, f"stake_lock:{stake_id}")
+                if not lock_output:
+                    print("Stake create transaction missing canonical lock output")
+                    return False
+                _, lock_tx_output = lock_output
+                if lock_tx_output.address != staker_address or lock_tx_output.value != locked_amount:
+                    print("Stake create transaction lock output does not match metadata")
+                    return False
+                if fee != 0:
+                    print("Stake create transaction must not charge a fee")
+                    return False
+                existing_cursor = self.conn.execute(
+                    'SELECT 1 FROM stakes WHERE stake_id = ?',
+                    (stake_id,),
+                )
+                if existing_cursor.fetchone():
+                    print(f"Stake already exists: {stake_id}")
+                    return False
+            elif tx_type == TX_TYPE_STAKE_DEACTIVATE:
+                stake_id = metadata.get('stake_id')
+                staker_address = metadata.get('staker_address')
+                stake_cursor = self.conn.execute('''
+                    SELECT amount, status, lock_txid, lock_vout
+                    FROM stakes
+                    WHERE stake_id = ?
+                ''', (stake_id,))
+                stake_row = stake_cursor.fetchone()
+                if not stake_row:
+                    print(f"Stake not found: {stake_id}")
+                    return False
+                if stake_row[1] != 'active':
+                    print(f"Stake is not active: {stake_id}")
+                    return False
+                if not stake_row[2] or stake_row[3] is None:
+                    print(f"Stake {stake_id} is legacy side-state and cannot be canonically deactivated")
+                    return False
+                if len(transaction.inputs) != 1:
+                    print("Stake deactivation must spend exactly one locked stake UTXO")
+                    return False
+                if transaction.inputs[0].prev_txid != stake_row[2] or transaction.inputs[0].prev_vout != stake_row[3]:
+                    print("Stake deactivation does not spend the active locked stake UTXO")
+                    return False
+                if input_addresses != {staker_address}:
+                    print("Stake deactivation inputs do not belong to staker")
+                    return False
+                if len(transaction.outputs) != 1:
+                    print("Stake deactivation must return a single unlocked output")
+                    return False
+                unlock_output = transaction.outputs[0]
+                if unlock_output.address != staker_address or unlock_output.value != stake_row[0]:
+                    print("Stake deactivation output does not return the locked principal")
+                    return False
+                if self._decode_script_marker(unlock_output.script_pubkey).startswith("stake_lock:"):
+                    print("Stake deactivation output is still marked as locked")
+                    return False
+                if fee != 0:
+                    print("Stake deactivation transaction must not charge a fee")
+                    return False
+            elif tx_type == TX_TYPE_MASTERNODE_CREATE:
+                masternode_id = metadata.get('masternode_id')
+                operator_address = metadata.get('operator_address')
+                required_collateral = self.get_masternode_collateral_for_height(next_height)
+                if not masternode_id or not operator_address:
+                    print("Masternode create transaction missing metadata")
+                    return False
+                if len(transaction.inputs) != 1:
+                    print("Masternode create transaction must lock exactly one collateral UTXO")
+                    return False
+                if input_addresses != {operator_address}:
+                    print("Masternode collateral does not belong to operator")
+                    return False
+                if total_input_value < required_collateral:
+                    print("Masternode collateral is below the required amount")
+                    return False
+                lock_output = self._find_protocol_output(transaction, f"masternode_lock:{masternode_id}")
+                if not lock_output:
+                    print("Masternode create transaction missing canonical lock output")
+                    return False
+                _, collateral_output = lock_output
+                if collateral_output.address != operator_address or collateral_output.value != total_input_value:
+                    print("Masternode create transaction must re-lock the full collateral UTXO")
+                    return False
+                if len(transaction.outputs) != 1 or fee != 0:
+                    print("Masternode create transaction must only contain the locked collateral output")
+                    return False
+                duplicate_cursor = self.conn.execute('''
+                    SELECT 1
+                    FROM masternodes
+                    WHERE status = 'active' AND collateral_txid = ? AND collateral_vout = ?
+                ''', (transaction.inputs[0].prev_txid, transaction.inputs[0].prev_vout))
+                if duplicate_cursor.fetchone():
+                    print("Collateral UTXO is already bound to an active masternode")
+                    return False
+            elif tx_type == TX_TYPE_MASTERNODE_DEACTIVATE:
+                masternode_id = metadata.get('masternode_id')
+                operator_address = metadata.get('operator_address')
+                mn_cursor = self.conn.execute('''
+                    SELECT operator_address, collateral_txid, collateral_vout, status
+                    FROM masternodes
+                    WHERE masternode_id = ?
+                ''', (masternode_id,))
+                mn_row = mn_cursor.fetchone()
+                if not mn_row:
+                    print(f"Masternode not found: {masternode_id}")
+                    return False
+                if mn_row[3] != 'active':
+                    print(f"Masternode is not active: {masternode_id}")
+                    return False
+                if mn_row[0] != operator_address:
+                    print("Masternode operator does not match deactivation metadata")
+                    return False
+                if len(transaction.inputs) != 1:
+                    print("Masternode deactivation must spend exactly one collateral UTXO")
+                    return False
+                if transaction.inputs[0].prev_txid != mn_row[1] or transaction.inputs[0].prev_vout != mn_row[2]:
+                    print("Masternode deactivation does not spend the active collateral UTXO")
+                    return False
+                if input_addresses != {operator_address}:
+                    print("Masternode deactivation inputs do not belong to operator")
+                    return False
+                if len(transaction.outputs) != 1:
+                    print("Masternode deactivation must return a single unlocked output")
+                    return False
+                unlock_output = transaction.outputs[0]
+                if unlock_output.address != operator_address or unlock_output.value != total_input_value:
+                    print("Masternode deactivation output does not return the locked collateral")
+                    return False
+                if self._decode_script_marker(unlock_output.script_pubkey).startswith("masternode_lock:"):
+                    print("Masternode deactivation output is still marked as locked")
+                    return False
+                if fee != 0:
+                    print("Masternode deactivation transaction must not charge a fee")
+                    return False
             
             # Validate quantum signatures if present
             for i, inp in enumerate(transaction.inputs):
@@ -1594,6 +2682,13 @@ class WepoBlockchain:
                     AND collateral_txid = utxos.txid
                     AND collateral_vout = utxos.vout
               )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM stakes
+                  WHERE status = 'active'
+                    AND lock_txid = utxos.txid
+                    AND lock_vout = utxos.vout
+              )
         ''', (address,))
         result = cursor.fetchone()
         return result[0] if result[0] else 0
@@ -1616,6 +2711,13 @@ class WepoBlockchain:
                     AND collateral_txid = utxos.txid
                     AND collateral_vout = utxos.vout
               )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM stakes
+                  WHERE status = 'active'
+                    AND lock_txid = utxos.txid
+                    AND lock_vout = utxos.vout
+              )
         ''', (address,))
         
         utxos = []
@@ -1628,7 +2730,78 @@ class WepoBlockchain:
             })
         
         return utxos
-    
+
+    def get_wallet_activity_totals(self, address: str) -> dict:
+        """Get indexed wallet receive/send totals."""
+        cursor = self.conn.execute('''
+            SELECT
+                COALESCE(SUM(CASE
+                    WHEN activity_type IN (
+                        'receive',
+                        'stake_unlock',
+                        'masternode_unlock',
+                        'staker_reward',
+                        'masternode_reward',
+                        'validator_reward'
+                    )
+                    THEN amount ELSE 0 END), 0) AS total_received_atomic,
+                COALESCE(SUM(CASE
+                    WHEN activity_type IN ('send', 'stake_lock', 'masternode_lock')
+                    THEN amount ELSE 0 END), 0) AS total_sent_atomic
+            FROM wallet_activity
+            WHERE address = ?
+        ''', (address,))
+        total_received_atomic, total_sent_atomic = cursor.fetchone() or (0, 0)
+        total_received_atomic = total_received_atomic or 0
+        total_sent_atomic = total_sent_atomic or 0
+        return {
+            'total_received_atomic': total_received_atomic,
+            'total_sent_atomic': total_sent_atomic,
+            'total_received': total_received_atomic / COIN,
+            'total_sent': total_sent_atomic / COIN,
+        }
+
+    def get_wallet_activity_for_address(self, address: str, limit: Optional[int] = 50) -> List[dict]:
+        """Get indexed wallet activity ordered newest-first."""
+        query = '''
+            SELECT activity_id, txid, activity_type, amount, counterparty_address, block_height, block_hash, timestamp
+            FROM wallet_activity
+            WHERE address = ?
+            ORDER BY block_height DESC, timestamp DESC, activity_id DESC
+        '''
+        params: List[Union[str, int]] = [address]
+        if limit is not None:
+            query += ' LIMIT ?'
+            params.append(limit)
+
+        cursor = self.conn.execute(query, tuple(params))
+        chain_height = self.get_block_height()
+        activities = []
+        for activity_id, txid, activity_type, amount_atomic, counterparty_address, block_height, block_hash, timestamp in cursor.fetchall():
+            if activity_type in ('send', 'stake_lock', 'masternode_lock'):
+                from_address = address
+                to_address = counterparty_address or address
+            else:
+                from_address = counterparty_address or ('protocol' if activity_type.endswith('_reward') else 'coinbase')
+                to_address = address
+
+            activities.append({
+                'activity_id': activity_id,
+                'txid': txid,
+                'type': activity_type,
+                'amount': amount_atomic / COIN,
+                'amount_atomic': amount_atomic,
+                'from_address': from_address,
+                'to_address': to_address,
+                'timestamp': timestamp,
+                'status': 'confirmed',
+                'confirmations': max(0, chain_height - block_height + 1),
+                'block_height': block_height,
+                'block_hash': block_hash,
+            })
+
+        return activities
+
     def create_transaction(
         self,
         from_address: str,
@@ -1739,51 +2912,55 @@ class WepoBlockchain:
         if locked_total < amount:
             raise ValueError(f"Insufficient spendable balance: {locked_total / COIN} WEPO")
 
-        # Create stake
         stake_id = f"stake_{staker_address}_{int(time.time())}"
-        stake_lock_txid = f"{stake_id}_lock"
-        current_height = self.get_block_height()
-        
-        stake = StakeInfo(
-            stake_id=stake_id,
-            staker_address=staker_address,
-            amount=amount,
-            start_height=current_height,
-            start_time=int(time.time())
-        )
-        
-        # Save to database
-        self.conn.execute('''
-            INSERT INTO stakes (stake_id, staker_address, amount, start_height, start_time)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (stake_id, staker_address, amount, current_height, int(time.time())))
-
-        for utxo in selected_utxos:
-            self.conn.execute('''
-                UPDATE utxos
-                SET spent = TRUE, spent_txid = ?, spent_height = ?
-                WHERE txid = ? AND vout = ?
-            ''', (stake_lock_txid, current_height, utxo['txid'], utxo['vout']))
+        inputs = [
+            TransactionInput(
+                prev_txid=utxo['txid'],
+                prev_vout=utxo['vout'],
+                script_sig=b"signature_placeholder",
+                sequence=0xffffffff,
+            )
+            for utxo in selected_utxos
+        ]
+        outputs = [
+            TransactionOutput(
+                value=amount,
+                script_pubkey=f"stake_lock:{stake_id}".encode(),
+                address=staker_address,
+            )
+        ]
 
         change_amount = locked_total - amount
         if change_amount > 0:
-            self.conn.execute('''
-                INSERT INTO utxos (txid, vout, address, amount, script_pubkey, spent)
-                VALUES (?, ?, ?, ?, ?, FALSE)
-            ''', (stake_lock_txid, 0, staker_address, change_amount, b"stake_change"))
+            outputs.append(TransactionOutput(
+                value=change_amount,
+                script_pubkey=b"change_script",
+                address=staker_address,
+            ))
 
-        self.conn.commit()
-        
-        # Store in memory
-        self.stakes[stake_id] = asdict(stake)
-        
-        print(f"Created stake: {stake_id} for {amount / COIN} WEPO")
+        transaction = Transaction(
+            version=1,
+            inputs=inputs,
+            outputs=outputs,
+            lock_time=0,
+            fee=0,
+            tx_type=TX_TYPE_STAKE_CREATE,
+            extra_data={
+                'stake_id': stake_id,
+                'staker_address': staker_address,
+                'amount': amount,
+            },
+        )
+        if not self.add_transaction_to_mempool(transaction):
+            raise ValueError("Failed to submit canonical stake transaction")
+
+        print(f"Submitted canonical stake transaction: {stake_id} for {amount / COIN} WEPO")
         return stake_id
 
     def deactivate_stake(self, stake_id: str, staker_address: str) -> dict:
         """Deactivate an active stake and release the principal back to spendable balance."""
         cursor = self.conn.execute('''
-            SELECT stake_id, staker_address, amount, status, total_rewards
+            SELECT stake_id, staker_address, amount, status, total_rewards, lock_txid, lock_vout
             FROM stakes
             WHERE stake_id = ?
         ''', (stake_id,))
@@ -1798,34 +2975,85 @@ class WepoBlockchain:
         if row[3] != 'active':
             raise ValueError("Stake is not active")
 
-        current_height = self.get_block_height()
-        unlock_txid = f"{stake_id}_unlock_{int(time.time())}"
+        if not row[5] or row[6] is None:
+            current_height = self.get_block_height()
+            unlock_txid = f"{stake_id}_unlock_{int(time.time())}"
 
-        self.conn.execute('''
-            UPDATE stakes
-            SET status = 'inactive', unlock_height = ?
-            WHERE stake_id = ?
-        ''', (current_height, stake_id))
+            self.conn.execute('''
+                UPDATE stakes
+                SET status = 'inactive', unlock_height = ?, deactivation_txid = ?
+                WHERE stake_id = ?
+            ''', (current_height, unlock_txid, stake_id))
 
-        self.conn.execute('''
-            INSERT INTO utxos (txid, vout, address, amount, script_pubkey, spent)
-            VALUES (?, ?, ?, ?, ?, FALSE)
-        ''', (unlock_txid, 0, staker_address, row[2], b"stake_unlock"))
+            self.conn.execute('''
+                INSERT INTO utxos (txid, vout, address, amount, script_pubkey, spent)
+                VALUES (?, ?, ?, ?, ?, FALSE)
+            ''', (unlock_txid, 0, staker_address, row[2], b"stake_unlock"))
 
-        self.conn.commit()
+            self._record_wallet_activity_entry(
+                activity_id=f"stake_unlock:{stake_id}",
+                address=staker_address,
+                txid=unlock_txid,
+                activity_type='stake_unlock',
+                amount=row[2],
+                counterparty_address='staking',
+                block_height=current_height,
+                block_hash=f"synthetic:stake_unlock:{stake_id}",
+                timestamp=int(time.time()),
+            )
 
-        if stake_id in self.stakes:
-            self.stakes[stake_id]['status'] = 'inactive'
-            self.stakes[stake_id]['unlock_height'] = current_height
+            self.conn.commit()
 
+            if stake_id in self.stakes:
+                self.stakes[stake_id]['status'] = 'inactive'
+                self.stakes[stake_id]['unlock_height'] = current_height
+
+            return {
+                'stake_id': row[0],
+                'staker_address': row[1],
+                'amount': row[2],
+                'total_rewards': row[4],
+                'status': 'inactive',
+                'unlock_height': current_height,
+                'unlock_txid': unlock_txid,
+                'source': 'legacy_side_state',
+            }
+
+        transaction = Transaction(
+            version=1,
+            inputs=[TransactionInput(
+                prev_txid=row[5],
+                prev_vout=row[6],
+                script_sig=b"signature_placeholder",
+                sequence=0xffffffff,
+            )],
+            outputs=[TransactionOutput(
+                value=row[2],
+                script_pubkey=b"stake_unlock",
+                address=staker_address,
+            )],
+            lock_time=0,
+            fee=0,
+            tx_type=TX_TYPE_STAKE_DEACTIVATE,
+            extra_data={
+                'stake_id': stake_id,
+                'staker_address': staker_address,
+                'amount': row[2],
+            },
+        )
+        if not self.add_transaction_to_mempool(transaction):
+            raise ValueError("Failed to submit canonical stake deactivation transaction")
+
+        txid = transaction.calculate_txid()
         return {
             'stake_id': row[0],
             'staker_address': row[1],
             'amount': row[2],
             'total_rewards': row[4],
-            'status': 'inactive',
-            'unlock_height': current_height,
-            'unlock_txid': unlock_txid,
+            'status': 'pending',
+            'unlock_txid': txid,
+            'txid': txid,
+            'source': 'canonical_transaction',
         }
     
     def create_masternode(
@@ -1840,13 +3068,20 @@ class WepoBlockchain:
         current_height = self.get_block_height()
         required_collateral = self.get_masternode_collateral_for_height(current_height)
         
-        # Verify collateral UTXO exists and has correct amount
+        # Verify collateral UTXO exists, belongs to the operator, and has correct amount.
         cursor = self.conn.execute('''
-            SELECT amount, spent FROM utxos WHERE txid = ? AND vout = ?
+            SELECT address, amount, spent FROM utxos WHERE txid = ? AND vout = ?
         ''', (collateral_txid, collateral_vout))
         
         utxo = cursor.fetchone()
-        if not utxo or utxo[1] or utxo[0] < required_collateral:
+        if not utxo:
+            raise ValueError("Invalid collateral UTXO or insufficient amount")
+
+        utxo_address, utxo_amount, utxo_spent = utxo
+        if utxo_address != operator_address:
+            raise ValueError("Collateral UTXO does not belong to operator")
+
+        if utxo_spent or utxo_amount < required_collateral:
             raise ValueError(f"Invalid collateral UTXO or insufficient amount")
 
         existing_cursor = self.conn.execute('''
@@ -1857,32 +3092,34 @@ class WepoBlockchain:
         if existing_cursor.fetchone():
             raise ValueError("Collateral UTXO is already assigned to an active masternode")
         
-        # Create masternode
         masternode_id = f"mn_{operator_address}_{int(time.time())}"
-        
-        masternode = MasternodeInfo(
-            masternode_id=masternode_id,
-            operator_address=operator_address,
-            collateral_txid=collateral_txid,
-            collateral_vout=collateral_vout,
-            ip_address=ip_address,
-            port=port,
-            start_height=current_height,
-            start_time=int(time.time())
+        transaction = Transaction(
+            version=1,
+            inputs=[TransactionInput(
+                prev_txid=collateral_txid,
+                prev_vout=collateral_vout,
+                script_sig=b"signature_placeholder",
+                sequence=0xffffffff,
+            )],
+            outputs=[TransactionOutput(
+                value=utxo_amount,
+                script_pubkey=f"masternode_lock:{masternode_id}".encode(),
+                address=operator_address,
+            )],
+            lock_time=0,
+            fee=0,
+            tx_type=TX_TYPE_MASTERNODE_CREATE,
+            extra_data={
+                'masternode_id': masternode_id,
+                'operator_address': operator_address,
+                'ip_address': ip_address,
+                'port': port,
+            },
         )
-        
-        # Save to database
-        self.conn.execute('''
-            INSERT INTO masternodes (masternode_id, operator_address, collateral_txid, collateral_vout, ip_address, port, start_height, start_time)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (masternode_id, operator_address, collateral_txid, collateral_vout, ip_address, port, current_height, int(time.time())))
-        
-        self.conn.commit()
-        
-        # Store in memory
-        self.masternodes[masternode_id] = asdict(masternode)
-        
-        print(f"Created masternode: {masternode_id}")
+        if not self.add_transaction_to_mempool(transaction):
+            raise ValueError("Failed to submit canonical masternode registration transaction")
+
+        print(f"Submitted canonical masternode registration: {masternode_id}")
         return masternode_id
 
     def deactivate_masternode(self, masternode_id: str, operator_address: str) -> dict:
@@ -1905,22 +3142,47 @@ class WepoBlockchain:
         if row[4] != 'active':
             raise ValueError("Masternode is not active")
 
-        self.conn.execute('''
-            UPDATE masternodes
-            SET status = 'inactive'
-            WHERE masternode_id = ?
-        ''', (masternode_id,))
-        self.conn.commit()
+        collateral_cursor = self.conn.execute('''
+            SELECT amount
+            FROM utxos
+            WHERE txid = ? AND vout = ?
+        ''', (row[2], row[3]))
+        collateral_row = collateral_cursor.fetchone()
+        collateral_amount = collateral_row[0] if collateral_row else 0
 
-        if masternode_id in self.masternodes:
-            self.masternodes[masternode_id]['status'] = 'inactive'
+        transaction = Transaction(
+            version=1,
+            inputs=[TransactionInput(
+                prev_txid=row[2],
+                prev_vout=row[3],
+                script_sig=b"signature_placeholder",
+                sequence=0xffffffff,
+            )],
+            outputs=[TransactionOutput(
+                value=collateral_amount,
+                script_pubkey=b"masternode_unlock",
+                address=operator_address,
+            )],
+            lock_time=0,
+            fee=0,
+            tx_type=TX_TYPE_MASTERNODE_DEACTIVATE,
+            extra_data={
+                'masternode_id': masternode_id,
+                'operator_address': operator_address,
+            },
+        )
+        if not self.add_transaction_to_mempool(transaction):
+            raise ValueError("Failed to submit canonical masternode deactivation transaction")
+
+        txid = transaction.calculate_txid()
 
         return {
             'masternode_id': row[0],
             'operator_address': row[1],
             'collateral_txid': row[2],
             'collateral_vout': row[3],
-            'status': 'inactive',
+            'status': 'pending',
+            'txid': txid,
         }
     
     def get_masternode_collateral_for_height(self, height: int) -> int:
@@ -2061,6 +3323,22 @@ class WepoBlockchain:
     
     def get_active_stakes(self) -> List[StakeInfo]:
         """Get all active stakes"""
+        self.conn.execute('''
+            UPDATE stakes
+            SET status = 'inactive'
+            WHERE status = 'active'
+              AND lock_txid IS NOT NULL
+              AND lock_vout IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM utxos
+                  WHERE utxos.txid = stakes.lock_txid
+                    AND utxos.vout = stakes.lock_vout
+                    AND utxos.spent = FALSE
+              )
+        ''')
+        self.conn.commit()
+
         cursor = self.conn.execute('''
             SELECT stake_id, staker_address, amount, start_height, start_time, last_reward_height, total_rewards, status, unlock_height
             FROM stakes WHERE status = 'active'
@@ -2270,110 +3548,127 @@ class WepoBlockchain:
     
     def distribute_staking_rewards(self, block_height: int, block_hash: str):
         """Distribute staking rewards for a block"""
-        try:
-            reward_entries = self.calculate_staking_reward_entries(block_height)
+        reward_entries = self.calculate_staking_reward_entries(block_height)
+        if not reward_entries:
+            return
+        
+        for reward_entry in reward_entries:
+            address = reward_entry['recipient_address']
+            reward_amount = reward_entry['amount']
+            reward_timestamp = int(time.time())
+            reward_txid = f"pos_reward_{reward_entry['reward_id']}"
             
-            for reward_entry in reward_entries:
-                address = reward_entry['recipient_address']
-                reward_amount = reward_entry['amount']
-                # Create reward UTXO
-                reward_txid = f"pos_reward_{reward_entry['reward_id']}"
-                
-                self.conn.execute('''
-                    INSERT INTO utxos (txid, vout, address, amount, script_pubkey, spent)
-                    VALUES (?, ?, ?, ?, ?, FALSE)
-                ''', (reward_txid, 0, address, reward_amount, b"pos_reward"))
+            self.conn.execute('''
+                INSERT INTO utxos (txid, vout, address, amount, script_pubkey, spent)
+                VALUES (?, ?, ?, ?, ?, FALSE)
+            ''', (reward_txid, 0, address, reward_amount, b"pos_reward"))
 
-                if reward_entry['recipient_type'] == 'staker':
-                    self.conn.execute('''
-                        UPDATE stakes
-                        SET total_rewards = total_rewards + ?, last_reward_height = ?
-                        WHERE stake_id = ?
-                    ''', (reward_amount, block_height, reward_entry['recipient_reference']))
-                elif reward_entry['recipient_type'] == 'masternode':
-                    self.conn.execute('''
-                        UPDATE masternodes
-                        SET total_rewards = total_rewards + ?, last_ping = ?
-                        WHERE masternode_id = ?
-                    ''', (reward_amount, int(time.time()), reward_entry['recipient_reference']))
-                
-                # Record reward in history
+            if reward_entry['recipient_type'] == 'staker':
                 self.conn.execute('''
-                    INSERT INTO staking_rewards (reward_id, recipient_address, recipient_type, amount, block_height, block_hash, timestamp)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    reward_entry['reward_id'],
-                    address,
-                    reward_entry['recipient_type'],
-                    reward_amount,
-                    block_height,
-                    block_hash,
-                    int(time.time()),
-                ))
+                    UPDATE stakes
+                    SET total_rewards = total_rewards + ?, last_reward_height = ?
+                    WHERE stake_id = ?
+                ''', (reward_amount, block_height, reward_entry['recipient_reference']))
+            elif reward_entry['recipient_type'] == 'masternode':
+                self.conn.execute('''
+                    UPDATE masternodes
+                    SET total_rewards = total_rewards + ?, last_ping = ?
+                    WHERE masternode_id = ?
+                ''', (reward_amount, int(time.time()), reward_entry['recipient_reference']))
             
-            self.conn.commit()
-            
-        except Exception as e:
-            print(f"Error distributing staking rewards: {e}")
+            self.conn.execute('''
+                INSERT INTO staking_rewards (reward_id, recipient_address, recipient_type, amount, block_height, block_hash, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                reward_entry['reward_id'],
+                address,
+                reward_entry['recipient_type'],
+                reward_amount,
+                block_height,
+                block_hash,
+                reward_timestamp,
+            ))
+            self._record_reward_wallet_activity(
+                reward_id=reward_entry['reward_id'],
+                recipient_address=address,
+                recipient_type=reward_entry['recipient_type'],
+                amount=reward_amount,
+                block_height=block_height,
+                block_hash=block_hash,
+                timestamp=reward_timestamp,
+            )
 
     def record_fee_distribution_rewards(self, block: Block):
         """Record staking and masternode fee distributions from a block coinbase."""
-        try:
-            if not block.transactions:
-                return
+        if not block.transactions:
+            return
 
-            coinbase_tx = block.transactions[0]
-            if not coinbase_tx.is_coinbase():
-                return
+        coinbase_tx = block.transactions[0]
+        if not coinbase_tx.is_coinbase():
+            return
 
-            for output_index, output in enumerate(coinbase_tx.outputs[1:], start=1):
-                script_marker = output.script_pubkey.decode(errors='ignore') if output.script_pubkey else ''
-                reward_timestamp = int(time.time())
+        for output_index, output in enumerate(coinbase_tx.outputs[1:], start=1):
+            script_marker = output.script_pubkey.decode(errors='ignore') if output.script_pubkey else ''
+            reward_timestamp = int(time.time())
 
-                if script_marker.startswith("staker_fee_output:"):
-                    stake_id = script_marker.split(":", 1)[1]
-                    reward_id = f"fee_reward_staker_{block.height}_{output_index}_{stake_id}"
-                    self.conn.execute('''
-                        UPDATE stakes
-                        SET total_rewards = total_rewards + ?, last_reward_height = ?
-                        WHERE stake_id = ?
-                    ''', (output.value, block.height, stake_id))
-                    self.conn.execute('''
-                        INSERT OR IGNORE INTO staking_rewards (reward_id, recipient_address, recipient_type, amount, block_height, block_hash, timestamp)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        reward_id,
-                        output.address,
-                        'staker',
-                        output.value,
-                        block.height,
-                        block.get_block_hash(),
-                        reward_timestamp,
-                    ))
-                elif script_marker.startswith("masternode_fee_output:"):
-                    masternode_id = script_marker.split(":", 1)[1]
-                    reward_id = f"fee_reward_masternode_{block.height}_{output_index}_{masternode_id}"
-                    self.conn.execute('''
-                        UPDATE masternodes
-                        SET total_rewards = total_rewards + ?, last_ping = ?
-                        WHERE masternode_id = ?
-                    ''', (output.value, reward_timestamp, masternode_id))
-                    self.conn.execute('''
-                        INSERT OR IGNORE INTO staking_rewards (reward_id, recipient_address, recipient_type, amount, block_height, block_hash, timestamp)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        reward_id,
-                        output.address,
-                        'masternode',
-                        output.value,
-                        block.height,
-                        block.get_block_hash(),
-                        reward_timestamp,
-                    ))
-
-            self.conn.commit()
-        except Exception as e:
-            print(f"Error recording fee distribution rewards: {e}")
+            if script_marker.startswith("staker_fee_output:"):
+                stake_id = script_marker.split(":", 1)[1]
+                reward_id = f"fee_reward_staker_{block.height}_{output_index}_{stake_id}"
+                self.conn.execute('''
+                    UPDATE stakes
+                    SET total_rewards = total_rewards + ?, last_reward_height = ?
+                    WHERE stake_id = ?
+                ''', (output.value, block.height, stake_id))
+                self.conn.execute('''
+                    INSERT OR IGNORE INTO staking_rewards (reward_id, recipient_address, recipient_type, amount, block_height, block_hash, timestamp)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    reward_id,
+                    output.address,
+                    'staker',
+                    output.value,
+                    block.height,
+                    block.get_block_hash(),
+                    reward_timestamp,
+                ))
+                self._record_reward_wallet_activity(
+                    reward_id=reward_id,
+                    recipient_address=output.address,
+                    recipient_type='staker',
+                    amount=output.value,
+                    block_height=block.height,
+                    block_hash=block.get_block_hash(),
+                    timestamp=reward_timestamp,
+                )
+            elif script_marker.startswith("masternode_fee_output:"):
+                masternode_id = script_marker.split(":", 1)[1]
+                reward_id = f"fee_reward_masternode_{block.height}_{output_index}_{masternode_id}"
+                self.conn.execute('''
+                    UPDATE masternodes
+                    SET total_rewards = total_rewards + ?, last_ping = ?
+                    WHERE masternode_id = ?
+                ''', (output.value, reward_timestamp, masternode_id))
+                self.conn.execute('''
+                    INSERT OR IGNORE INTO staking_rewards (reward_id, recipient_address, recipient_type, amount, block_height, block_hash, timestamp)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    reward_id,
+                    output.address,
+                    'masternode',
+                    output.value,
+                    block.height,
+                    block.get_block_hash(),
+                    reward_timestamp,
+                ))
+                self._record_reward_wallet_activity(
+                    reward_id=reward_id,
+                    recipient_address=output.address,
+                    recipient_type='masternode',
+                    amount=output.value,
+                    block_height=block.height,
+                    block_hash=block.get_block_hash(),
+                    timestamp=reward_timestamp,
+                )
     
     def get_staking_info(self) -> dict:
         """Get staking system information"""
@@ -2417,47 +3712,55 @@ class WepoBlockchain:
     def get_reward_summary_for_address(self, address: str) -> dict:
         """Get credited reward totals and recent reward history for a wallet."""
         totals_cursor = self.conn.execute('''
-            SELECT recipient_type, COALESCE(SUM(amount), 0)
-            FROM staking_rewards
-            WHERE recipient_address = ?
-            GROUP BY recipient_type
+            SELECT activity_type, COALESCE(SUM(amount), 0)
+            FROM wallet_activity
+            WHERE address = ?
+              AND activity_type IN ('staker_reward', 'masternode_reward', 'validator_reward')
+            GROUP BY activity_type
         ''', (address,))
 
         staker_total = 0
         masternode_total = 0
-        for recipient_type, total_amount in totals_cursor.fetchall():
-            if recipient_type == 'staker':
+        validator_total = 0
+        for activity_type, total_amount in totals_cursor.fetchall():
+            if activity_type == 'staker_reward':
                 staker_total = total_amount or 0
-            elif recipient_type == 'masternode':
+            elif activity_type == 'masternode_reward':
                 masternode_total = total_amount or 0
+            elif activity_type == 'validator_reward':
+                validator_total = total_amount or 0
 
         rewards_cursor = self.conn.execute('''
-            SELECT reward_id, recipient_type, amount, block_height, block_hash, timestamp
-            FROM staking_rewards
-            WHERE recipient_address = ?
-            ORDER BY block_height DESC, timestamp DESC
+            SELECT activity_id, txid, activity_type, amount, block_height, block_hash, timestamp
+            FROM wallet_activity
+            WHERE address = ?
+              AND activity_type IN ('staker_reward', 'masternode_reward', 'validator_reward')
+            ORDER BY block_height DESC, timestamp DESC, activity_id DESC
             LIMIT 25
         ''', (address,))
 
         recent_rewards = []
         for row in rewards_cursor.fetchall():
+            recipient_type = row[2].replace('_reward', '')
             recent_rewards.append({
                 'reward_id': row[0],
-                'recipient_type': row[1],
-                'amount': row[2] / COIN,
-                'amount_atomic': row[2],
-                'block_height': row[3],
-                'block_hash': row[4],
-                'timestamp': row[5],
+                'txid': row[1],
+                'recipient_type': recipient_type,
+                'amount': row[3] / COIN,
+                'amount_atomic': row[3],
+                'block_height': row[4],
+                'block_hash': row[5],
+                'timestamp': row[6],
             })
 
-        total_rewards = staker_total + masternode_total
+        total_rewards = staker_total + masternode_total + validator_total
         return {
             'address': address,
             'total_rewards': total_rewards / COIN,
             'total_rewards_atomic': total_rewards,
             'staker_rewards': staker_total / COIN,
             'masternode_rewards': masternode_total / COIN,
+            'validator_rewards': validator_total / COIN,
             'reward_events': len(recent_rewards),
             'recent_rewards': recent_rewards,
         }
@@ -2494,7 +3797,7 @@ class WepoBlockchain:
                     "days_until_activation": days_until,
                     "activation_timestamp": activation_timestamp
                 }
-        except Exception as e:
+        except Exception:
             return {
                 "activation_date": "Error calculating",
                 "days_until_activation": 0,

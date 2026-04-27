@@ -2,7 +2,7 @@
 """
 WEPO Production zk-STARK Implementation - Battle-Tested Libraries Upgrade
 
-This module replaces the custom zk-STARK implementation with production-ready
+This module replaces the custom zk-STARK implementation with external
 libraries including cairo-lang for genuine zk-STARK proofs and verification.
 
 This addresses the critical security gap identified in the ops-and-audit analysis
@@ -10,7 +10,7 @@ where custom zk-STARK implementation was not battle-tested.
 
 Key Features:
 - Cairo-based zk-STARK proof generation
-- Production-ready verification system
+- External-library-backed verification system
 - Backward compatibility with existing Quantum Vault
 - Performance optimizations for real-world usage
 - Security hardening with battle-tested cryptography
@@ -32,7 +32,7 @@ import logging
 # Initialize logger first
 logger = logging.getLogger(__name__)
 
-# Try to import production-ready cryptographic libraries
+# Try to import external cryptographic libraries
 try:
     # Enhanced elliptic curve cryptography
     from py_ecc.bn128 import G1, G2, pairing, multiply, add
@@ -155,7 +155,7 @@ class ProductionZKStarkSystem:
         Create Cairo program for zk-STARK proof generation
         
         This generates a Cairo program that proves knowledge of a secret
-        without revealing it, using production-ready Cairo language.
+        without revealing it, using Cairo language.
         """
         cairo_code = f'''
 %builtins output pedersen range_check
@@ -448,7 +448,7 @@ func main{{pedersen_ptr: HashBuiltin*, range_check_ptr, output_ptr: felt*}}() {{
                                 public_statement: bytes,
                                 proof_type: str = "vault_operation") -> ProductionZKProof:
         """
-        Generate production-ready zk-STARK proof
+        Generate zk-STARK proof
         
         This is the main interface for generating genuine zk-STARK proofs
         using battle-tested cryptography libraries.
@@ -521,7 +521,7 @@ func main{{pedersen_ptr: HashBuiltin*, range_check_ptr, output_ptr: felt*}}() {{
     def verify_production_proof(self, proof: ProductionZKProof, 
                               public_statement: bytes) -> bool:
         """
-        Verify production-ready zk-STARK proof
+        Verify zk-STARK proof
         
         This provides rigorous verification of genuine zk-STARK proofs
         with mathematical soundness guarantees.

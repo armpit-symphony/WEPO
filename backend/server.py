@@ -1,5 +1,5 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Header
+from fastapi.security import HTTPBasic
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -10,14 +10,13 @@ import os
 import logging
 import math
 from pathlib import Path
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any, Tuple
 import uuid
 import hashlib
 import time
-import json
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 from enum import Enum
 import secrets
 import re
@@ -79,6 +78,8 @@ def parse_csv_env(env_name: str, default_values: List[str]) -> List[str]:
 DEFAULT_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://localhost:3100",
+    "http://127.0.0.1:3100",
 ]
 WEPO_ALLOWED_ORIGINS = parse_csv_env("WEPO_ALLOWED_ORIGINS", DEFAULT_ALLOWED_ORIGINS)
 if get_network_profile is not None:
@@ -114,6 +115,8 @@ class SecurityMiddleware(BaseHTTPMiddleware):
                 (method == "POST" and path.startswith("/api/transaction/send")) or
                 # Read-only sanity endpoints should never be globally throttled
                 (method == "GET" and (
+                    path.startswith("/api/mining/status") or
+                    path.startswith("/api/wallet/") or
                     path.startswith("/api/quantum/status") or
                     path.startswith("/api/collateral/schedule") or
                     path.startswith("/api/swap/rate")
@@ -200,6 +203,39 @@ logger = logging.getLogger(__name__)
 
 # Security
 security = HTTPBasic()
+
+
+def extract_bearer_token(authorization: Optional[str]) -> Optional[str]:
+    """Extract a bearer token from the Authorization header."""
+    if not authorization:
+        return None
+
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        return None
+
+    return token.strip()
+
+
+def require_wallet_session(request: Request, authorization: Optional[str]) -> Tuple[str, Dict[str, Any]]:
+    """Require a valid backend wallet session for sensitive actions."""
+    token = extract_bearer_token(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authentication required. Please log in again.")
+
+    session = SecurityManager.get_auth_session(token)
+    if not session:
+        raise HTTPException(status_code=401, detail="Session expired. Please log in again.")
+
+    client_id = SecurityManager.get_client_identifier(request)
+    session_client_id = session.get("client_id")
+    if session_client_id and session_client_id != client_id:
+        logger.warning(
+            f"Session client mismatch for {session.get('username')} - "
+            f"session {session_client_id}, request {client_id}"
+        )
+
+    return token, session
 
 # WEPO Blockchain Models
 class TransactionType(str, Enum):
@@ -511,10 +547,6 @@ async def create_wallet(request: Request, data: dict):
         # Hash password securely
         password_hash = SecurityManager.hash_password(password)
         
-        # Generate secure private key (simplified for demo - use proper key derivation in production)
-        private_key_entropy = secrets.token_bytes(32)
-        private_key_raw = hashlib.sha256(private_key_entropy + username.encode()).hexdigest()
-        
         # Create wallet entry with enhanced security
         wallet_data = {
             "username": username,
@@ -536,6 +568,7 @@ async def create_wallet(request: Request, data: dict):
             raise HTTPException(status_code=500, detail="Failed to create wallet in database")
         
         logger.info(f"Wallet created successfully for user {username} from {client_id}")
+        auth_session = SecurityManager.create_auth_session(username, wepo_address, client_id)
         
         return {
             "success": True,
@@ -543,7 +576,10 @@ async def create_wallet(request: Request, data: dict):
             "username": username,
             "message": "Wallet created successfully with enhanced security",
             "bip39": True,
-            "security_level": "enhanced"
+            "security_level": "enhanced",
+            "session_token": auth_session["token"],
+            "session_expires_at": auth_session["expires_at"],
+            "session_duration_seconds": auth_session["duration_seconds"],
         }
         
     except HTTPException:
@@ -597,13 +633,10 @@ async def login_wallet(request: Request, data: dict):
         
         if not SecurityManager.verify_password(password, password_hash):
             # Record failed login attempt
-            print(f"DEBUG: Password verification failed for {username}")  # Debug log
             failed_info = SecurityManager.record_failed_login(username)
-            print(f"DEBUG: Failed info returned: {failed_info}")  # Debug log
             
             # Lock account if too many failed attempts
             if failed_info["is_locked"]:
-                print(f"DEBUG: Account should be locked - updating database")  # Debug log
                 await db.wallets.update_one(
                     {"username": username},
                     {
@@ -625,7 +658,6 @@ async def login_wallet(request: Request, data: dict):
                     }
                 )
             
-            print(f"DEBUG: Account not locked yet - {failed_info['attempts']}/{failed_info['max_attempts']} attempts")  # Debug log
             logger.warning(f"Failed login for {username} from {client_id} - {failed_info['attempts']}/{failed_info['max_attempts']} attempts")
             raise HTTPException(status_code=401, detail="Invalid username or password")
         
@@ -644,6 +676,7 @@ async def login_wallet(request: Request, data: dict):
         )
         
         logger.info(f"Successful login for {username} from {client_id}")
+        auth_session = SecurityManager.create_auth_session(wallet["username"], wallet["address"], client_id)
         
         return {
             "success": True,
@@ -655,7 +688,10 @@ async def login_wallet(request: Request, data: dict):
             "version": wallet.get("version", "3.1"),
             "bip39": wallet.get("bip39", True),
             "security_level": wallet.get("security_level", "enhanced"),
-            "message": "Login successful"
+            "message": "Login successful",
+            "session_token": auth_session["token"],
+            "session_expires_at": auth_session["expires_at"],
+            "session_duration_seconds": auth_session["duration_seconds"],
         }
         
     except HTTPException:
@@ -664,58 +700,99 @@ async def login_wallet(request: Request, data: dict):
         logger.error(f"Login error for user {username} from {client_id}: {str(e)}")
         raise HTTPException(status_code=500, detail="Login failed due to internal error")
 
+
+@app.post("/api/wallet/logout")
+async def logout_wallet(request: Request, authorization: Optional[str] = Header(None)):
+    """Revoke the current backend auth session."""
+    token = extract_bearer_token(authorization)
+    if token:
+        SecurityManager.revoke_auth_session(token)
+
+    return {"success": True, "message": "Logged out"}
+
 @api_router.get("/wallet/{address}")
 async def get_wallet(address: str):
-    """Get wallet information"""
+    """Get wallet information, preferring the live node view over legacy Mongo state."""
     wallet = await db.wallets.find_one({"address": address})
-    if not wallet:
-        raise HTTPException(status_code=404, detail="Wallet not found")
-    
-    # Calculate balance from transactions
+
+    try:
+        response = requests.get(f"{WEPO_NODE_API_URL}/api/wallet/{address}", timeout=2)
+        response.raise_for_status()
+        payload = response.json()
+
+        return {
+            "address": payload.get("address", address),
+            "balance": float(payload.get("balance", 0) or 0),
+            "utxo_count": int(payload.get("utxo_count", 0) or 0),
+            "total_received": float(payload.get("total_received", 0) or 0),
+            "total_sent": float(payload.get("total_sent", 0) or 0),
+            "unconfirmed_balance": float(payload.get("unconfirmed_balance", 0) or 0),
+            "username": wallet.get("username") if wallet else None,
+            "created_at": wallet.get("created_at") if wallet else None,
+            "is_staking": wallet.get("is_staking", False) if wallet else False,
+            "is_masternode": wallet.get("is_masternode", False) if wallet else False,
+            "source": "node_proxy",
+        }
+    except Exception:
+        if not wallet:
+            raise HTTPException(status_code=404, detail="Wallet not found")
+
+    # Legacy fallback if the live node is unavailable.
     received = await db.transactions.aggregate([
         {"$match": {"to_address": address, "status": "confirmed"}},
         {"$group": {"_id": None, "total": {"$sum": "$amount"}}}
     ]).to_list(1)
-    
+
     sent = await db.transactions.aggregate([
         {"$match": {"from_address": address, "status": "confirmed"}},
         {"$group": {"_id": None, "total": {"$sum": "$amount"}}}
     ]).to_list(1)
-    
+
     received_amount = received[0]["total"] if received else 0
     sent_amount = sent[0]["total"] if sent else 0
     balance = received_amount - sent_amount
-    
-    # Update wallet balance
+
     await db.wallets.update_one(
         {"address": address},
         {"$set": {"legacy_balance_cache": balance, "last_activity": datetime.utcnow()}}
     )
-    
+
     return {
         "address": wallet["address"],
         "balance": balance,
         "username": wallet["username"],
         "created_at": wallet["created_at"],
         "is_staking": wallet.get("is_staking", False),
-        "is_masternode": wallet.get("is_masternode", False)
+        "is_masternode": wallet.get("is_masternode", False),
+        "source": "legacy_db",
     }
 
 @api_router.get("/wallet/{address}/transactions")
 async def get_wallet_transactions(address: str, limit: int = 50):
-    """Get wallet transaction history"""
-    transactions = await db.transactions.find({
+    """Get wallet transaction history, preferring the live node view."""
+    try:
+        response = requests.get(
+            f"{WEPO_NODE_API_URL}/api/wallet/{address}/transactions",
+            params={"limit": limit},
+            timeout=3,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload, list):
+            return payload
+    except Exception:
+        pass
+
+    return await db.transactions.find({
         "$or": [
             {"from_address": address},
             {"to_address": address}
         ]
     }).sort("timestamp", -1).limit(limit).to_list(limit)
-    
-    return transactions
 
 @app.post("/api/transaction/send")
-async def send_transaction(request: Request, data: dict):
-    """Send WEPO transaction with comprehensive security validation"""
+async def send_transaction(request: Request, data: dict, authorization: Optional[str] = Header(None)):
+    """Send WEPO transaction through the live node while keeping backend validation."""
     client_id = SecurityManager.get_client_identifier(request)
     logger.info(f"Transaction attempt from {client_id}")
     
@@ -740,6 +817,15 @@ async def send_transaction(request: Request, data: dict):
         
         if not SecurityManager.validate_wepo_address(to_address):
             raise HTTPException(status_code=400, detail="Invalid to_address format")
+
+        _, session = require_wallet_session(request, authorization)
+        session_address = session.get("address")
+        if session_address != from_address:
+            logger.warning(
+                f"Rejected transaction for session address {session_address} "
+                f"attempting to spend from {from_address} by {client_id}"
+            )
+            raise HTTPException(status_code=403, detail="Authenticated session does not match from_address")
         
         # Prevent self-transactions
         if from_address == to_address:
@@ -758,64 +844,55 @@ async def send_transaction(request: Request, data: dict):
         
         validated_amount = amount_validation["sanitized_amount"]
         
-        # Verify wallet exists and has sufficient balance
-        wallet = await db.wallets.find_one({"address": from_address})
-        if not wallet:
-            logger.warning(f"Transaction attempt from non-existent wallet {from_address} by {client_id}")
-            raise HTTPException(status_code=404, detail="Wallet not found")
-        
         # Transaction fee calculation
         transaction_fee = 0.0001  # Standard WEPO fee
         total_required = validated_amount + transaction_fee
-        
-        cached_balance = float(wallet.get("legacy_balance_cache", 0) or 0)
-        if cached_balance < total_required:
+
+        live_balance = await get_live_node_wallet_balance(from_address)
+        if live_balance < total_required:
             logger.warning(f"Insufficient balance transaction attempt from {from_address} by {client_id}")
             raise HTTPException(
                 status_code=400, 
-                detail=f"Insufficient balance. Required: {total_required} WEPO, Available: {cached_balance} WEPO"
+                detail=f"Insufficient balance. Required: {total_required} WEPO, Available: {live_balance} WEPO"
             )
-        
-        # Create secure transaction with enhanced validation
-        transaction_data = {
-            "id": str(uuid.uuid4()),
-            "tx_hash": secrets.token_hex(32),
-            "from_address": from_address,
-            "to_address": to_address,
-            "amount": validated_amount,
-            "fee": transaction_fee,
-            "transaction_type": "send",
-            "status": "pending",
-            "timestamp": datetime.utcnow().isoformat(),
-            "privacy_proof": generate_zk_proof(),
-            "ring_signature": generate_ring_signature(),
-            "client_id": client_id,
-            "security_validated": True
-        }
-        
-        # Insert transaction with proper error handling
-        result = await db.transactions.insert_one(transaction_data)
-        if not result.inserted_id:
-            raise HTTPException(status_code=500, detail="Failed to create transaction")
-        
-        # Update wallet balance (in real implementation, this would be handled by consensus)
-        await db.wallets.update_one(
-            {"address": from_address},
-            {"$inc": {"legacy_balance_cache": -total_required}}
+
+        try:
+            response = requests.post(
+                f"{WEPO_NODE_API_URL}/api/transaction/send",
+                json={
+                    "from_address": from_address,
+                    "to_address": to_address,
+                    "amount": validated_amount,
+                    "fee": transaction_fee,
+                    "privacy_level": "standard",
+                },
+                timeout=5,
+            )
+        except requests.RequestException as e:
+            logger.error(f"Live node transaction proxy error from {client_id}: {e}")
+            raise HTTPException(status_code=502, detail="Live transaction node is unavailable")
+
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+
+        if not response.ok:
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=payload.get("detail") or payload.get("error") or "Live transaction failed",
+            )
+
+        logger.info(
+            f"Transaction proxied: {payload.get('tx_hash')} from {from_address} "
+            f"to {to_address} amount {validated_amount} by {client_id}"
         )
-        
-        logger.info(f"Transaction created: {transaction_data['tx_hash']} from {from_address} to {to_address} amount {validated_amount} by {client_id}")
-        
-        return {
-            "success": True,
-            "transaction_id": transaction_data["id"],
-            "tx_hash": transaction_data["tx_hash"],
-            "status": transaction_data["status"],
-            "amount": validated_amount,
-            "fee": transaction_fee,
-            "privacy_protected": True,
-            "message": "Transaction created successfully"
-        }
+
+        payload["success"] = True
+        payload["amount"] = validated_amount
+        payload["fee"] = transaction_fee
+        payload["source"] = "node_proxy"
+        return payload
         
     except HTTPException:
         raise
@@ -958,6 +1035,52 @@ async def deactivate_masternode(request: MasternodeDeactivateRequest):
         )
 
     payload["source"] = "node_proxy"
+    return payload
+
+@api_router.get("/masternodes")
+async def list_masternodes():
+    """List all active masternodes, proxied from the live node."""
+    try:
+        response = requests.get(f"{WEPO_NODE_API_URL}/api/masternodes", timeout=5)
+        response.raise_for_status()
+        payload = response.json()
+    except requests.RequestException as e:
+        logger.error(f"Node masternodes list proxy error: {e}")
+        raise HTTPException(status_code=502, detail="Live node is unavailable")
+    if not isinstance(payload, list):
+        raise HTTPException(status_code=502, detail="Unexpected response from node")
+    return payload
+
+@api_router.get("/wallet/{address}/masternodes")
+async def get_wallet_masternodes(address: str):
+    """List masternodes operated by a given address, proxied from the live node."""
+    try:
+        response = requests.get(
+            f"{WEPO_NODE_API_URL}/api/wallet/{address}/masternodes", timeout=5
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except requests.RequestException as e:
+        logger.error(f"Node wallet masternodes proxy error: {e}")
+        raise HTTPException(status_code=502, detail="Live node is unavailable")
+    if not isinstance(payload, list):
+        raise HTTPException(status_code=502, detail="Unexpected response from node")
+    return payload
+
+@api_router.get("/wallet/{address}/stakes")
+async def get_wallet_stakes(address: str):
+    """List stakes for a given address, proxied from the live node."""
+    try:
+        response = requests.get(
+            f"{WEPO_NODE_API_URL}/api/wallet/{address}/stakes", timeout=5
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except requests.RequestException as e:
+        logger.error(f"Node wallet stakes proxy error: {e}")
+        raise HTTPException(status_code=502, detail="Live node is unavailable")
+    if not isinstance(payload, list):
+        raise HTTPException(status_code=502, detail="Unexpected response from node")
     return payload
 
 @api_router.post("/dex/swap")
@@ -1544,12 +1667,37 @@ class WalletMiner:
         
         # Staging-only manual override for genesis active flag
         self._force_genesis_active: Optional[bool] = None
+
+    def _fetch_live_network_status(self) -> Optional[Dict[str, Any]]:
+        try:
+            response = requests.get(
+                f"{WEPO_NODE_API_URL}/api/network/status",
+                timeout=3,
+            )
+        except requests.RequestException:
+            return None
+
+        if not response.ok:
+            return None
+
+        try:
+            return response.json()
+        except ValueError:
+            return None
     
     def is_genesis_active(self):
         """Check if genesis mining is still active"""
         # Staging override takes precedence if set
         if self._force_genesis_active is not None:
             return self._force_genesis_active
+
+        network_status = self._fetch_live_network_status()
+        if network_status:
+            chain_height = network_status.get("chain_height", network_status.get("height", 0)) or 0
+            hybrid_consensus = network_status.get("hybrid_consensus") or {}
+            if chain_height > 0 or hybrid_consensus.get("pos_activated"):
+                return False
+
         current_time = time.time()
         return current_time < self.genesis_launch_time or self.mining_stats["blocks_found"] == 0
     
@@ -1736,7 +1884,6 @@ class WalletMiner:
         if address not in self.connected_miners:
             return 0
         
-        miner_hashrate = self.connected_miners[address]["hashrate"]
         miners_by_hashrate = sorted(
             [m for m in self.connected_miners.values() if m["is_mining"]], 
             key=lambda x: x["hashrate"], 
@@ -2051,29 +2198,16 @@ async def get_rwa_rates():
         # Calculate exchange rates for each token
         for token in tokens:
             token_id = str(token.get("_id", ""))
-            total_supply = token.get("total_supply", 1000)
-            
-            # Basic rate calculation (could be enhanced with market data)
-            base_rate = 1.0  # 1 token = 1 WEPO as base
-            
-            # Adjust rate based on scarcity
-            if total_supply < 100:
-                base_rate = 5.0  # Rare tokens worth more
-            elif total_supply < 500:
-                base_rate = 2.0  # Uncommon tokens
-            
-            # Add market variations (±20%)
-            import random
-            market_factor = random.uniform(0.8, 1.2)
-            final_rate = base_rate * market_factor
+            final_rate = float(await get_rwa_token_unit_value_wepo(token) or 0.0)
             
             rates[token_id] = {
                 "rate_wepo_per_token": round(final_rate, 6),
-                "rate_token_per_wepo": round(1.0 / final_rate, 6), 
+                "rate_token_per_wepo": round(1.0 / final_rate, 6) if final_rate > 0 else 0.0,
                 "last_updated": int(time.time()),
                 "token_symbol": token.get("symbol", ""),
                 "token_name": token.get("asset_name", ""),
-                "24h_change": round(random.uniform(-0.1, 0.1), 4)  # Mock 24h change
+                "24h_change": 0.0,
+                "pricing_source": "asset_valuation",
             }
         
         return {
@@ -2088,20 +2222,25 @@ async def get_rwa_rates():
         raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.post("/rwa/transfer")
-async def transfer_rwa_tokens(request: dict):
+async def transfer_rwa_tokens(request_obj: Request, request: dict, authorization: Optional[str] = Header(None)):
     """Transfer RWA tokens between addresses"""
     try:
         token_id = request.get('token_id')
         from_address = request.get('from_address')
-        to_address = request.get('to_address') 
+        to_address = request.get('to_address')
         amount = request.get('amount')
-        
+
         if not all([token_id, from_address, to_address, amount]):
             raise HTTPException(status_code=400, detail="Missing required fields")
-        
+
         amount = float(amount)
         if amount <= 0:
             raise HTTPException(status_code=400, detail="Amount must be positive")
+
+        # Require an authenticated session that owns from_address
+        _, session = require_wallet_session(request_obj, authorization)
+        if session.get("address") != from_address:
+            raise HTTPException(status_code=403, detail="Authenticated session does not match from_address")
         
         # Get token info
         token = await db.rwa_tokens.find_one({"_id": token_id})
@@ -2193,6 +2332,12 @@ async def execute_rwa_trade(request: dict):
         
         token_amount = float(token_amount)
         wepo_amount = float(wepo_amount)
+        if trade_type not in {"buy", "sell"}:
+            raise HTTPException(status_code=400, detail="trade_type must be 'buy' or 'sell'")
+        if token_amount <= 0:
+            raise HTTPException(status_code=400, detail="token_amount must be positive")
+        if wepo_amount <= 0:
+            raise HTTPException(status_code=400, detail="wepo_amount must be positive")
 
         if idempotency_key:
             reservation, reserved_trade_id, trade_timestamp, created_new = await reserve_rwa_trade_idempotency(
@@ -2217,26 +2362,65 @@ async def execute_rwa_trade(request: dict):
         token = await db.rwa_tokens.find_one({"_id": token_id})
         if not token:
             raise HTTPException(status_code=404, detail="RWA token not found")
+
+        unit_value_wepo = float(await get_rwa_token_unit_value_wepo(token) or 0.0)
+        if unit_value_wepo <= 0:
+            raise HTTPException(status_code=400, detail="RWA token has no valuation-backed rate")
+
+        expected_wepo_amount = round(unit_value_wepo * token_amount, 8)
+        if abs(wepo_amount - expected_wepo_amount) > 0.000001:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "Quoted WEPO amount does not match the current valuation-backed rate",
+                    "expected_wepo_amount": expected_wepo_amount,
+                    "rate_wepo_per_token": round(unit_value_wepo, 8),
+                },
+            )
+
+        wepo_amount = expected_wepo_amount
         
         # Calculate trade fee (0.1% of WEPO amount)
         trade_fee = wepo_amount * 0.001
         effective_wepo_balance_before = await get_wallet_balance(user_address)
+        creator_address = token.get("creator", "")
+        available_supply = float(token.get("available_supply", 0) or 0)
 
         if trade_type == 'buy':
             # User buying RWA tokens with WEPO
             # Check user WEPO balance
             if effective_wepo_balance_before < (wepo_amount + trade_fee):
                 raise HTTPException(status_code=400, detail="Insufficient WEPO balance")
+            if available_supply < token_amount:
+                raise HTTPException(status_code=400, detail="Insufficient token inventory available for purchase")
+
+            creator_balance_doc = await db.rwa_balances.find_one({
+                "token_id": token_id,
+                "address": creator_address,
+            })
+            creator_token_balance = float(creator_balance_doc.get("balance", 0) or 0) if creator_balance_doc else 0.0
+            if creator_token_balance < token_amount:
+                raise HTTPException(status_code=400, detail="Token inventory is out of sync with creator balance")
             
             # Deduct WEPO from user
             trade_effects_applied = True
             await update_wallet_balance(user_address, -(wepo_amount + trade_fee))
+
+            # Transfer tokens from creator inventory to the buyer.
+            await db.rwa_balances.update_one(
+                {"token_id": token_id, "address": creator_address},
+                {"$inc": {"balance": -token_amount}},
+            )
             
             # Add RWA tokens to user
             await db.rwa_balances.update_one(
                 {"token_id": token_id, "address": user_address},
                 {"$inc": {"balance": token_amount}},
                 upsert=True
+            )
+            await db.rwa_tokens.update_one(
+                {"_id": token_id},
+                {"$inc": {"available_supply": -token_amount}},
             )
             
         else:  # sell
@@ -2257,6 +2441,16 @@ async def execute_rwa_trade(request: dict):
                 {"token_id": token_id, "address": user_address},
                 {"$inc": {"balance": -token_amount}}
             )
+
+            await db.rwa_balances.update_one(
+                {"token_id": token_id, "address": creator_address},
+                {"$inc": {"balance": token_amount}},
+                upsert=True,
+            )
+            await db.rwa_tokens.update_one(
+                {"_id": token_id},
+                {"$inc": {"available_supply": token_amount}},
+            )
             
             # Add WEPO to user (minus fee)
             await update_wallet_balance(user_address, wepo_amount - trade_fee)
@@ -2275,6 +2469,7 @@ async def execute_rwa_trade(request: dict):
             "user_address": user_address,
             "token_amount": token_amount,
             "wepo_amount": wepo_amount,
+            "rate_wepo_per_token": round(unit_value_wepo, 8),
             "trade_fee": trade_fee,
             "fee_settlement": {
                 "applied_on_chain": fee_settlement["applied_on_chain"],
@@ -2329,10 +2524,10 @@ async def execute_rwa_trade(request: dict):
 async def create_quantum_vault(request: dict):
     """Create a new Quantum Vault with multi-asset support"""
     try:
-        user_address = request.get("user_address")
+        user_address = request.get("user_address") or request.get("wallet_address")
         privacy_level = request.get("privacy_level", 3)
         multi_asset_support = request.get("multi_asset_support", True)
-        
+
         if not user_address:
             raise HTTPException(status_code=400, detail="User address required")
         
@@ -2356,7 +2551,7 @@ async def create_quantum_vault(request: dict):
         }
         
         await db.quantum_vaults.insert_one(vault_record)
-        
+
         return {
             "success": True,
             "vault_id": vault_id,
@@ -2367,7 +2562,9 @@ async def create_quantum_vault(request: dict):
             "privacy_commitment": vault_record["privacy_commitment"],
             "message": "Multi-asset Quantum Vault created with RWA support"
         }
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error creating quantum vault: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -2414,7 +2611,7 @@ async def get_vault_status(vault_id: str, user_address: str = None):
             "rwa_ghost_transfers": vault.get("rwa_ghost_transfers", True),
             "transaction_count": vault.get("transaction_count", 0),
             "wepo_balance": vault.get("wepo_balance", 0),
-            "rwa_asset_count": vault.get("rwa_asset_count", 0),
+            "rwa_asset_count": total_assets,
             "total_assets": total_assets,
             "asset_types": asset_types if vault.get("privacy_level", 3) < 4 else [],  # Hide asset types at max privacy
             "assets_portfolio": assets_portfolio,
@@ -2566,18 +2763,23 @@ async def get_rwa_vault_status(vault_id: str, user_address: str = None):
             {"vault_id": vault_id, "balance": {"$gt": 0}}
         ).to_list(None)
         recent_activity_docs = await db.vault_transactions.find(
-            {"vault_id": vault_id}
+            {
+                "$or": [
+                    {"vault_id": vault_id},
+                    {"counterparty_vault_id": vault_id},
+                ]
+            }
         ).sort("timestamp", -1).to_list(10)
 
         visible_asset_types = []
         if int(vault.get("privacy_level", 4) or 4) < 4:
-            visible_asset_types = list(
-                {
-                    asset.get("asset_type")
-                    for asset in asset_balances
-                    if asset.get("asset_type")
-                }
-            )
+            for asset in asset_balances:
+                asset_type = asset.get("asset_type")
+                if not asset_type:
+                    token_info = await db.rwa_tokens.find_one({"_id": asset.get("asset_id")})
+                    asset_type = token_info.get("asset_type") if token_info else None
+                if asset_type and asset_type not in visible_asset_types:
+                    visible_asset_types.append(asset_type)
 
         rwa_vault_status = {
             "vault_id": vault["vault_id"],
@@ -2599,7 +2801,13 @@ async def get_rwa_vault_status(vault_id: str, user_address: str = None):
             },
             "recent_activity": [
                 {
-                    "type": tx.get("tx_type", "unknown"),
+                    "type": (
+                        f"incoming_{tx.get('tx_type', 'unknown')}"
+                        if tx.get("counterparty_vault_id") == vault_id
+                        and tx.get("vault_id") != vault_id
+                        and "transfer" in str(tx.get("tx_type", ""))
+                        else tx.get("tx_type", "unknown")
+                    ),
                     "asset": "Privacy Protected" if int(vault.get("privacy_level", 4) or 4) >= 4 else tx.get("asset_id"),
                     "timestamp": tx.get("timestamp"),
                     "status": tx.get("status", "confirmed"),
@@ -2682,15 +2890,23 @@ async def transfer_rwa_between_vaults(request: dict):
         transfer_id = f"rwa_transfer_{int(time.time())}_{secrets.token_hex(6)}"
         now_ts = int(time.time())
 
+        token_info = await db.rwa_tokens.find_one({"_id": asset_id})
+        asset_type = source_balance_doc.get("asset_type") if source_balance_doc else None
+        if not asset_type and token_info:
+            asset_type = token_info.get("asset_type")
+
         await db.vault_rwa_balances.update_one(
             {"vault_id": from_vault, "asset_id": asset_id},
-            {"$inc": {"balance": -amount}},
+            {
+                "$inc": {"balance": -amount},
+                "$set": {"asset_type": asset_type},
+            },
         )
         await db.vault_rwa_balances.update_one(
             {"vault_id": to_vault, "asset_id": asset_id},
             {
                 "$inc": {"balance": amount},
-                "$setOnInsert": {"asset_type": source_balance_doc.get("asset_type") if source_balance_doc else None},
+                "$set": {"asset_type": asset_type},
             },
             upsert=True,
         )
@@ -2709,13 +2925,26 @@ async def transfer_rwa_between_vaults(request: dict):
         }
         await db.vault_transactions.insert_one(transfer_record)
 
+        source_asset_count = await db.vault_rwa_balances.count_documents(
+            {"vault_id": from_vault, "balance": {"$gt": 0}}
+        )
+        destination_asset_count = await db.vault_rwa_balances.count_documents(
+            {"vault_id": to_vault, "balance": {"$gt": 0}}
+        )
+
         await db.quantum_vaults.update_one(
             {"vault_id": from_vault},
-            {"$inc": {"transaction_count": 1}, "$set": {"last_activity": now_ts}},
+            {
+                "$inc": {"transaction_count": 1},
+                "$set": {"last_activity": now_ts, "rwa_asset_count": source_asset_count},
+            },
         )
         await db.quantum_vaults.update_one(
             {"vault_id": to_vault},
-            {"$inc": {"transaction_count": 1}, "$set": {"last_activity": now_ts}},
+            {
+                "$inc": {"transaction_count": 1},
+                "$set": {"last_activity": now_ts, "rwa_asset_count": destination_asset_count},
+            },
         )
         
         return {
@@ -2775,10 +3004,17 @@ async def deposit_rwa_to_vault(request: dict):
             {"$inc": {"balance": -amount}}
         )
         
+        token_info = await db.rwa_tokens.find_one({"_id": asset_id})
+
         # Add tokens to vault
         await db.vault_rwa_balances.update_one(
             {"vault_id": vault_id, "asset_id": asset_id},
-            {"$inc": {"balance": amount}},
+            {
+                "$inc": {"balance": amount},
+                "$set": {
+                    "asset_type": token_info.get("asset_type") if token_info else None
+                },
+            },
             upsert=True
         )
         
@@ -2797,11 +3033,19 @@ async def deposit_rwa_to_vault(request: dict):
         await db.vault_transactions.insert_one(tx_record)
         
         # Update vault stats
+        vault_asset_count = await db.vault_rwa_balances.count_documents(
+            {"vault_id": vault_id, "balance": {"$gt": 0}}
+        )
+
         await db.quantum_vaults.update_one(
             {"vault_id": vault_id},
             {
-                "$inc": {"transaction_count": 1, "rwa_asset_count": 1},
-                "$set": {"last_activity": int(time.time()), "rwa_support": True}
+                "$inc": {"transaction_count": 1},
+                "$set": {
+                    "last_activity": int(time.time()),
+                    "rwa_support": True,
+                    "rwa_asset_count": vault_asset_count,
+                }
             }
         )
         
@@ -2854,9 +3098,14 @@ async def withdraw_rwa_from_vault(request: dict):
             raise HTTPException(status_code=400, detail="Insufficient vault RWA balance")
         
         # Deduct tokens from vault
+        token_info = await db.rwa_tokens.find_one({"_id": asset_id})
+
         await db.vault_rwa_balances.update_one(
             {"vault_id": vault_id, "asset_id": asset_id},
-            {"$inc": {"balance": -amount}}
+            {
+                "$inc": {"balance": -amount},
+                "$set": {"asset_type": token_info.get("asset_type") if token_info else None},
+            }
         )
         
         # Add tokens to destination address
@@ -2882,9 +3131,16 @@ async def withdraw_rwa_from_vault(request: dict):
         await db.vault_transactions.insert_one(tx_record)
         
         # Update vault stats
+        vault_asset_count = await db.vault_rwa_balances.count_documents(
+            {"vault_id": vault_id, "balance": {"$gt": 0}}
+        )
+
         await db.quantum_vaults.update_one(
             {"vault_id": vault_id},
-            {"$inc": {"transaction_count": 1}, "$set": {"last_activity": int(time.time())}}
+            {
+                "$inc": {"transaction_count": 1},
+                "$set": {"last_activity": int(time.time()), "rwa_asset_count": vault_asset_count},
+            }
         )
         
         return {
@@ -2999,12 +3255,14 @@ async def initiate_rwa_ghost_transfer(request: dict):
             raise HTTPException(status_code=400, detail="Insufficient vault balance for ghost transfer")
         
         # Execute the ghost transfer (fully private)
-        # Deduct from source vault
-        await db.vault_rwa_balances.update_one(
+        # Deduct from source vault — check matched_count to catch race conditions
+        src_result = await db.vault_rwa_balances.update_one(
             {"vault_id": from_vault_id, "asset_id": asset_id},
             {"$inc": {"balance": -amount}}
         )
-        
+        if src_result.matched_count == 0:
+            raise HTTPException(status_code=409, detail="Source vault balance no longer available")
+
         # Add to destination vault
         await db.vault_rwa_balances.update_one(
             {"vault_id": to_vault_id, "asset_id": asset_id},
@@ -3191,12 +3449,20 @@ async def create_rwa_asset(request: dict):
             "created_date": datetime.utcfromtimestamp(now_ts).isoformat() + "Z",
         }
 
-        if request.get("file_name"):
-            file_data = request.get("file_data", "") or ""
-            asset_record["file_name"] = request.get("file_name")
-            asset_record["file_type"] = request.get("file_type")
-            asset_record["file_size"] = len(file_data)
-            asset_record["file_hash"] = hashlib.sha256(file_data.encode()).hexdigest() if file_data else None
+        file_data = request.get("file_data", "") or ""
+        if file_data:
+            import base64 as _b64
+            try:
+                decoded_bytes = _b64.b64decode(file_data)
+            except Exception:
+                raise HTTPException(status_code=400, detail="file_data must be valid base64")
+            MAX_FILE_BYTES = 10 * 1024 * 1024  # 10 MB decoded
+            if len(decoded_bytes) > MAX_FILE_BYTES:
+                raise HTTPException(status_code=400, detail="File exceeds maximum allowed size of 10 MB")
+            asset_record["file_name"] = request.get("file_name", "upload")
+            asset_record["file_type"] = request.get("file_type", "application/octet-stream")
+            asset_record["file_size"] = len(decoded_bytes)
+            asset_record["file_hash"] = hashlib.sha256(decoded_bytes).hexdigest()
 
         await db.rwa_assets.insert_one(asset_record)
 
@@ -3226,6 +3492,7 @@ async def tokenize_rwa_asset(request: dict):
         token_name = str(request.get("token_name", "")).strip()
         token_symbol = str(request.get("token_symbol", "")).strip().upper()
         total_supply = int(request.get("total_supply", 0) or 0)
+        caller_address = str(request.get("owner_address", "")).strip()
 
         if not all([asset_id, token_name, token_symbol]) or total_supply <= 0:
             raise HTTPException(status_code=400, detail="Missing required tokenization fields")
@@ -3233,6 +3500,10 @@ async def tokenize_rwa_asset(request: dict):
         asset = await db.rwa_assets.find_one({"_id": asset_id})
         if not asset:
             raise HTTPException(status_code=404, detail="Asset not found")
+
+        # Verify caller owns the asset
+        if caller_address and asset.get("owner_address") != caller_address:
+            raise HTTPException(status_code=403, detail="Only the asset owner can tokenize this asset")
 
         existing_token = await db.rwa_tokens.find_one({"asset_id": asset_id})
         if existing_token:

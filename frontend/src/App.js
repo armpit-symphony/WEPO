@@ -3,6 +3,7 @@ import WalletLogin from './components/WalletLogin';
 import WalletSetup from './components/WalletSetup';
 import Dashboard from './components/Dashboard';
 import { WalletProvider, useWallet } from './contexts/WalletContext';
+import { sessionManager } from './utils/securityUtils';
 import './App.css';
 
 // Main App Component that handles wallet state
@@ -11,18 +12,30 @@ const MainApp = () => {
   const [isInitialized, setIsInitialized] = useState(false);
   const { setWallet } = useWallet();
 
+  const clearTransientSession = () => {
+    sessionManager.clearAuthSession();
+    sessionManager.clearSecureSession();
+    sessionManager.remove('wepo_current_wallet');
+    sessionManager.remove('wepo_locked');
+    sessionStorage.removeItem('wepo_current_wallet');
+  };
+
   useEffect(() => {
     const initializeApp = async () => {
       try {
-        // Check if user has existing wallet session
-        const sessionActive = sessionStorage.getItem('wepo_session_active');
         const sessionWallet = sessionStorage.getItem('wepo_current_wallet');
+        const authSession = sessionManager.getAuthSession();
         const walletExists = localStorage.getItem('wepo_wallet_exists');
+        const isLocked = sessionManager.get('wepo_locked') === true;
 
-        if (sessionActive === 'true' && sessionWallet) {
+        if (!isLocked && sessionWallet && authSession) {
           const wallet = JSON.parse(sessionWallet);
           setWallet(wallet);
           setCurrentView('dashboard');
+        } else if (sessionWallet || isLocked) {
+          clearTransientSession();
+          setWallet(null);
+          setCurrentView(walletExists === 'true' ? 'login' : 'setup');
         } else if (walletExists === 'true') {
           setCurrentView('login');
         } else {
@@ -38,6 +51,35 @@ const MainApp = () => {
 
     initializeApp();
   }, [setWallet]);
+
+  useEffect(() => {
+    if (currentView !== 'dashboard') {
+      return undefined;
+    }
+
+    const reconcileSession = () => {
+      const walletExists = localStorage.getItem('wepo_wallet_exists');
+      const sessionWallet = sessionStorage.getItem('wepo_current_wallet');
+      const authSession = sessionManager.getAuthSession();
+      const isLocked = sessionManager.get('wepo_locked') === true;
+
+      if (!sessionWallet || !authSession || isLocked) {
+        clearTransientSession();
+        setWallet(null);
+        setCurrentView(walletExists === 'true' ? 'login' : 'setup');
+      }
+    };
+
+    const intervalId = window.setInterval(reconcileSession, 15000);
+    window.addEventListener('focus', reconcileSession);
+    document.addEventListener('visibilitychange', reconcileSession);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', reconcileSession);
+      document.removeEventListener('visibilitychange', reconcileSession);
+    };
+  }, [currentView, setWallet]);
 
   if (!isInitialized) {
     return (
@@ -66,7 +108,7 @@ const MainApp = () => {
         />
       )}
       {currentView === 'dashboard' && (
-        <Dashboard onLogout={() => handleViewChange('setup')} />
+        <Dashboard onLogout={() => handleViewChange('login')} />
       )}
     </div>
   );

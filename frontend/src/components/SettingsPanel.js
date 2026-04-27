@@ -83,10 +83,10 @@ const SettingsPanel = ({ onClose }) => {
       <div className="bg-gray-700/50 rounded-lg p-4 border border-purple-500/30">
         <div className="flex items-center gap-2 mb-2">
           <Shield className="h-4 w-4 text-purple-400" />
-          <span className="text-sm font-medium text-purple-200">Password Security</span>
+          <span className="text-sm font-medium text-purple-200">Account Security</span>
         </div>
         <p className="text-sm text-gray-300">
-          Change your wallet password. You must be signed in to change your password.
+          This public test build uses backend-managed WEPO test accounts. Sign-in is live, but password rotation is not exposed in the current UI build.
         </p>
       </div>
 
@@ -178,11 +178,11 @@ const SettingsPanel = ({ onClose }) => {
 
       <button
         onClick={handleChangePassword}
-        disabled={isLoading || !passwordForm.currentPassword || !passwordForm.newPassword || !passwordForm.confirmNewPassword}
+        disabled={true}
         className="w-full bg-purple-600 hover:bg-purple-700 text-white font-semibold py-3 px-6 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
       >
         <Key size={20} />
-        {isLoading ? 'Changing Password...' : 'Change Password'}
+        Password Change Not Yet Available
       </button>
 
       <div className="bg-yellow-900/30 rounded-lg p-4 border border-yellow-500/30">
@@ -193,8 +193,8 @@ const SettingsPanel = ({ onClose }) => {
         <ul className="text-sm text-gray-300 space-y-1">
           <li>• Use a strong, unique password for your wallet</li>
           <li>• Never share your password with anyone</li>
-          <li>• Store your recovery phrase securely offline</li>
-          <li>• WEPO cannot recover your wallet if you lose your credentials</li>
+          <li>• This public test build does not provide recovery phrase export or import</li>
+          <li>• Treat this environment as a test network and do not rely on it for production custody</li>
         </ul>
       </div>
     </div>
@@ -203,6 +203,7 @@ const SettingsPanel = ({ onClose }) => {
   const [networkInfo, setNetworkInfo] = useState({
     mode: 'pre-genesis',
     mode_display: 'Pre-Genesis (Not connected)',
+    network_label: 'WEPO Public Test',
     block_height: 0,
     total_hashrate: 0,
     active_masternodes: 0,
@@ -219,6 +220,7 @@ const SettingsPanel = ({ onClose }) => {
           setNetworkInfo({
             mode: data.mining_mode || 'pre-genesis',
             mode_display: data.mode_display || 'Pre-Genesis (Not connected)',
+            network_label: data.mining_mode === 'pow' ? 'WEPO Public Test' : 'Pre-Genesis',
             block_height: data.block_height || 0,
             total_hashrate: data.total_hashrate || 0,
             active_masternodes: data.active_masternodes || 0,
@@ -253,7 +255,7 @@ const SettingsPanel = ({ onClose }) => {
           <div className="flex justify-between">
             <span className="text-gray-400">Network:</span>
             <span className={networkInfo.mode === 'pre-genesis' ? 'text-yellow-400' : 'text-green-400'}>
-              {networkInfo.mode === 'pre-genesis' ? 'Pre-Genesis' : 'WEPO Mainnet'}
+              {networkInfo.network_label}
             </span>
           </div>
           <div className="flex justify-between">

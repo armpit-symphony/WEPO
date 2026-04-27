@@ -668,7 +668,7 @@ class P2PNetworkTester:
             print("❌ CRITICAL ISSUES FOUND:")
             for failure in critical_failures:
                 print(f"   - {failure['test_name']}: {failure['details']}")
-            print("   ⚠️  These issues must be addressed before production deployment")
+            print("   ⚠️  These issues must be addressed before deployment review")
         else:
             print("✅ No critical P2P networking issues found")
         
@@ -697,10 +697,10 @@ async def main():
         
         if success:
             print("\n🎉 ALL P2P NETWORK TESTS PASSED!")
-            print("The WEPO P2P network is ready for production deployment.")
+            print("The WEPO P2P network is not yet approved for deployment review.")
         else:
             print("\n⚠️  SOME P2P NETWORK TESTS FAILED!")
-            print("Please address the issues before production deployment.")
+            print("Please address the issues before deployment review.")
         
         return 0 if success else 1
         

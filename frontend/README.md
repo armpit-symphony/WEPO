@@ -1,70 +1,133 @@
-# Getting Started with Create React App
+# WEPO Web Wallet Frontend
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+This frontend is the current web wallet/client surface used for local public-test validation.
 
-## Available Scripts
+It is still transitional code that lives in the platform repo, but the main wallet flow has been validated locally against the accelerated test lab:
 
-In the project directory, you can run:
+- create account
+- refresh and restore the same session
+- login/logout
+- receive WEPO
+- authenticated send through the live backend
 
-### `npm start`
+## Current Public-Test Scope
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+Supported for the current public-test build:
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+- backend account create/login/logout
+- live WEPO balance and transaction reads
+- authenticated WEPO send
+- receive address display
+- PoS / masternode / privacy / RWA surfaces backed by the accelerated test lab
 
-### `npm test`
+Explicitly not live self-custody in this build:
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+- recovery phrase import/export
+- password-change flow
+- BTC custody
 
-### `npm run build`
+BTC UI is preview-only and should not be described as live custody.
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+## Runtime Modes
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+### Development UI
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+Use CRACO dev mode when iterating on the React app:
 
-### `npm run eject`
+```bash
+npm install
+npm start
+```
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+That starts the development server.
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+### Built Secure Frontend
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+For the validated local public-test flow, the preferred operator path is:
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+```bash
+/home/sparky/WEPO/wepo-production-deployment/run-local-public-test-stack.sh start
+```
 
-## Learn More
+For the next clean-chain validation round from genesis, use:
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+```bash
+/home/sparky/WEPO/wepo-production-deployment/run-local-public-test-stack.sh restart-clean
+```
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+That launcher:
 
-### Code Splitting
+- starts the accelerated wallet lab in tmux
+- builds the frontend bundle by default
+- serves the built app with `secure-server.js`
+- exposes `start | start-clean | restart-clean | stop | status | logs`
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+If you only want the frontend locally while another backend/node is already running, the lower-level path is still:
 
-### Analyzing the Bundle Size
+```bash
+npm install
+npm run build
+PORT=3100 node secure-server.js
+```
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+## Local Public-Test Stack
 
-### Making a Progressive Web App
+The currently validated local stack is:
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
+- frontend: `http://127.0.0.1:3100`
+- backend: `http://127.0.0.1:18021`
+- node: `http://127.0.0.1:18212`
 
-### Advanced Configuration
+The frontend reads its backend target from `.env` / `REACT_APP_BACKEND_URL`.
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
+Example:
 
-### Deployment
+```env
+REACT_APP_BACKEND_URL=http://127.0.0.1:18021
+WDS_SOCKET_PORT=443
+```
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
+## Recommended Local Flow
 
-### `npm run build` fails to minify
+1. Start the local public-test stack:
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+```bash
+/home/sparky/WEPO/wepo-production-deployment/run-local-public-test-stack.sh start
+```
+
+Use `restart-clean` instead when you need the lab reset to genesis before the next end-to-end round.
+
+2. Open `http://127.0.0.1:3100`
+
+3. Run the main public-test path:
+
+- create account
+- refresh
+- logout/login
+- fund/send/receive WEPO
+- confirm send success banner and live balance updates
+
+4. When finished:
+
+```bash
+/home/sparky/WEPO/wepo-production-deployment/run-local-public-test-stack.sh stop
+```
+
+## Security Notes
+
+- The frontend CSP defaults now allow the validated local wallet-lab backend and node ports.
+- The backend must allow the frontend origin through `WEPO_ALLOWED_ORIGINS`.
+- The frontend assumes a backend-issued auth session token for send authorization.
+
+## Scripts
+
+- `npm start`: CRACO development server
+- `npm run build`: production build for the secure server path
+- `npm test`: CRACO test runner
+
+## Related Docs
+
+- `/home/sparky/WEPO/README.md`
+- `/home/sparky/WEPO/wepo-production-deployment/PUBLIC_RELEASE_CHECKLIST.md`
+- `/home/sparky/WEPO/wepo-production-deployment/LOCAL_PUBLIC_TEST_CHECKLIST.md`
+- `/home/sparky/WEPO/wepo-production-deployment/PUBLIC_TEST_HANDOFF.md`

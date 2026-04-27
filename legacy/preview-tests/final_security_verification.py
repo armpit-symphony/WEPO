@@ -13,7 +13,7 @@ import secrets
 from datetime import datetime
 
 # Use preview backend URL
-BACKEND_URL = "https://blockchain-sectest.preview.emergentagent.com"
+BACKEND_URL = "http://127.0.0.1:18021"
 API_URL = f"{BACKEND_URL}/api"
 
 print(f"🔐 FINAL SECURITY VERIFICATION FOR CHRISTMAS DAY 2025 LAUNCH")

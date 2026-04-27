@@ -5,13 +5,10 @@ Real World Asset tokenization with quantum-resistant security
 """
 
 import hashlib
-import json
 import time
 import base64
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional
 from dataclasses import dataclass, asdict
-from datetime import datetime
-import uuid
 
 @dataclass
 class RWAAsset:
@@ -157,7 +154,7 @@ class RWATokenSystem:
             # Create transaction that will be distributed via 3-way fee system
             try:
                 # Create transaction - fees will be automatically distributed by blockchain
-                fee_tx_id = blockchain.create_transaction(owner_address, "wepo1feecollection00000000000000000000", rwa_creation_fee)
+                blockchain.create_transaction(owner_address, "wepo1feecollection00000000000000000000", rwa_creation_fee)
                 
                 # Note: Fee distribution (60% MN, 25% Miners, 15% Stakers) happens automatically in coinbase
                 print(f"RWA creation fee of {rwa_creation_fee} WEPO will be distributed via 3-way system")
@@ -478,38 +475,39 @@ class RWATokenSystem:
         }
     
     def add_fee_to_redistribution_pool(self, amount: float, block_height: int, fee_type: str = "transaction"):
-        """Add fee to redistribution pool"""
+        """Legacy fee telemetry hook kept for backward compatibility."""
         self.fee_redistribution_pool.total_collected += amount
-        print(f"Added {amount} WEPO {fee_type} fee to redistribution pool. Total: {self.fee_redistribution_pool.total_collected}")
+        print(
+            f"Recorded legacy fee telemetry: {amount} WEPO {fee_type}. "
+            f"Total tracked: {self.fee_redistribution_pool.total_collected}"
+        )
     
     def add_transaction_fees_to_pool(self, total_fees_satoshis: int, block_height: int):
-        """Add normal transaction fees to redistribution pool"""
+        """Legacy transaction-fee telemetry hook kept for backward compatibility."""
         if total_fees_satoshis > 0:
             fee_amount_wepo = total_fees_satoshis / 100000000  # Convert from satoshis
             self.add_fee_to_redistribution_pool(fee_amount_wepo, block_height, "transaction")
     
     def get_redistribution_pool_info(self) -> Dict:
-        """Get information about the fee redistribution pool"""
+        """Get legacy fee telemetry information."""
         return {
             'total_collected': self.fee_redistribution_pool.total_collected,
             'last_distribution_block': self.fee_redistribution_pool.last_distribution,
-            'pending_for_distribution': self.fee_redistribution_pool.total_collected,
+            'pending_for_distribution': 0,
             'distribution_history': self.fee_redistribution_pool.distribution_history,
             'distribution_policy': {
-                'first_18_months': 'All fees distributed to miners as additional block rewards',
-                'after_18_months': 'All fees distributed to masternode operators',
-                'distribution_frequency': 'Per block mining',
+                'canonical_fee_path': 'Blockchain coinbase outputs settle canonical fee redistribution',
+                'telemetry_scope': 'Legacy RWA/accounting tracking only',
+                'distribution_frequency': 'Not used for canonical settlement',
                 'fee_types_included': [
-                    'RWA creation fees (0.0002 WEPO per asset)',
-                    'Normal transaction fees (0.0001 WEPO per transaction)',
-                    'All other network fees'
+                    'Legacy RWA/application fee telemetry'
                 ]
             },
-            'fee_redistribution_philosophy': 'No fees are ever burned - all fees support network participants and ensure sustainable tokenomics'
+            'fee_redistribution_philosophy': 'Canonical fee redistribution lives in the blockchain consensus path'
         }
-    
+
     def distribute_fees_to_miners(self, miner_address: str, block_height: int) -> float:
-        """Distribute collected fees to miners (for first 18 months)"""
+        """Legacy helper retained for compatibility; not used by canonical settlement."""
         if self.fee_redistribution_pool.total_collected > 0:
             # For demo, distribute all collected fees to the miner
             amount_to_distribute = self.fee_redistribution_pool.total_collected
@@ -531,7 +529,7 @@ class RWATokenSystem:
         return 0.0
     
     def distribute_fees_to_masternodes(self, masternode_addresses: List[str], block_height: int) -> Dict:
-        """Distribute collected fees to masternodes (after 18 months)"""
+        """Legacy helper retained for compatibility; not used by canonical settlement."""
         if self.fee_redistribution_pool.total_collected > 0 and masternode_addresses:
             # Distribute equally among masternodes
             total_amount = self.fee_redistribution_pool.total_collected

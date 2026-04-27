@@ -409,7 +409,7 @@ def run_comprehensive_masternode_tests():
     print("✅ Service selection validation working")
     
     if critical_passed >= 4:
-        print("\n🎉 COMPREHENSIVE MASTERNODE SERVICE SYSTEM IS FULLY OPERATIONAL!")
+        print("\n🎉 COMPREHENSIVE MASTERNODE SERVICE SYSTEM IS operational in current testing!")
         print("✅ Complete masternode lifecycle management working")
         print("✅ All validation and error handling functional")
         print("✅ Device-specific requirements properly implemented")

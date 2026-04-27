@@ -69,7 +69,7 @@ Your WEPO seed phrase can recover your wallet in:
 
 - **GitHub Issues**: [Report bugs](https://github.com/wepo-project/wepo-desktop-wallet/issues)
 - **Documentation**: Coming soon
-- **Community**: Christmas Day 2025 Genesis Launch
+- **Community**: genesis launch
 
 ## Development
 
@@ -79,7 +79,7 @@ This wallet is built with:
 - **Node.js** - Backend API
 - **BIP-39/BIP-44** - Standard wallet derivation
 
-## Christmas Day 2025 🎄
+## genesis date 🎄
 
 WEPO Genesis Block Launch - Be ready!
 

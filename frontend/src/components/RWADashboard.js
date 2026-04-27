@@ -26,6 +26,7 @@ import UnifiedExchange from './UnifiedExchange';
 
 const RWADashboard = ({ onBack }) => {
   const { wallet } = useWallet();
+  const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
   
   const [activeTab, setActiveTab] = useState('dashboard');
   const [portfolio, setPortfolio] = useState(null);
@@ -39,17 +40,11 @@ const RWADashboard = ({ onBack }) => {
   const currentAddress = currentWallet?.address;
 
   useEffect(() => {
-    console.log('RWADashboard useEffect:', {
-      currentAddress,
-      currentWallet,
-      wallet
-    });
-    
     if (currentAddress) {
       loadRWAData();
     } else {
-      // Try to get address from localStorage if context is not ready
-      const storedWallet = localStorage.getItem('wepo_wallet');
+      // Try to get address from the active browser session if context is not ready
+      const storedWallet = sessionStorage.getItem('wepo_current_wallet');
       
       if (storedWallet) {
         try {
@@ -73,31 +68,26 @@ const RWADashboard = ({ onBack }) => {
     try {
       setLoading(true);
       setError('');
-      
-      console.log('Loading RWA data for address:', address);
-      
+
       // Load portfolio if address is available
       if (address) {
-        const portfolioResponse = await fetch(`/api/rwa/portfolio/${address}`);
+        const portfolioResponse = await fetch(`${backendUrl}/api/rwa/portfolio/${address}`);
         const portfolioData = await portfolioResponse.json();
-        console.log('Portfolio response:', portfolioData);
         if (portfolioData.success) {
           setPortfolio(portfolioData.portfolio);
         }
       }
       
       // Load tradeable tokens
-      const tokensResponse = await fetch('/api/rwa/tokens/tradeable');
+      const tokensResponse = await fetch(`${backendUrl}/api/rwa/tokens/tradeable`);
       const tokensData = await tokensResponse.json();
-      console.log('Tradeable tokens response:', tokensData);
       if (tokensData.success) {
         setTradeableTokens(tokensData.tokens);
       }
       
       // Load statistics
-      const statsResponse = await fetch('/api/rwa/statistics');
+      const statsResponse = await fetch(`${backendUrl}/api/rwa/statistics`);
       const statsData = await statsResponse.json();
-      console.log('Statistics response:', statsData);
       if (statsData.success) {
         setStatistics(statsData.statistics);
       }
@@ -144,7 +134,7 @@ const RWADashboard = ({ onBack }) => {
 
   const renderDEXTrading = () => (
     <UnifiedExchange 
-      onClose={() => setActiveTab('dashboard')}
+      onBack={() => setActiveTab('dashboard')}
     />
   );
 

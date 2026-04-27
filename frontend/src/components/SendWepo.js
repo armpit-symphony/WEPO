@@ -38,7 +38,8 @@ const SendWepo = ({ onClose, isPreGenesis = false }) => {
     try {
       secureLog.info('Initiating secure transaction', { toAddress: validatedData.toAddress, amount: validatedData.amount, fee: validatedData.fee, total: validatedData.total });
       const tx = await sendWepo(validatedData.toAddress, validatedData.amount, validatedData.password);
-      setSuccess(`✅ Transaction sent successfully! ID: ${tx.id}`);
+      const txIdentifier = tx?.tx_hash || tx?.txid || tx?.id || 'pending';
+      setSuccess(`✅ Transaction sent successfully! ID: ${txIdentifier}`);
       setFormData({ toAddress: '', amount: '', password: '' });
       setValidationErrors([]);
     } catch (error) {
@@ -99,6 +100,7 @@ const SendWepo = ({ onClose, isPreGenesis = false }) => {
       </div>
 
       {error && <div className="bg-red-900/50 border border-red-500 rounded-lg p-3 text-red-200 text-sm">{error}</div>}
+      {success && <div className="bg-green-900/40 border border-green-500 rounded-lg p-3 text-green-200 text-sm">{success}</div>}
       {validationErrors.length > 0 && (
         <div className="bg-red-900/50 border border-red-500 rounded-lg p-3">
           <div className="flex items-center gap-2 mb-2"><Shield className="h-4 w-4 text-red-400" /><span className="text-sm font-medium text-red-200">Security Validation Errors:</span></div>

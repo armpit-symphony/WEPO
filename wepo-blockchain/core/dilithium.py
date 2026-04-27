@@ -4,11 +4,21 @@ WEPO Quantum-Resistant Dilithium Signature Implementation
 UPGRADED TO REAL DILITHIUM2 - TRUE QUANTUM RESISTANCE
 """
 
-import os
 import hashlib
 import secrets
-from typing import Tuple, Optional
+from typing import Optional
 from dataclasses import dataclass
+
+try:
+    from .address_utils import (
+        generate_wepo_address as _generate_wepo_address,
+        validate_wepo_address as _validate_wepo_address,
+    )
+except ImportError:
+    from address_utils import (
+        generate_wepo_address as _generate_wepo_address,
+        validate_wepo_address as _validate_wepo_address,
+    )
 
 # Try to import real Dilithium2, fallback to RSA simulation if not available
 try:
@@ -303,6 +313,14 @@ class DilithiumSigner:
         """Check if this instance is using real quantum-resistant cryptography"""
         return self.is_real_dilithium
 
+
+class DilithiumVerifier:
+    """Backward-compatible verification wrapper used by older callers"""
+
+    def verify(self, message: bytes, signature: bytes, public_key: bytes) -> bool:
+        signer = DilithiumSigner()
+        return signer.verify(message, signature, public_key)
+
 # Convenience functions for backward compatibility
 def generate_dilithium_keypair() -> DilithiumKeyPair:
     """Generate a new Dilithium keypair (REAL or simulated)"""
@@ -319,6 +337,55 @@ def verify_dilithium_signature(message: bytes, signature: bytes, public_key: byt
     """Verify a Dilithium signature"""
     signer = DilithiumSigner()
     return signer.verify(message, signature, public_key)
+
+
+def sign_message(message: bytes, private_key: bytes) -> bytes:
+    """Backward-compatible alias for signing helpers used across the core"""
+    return sign_with_dilithium(message, private_key)
+
+
+def verify_signature(message: bytes, signature: bytes, public_key: bytes) -> bool:
+    """Backward-compatible alias for verification helpers used across the core"""
+    return verify_dilithium_signature(message, signature, public_key)
+
+
+def generate_wepo_address(seed: bytes, address_type: str = "quantum") -> str:
+    """Generate a standardized WEPO address from Dilithium material"""
+    return _generate_wepo_address(seed, address_type=address_type)
+
+
+def validate_wepo_address(address: str) -> bool:
+    """Backward-compatible bool-returning address validator"""
+    return _validate_wepo_address(address)["valid"]
+
+
+def get_dilithium_info() -> dict:
+    """Return current Dilithium implementation details"""
+    signer = DilithiumSigner()
+    return signer.get_algorithm_info()
+
+
+class _DilithiumSystemCompat:
+    """Compatibility surface for older blockchain imports"""
+
+    @staticmethod
+    def generate_keypair() -> DilithiumKeyPair:
+        return generate_dilithium_keypair()
+
+    @staticmethod
+    def sign(message: bytes, private_key: bytes) -> bytes:
+        return sign_message(message, private_key)
+
+    @staticmethod
+    def verify(message: bytes, signature: bytes, public_key: bytes) -> bool:
+        return verify_signature(message, signature, public_key)
+
+    @staticmethod
+    def info() -> dict:
+        return get_dilithium_info()
+
+
+dilithium_system = _DilithiumSystemCompat()
 
 def is_real_dilithium_available() -> bool:
     """Check if real Dilithium implementation is available"""

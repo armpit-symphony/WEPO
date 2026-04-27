@@ -1,6 +1,6 @@
 {
   "timestamp": 1754777662,
-  "backend_url": "https://blockchain-sectest.preview.emergentagent.com/api",
+  "backend_url": "http://127.0.0.1:18021/api",
   "weak_password_results": [
     {
       "password": "123456",

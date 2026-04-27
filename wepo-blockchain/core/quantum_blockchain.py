@@ -8,22 +8,14 @@ import os
 import sys
 import hashlib
 import json
-import time
-import struct
 import sqlite3
-import threading
-from typing import List, Dict, Optional, Union
+from typing import List, Dict, Optional
 from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta
 
 # Import existing blockchain components
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from blockchain import (
-    WEPO_VERSION, NETWORK_MAGIC, DEFAULT_PORT, GENESIS_TIME,
-    BLOCK_TIME_TARGET, BLOCK_TIME_YEAR1, MAX_BLOCK_SIZE, COIN,
-    POW_BLOCKS_YEAR1, REWARD_Q1, REWARD_Q2, REWARD_Q3, REWARD_Q4,
-    REWARD_YEAR2_BASE, HALVING_INTERVAL, POS_ACTIVATION_HEIGHT,
-    MIN_STAKE_AMOUNT, MASTERNODE_COLLATERAL,
+    GENESIS_TIME, COIN, REWARD_Q1,
     BlockHeader, Block, WepoArgon2Miner,
     StakeInfo, MasternodeInfo
 )
@@ -31,13 +23,13 @@ from blockchain import (
 # Import quantum transaction system
 from quantum_transaction import (
     QuantumTransaction, QuantumTransactionInput, QuantumTransactionOutput,
-    QuantumTransactionBuilder, QuantumWallet
+    QuantumWallet
 )
 
 # Import Dilithium cryptography
 from dilithium import (
     generate_dilithium_keypair, generate_wepo_address,
-    validate_wepo_address, get_dilithium_info
+    get_dilithium_info
 )
 
 @dataclass
@@ -176,6 +168,7 @@ class QuantumWepoBlockchain:
     def create_genesis_block(self):
         """Create quantum-resistant genesis block"""
         print("Creating WEPO Quantum Genesis Block...")
+        genesis_difficulty = 1
         
         # Generate genesis keypair
         genesis_keypair = generate_dilithium_keypair()
@@ -212,7 +205,7 @@ class QuantumWepoBlockchain:
             prev_hash="0" * 64,
             merkle_root="",
             timestamp=GENESIS_TIME,
-            bits=self.current_difficulty,
+            bits=genesis_difficulty,
             nonce=0,
             consensus_type="pow"
         )
@@ -229,34 +222,20 @@ class QuantumWepoBlockchain:
         
         # Mine genesis block
         print("Mining quantum genesis block...")
-        mined_genesis = self.mine_block(genesis_block)
+        mined_genesis = self.mine_block(genesis_block, difficulty=genesis_difficulty)
         
         if mined_genesis:
             self.add_block(mined_genesis, validate=False)
-            
-            # Create genesis UTXO
-            self.conn.execute('''
-                INSERT INTO quantum_utxos (txid, vout, address, amount, public_key_hash, spent)
-                VALUES (?, ?, ?, ?, ?, FALSE)
-            ''', (
-                genesis_tx.calculate_txid(),
-                0,
-                genesis_address,
-                REWARD_Q1,
-                genesis_tx.outputs[0].public_key_hash
-            ))
-            
-            self.conn.commit()
-            
             print(f"✓ Quantum genesis block created: {mined_genesis.get_block_hash()}")
             print(f"✓ Genesis address: {genesis_address}")
             print(f"✓ Genesis reward: {REWARD_Q1 / COIN} WEPO")
         else:
             raise Exception("Failed to mine quantum genesis block")
     
-    def mine_block(self, block: QuantumBlock) -> Optional[QuantumBlock]:
+    def mine_block(self, block: QuantumBlock, difficulty: Optional[int] = None) -> Optional[QuantumBlock]:
         """Mine a quantum block using Argon2 PoW"""
         print(f"Mining quantum block {block.height}...")
+        target_difficulty = difficulty if difficulty is not None else self.current_difficulty
         
         # Convert to legacy block for mining
         legacy_block = Block(
@@ -267,7 +246,7 @@ class QuantumWepoBlockchain:
         )
         
         # Mine the block
-        mined_legacy = self.miner.mine_block(legacy_block, self.current_difficulty)
+        mined_legacy = self.miner.mine_block(legacy_block, target_difficulty)
         
         if mined_legacy:
             # Update quantum block with mined nonce

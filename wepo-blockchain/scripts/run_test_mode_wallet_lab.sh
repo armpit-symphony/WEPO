@@ -21,6 +21,7 @@ READY_TIMEOUT_SECONDS="${READY_TIMEOUT_SECONDS:-45}"
 FUNDING_WAIT_SECONDS="${FUNDING_WAIT_SECONDS:-20}"
 TARGET_FUNDING_WEPO="${TARGET_FUNDING_WEPO:-1.0}"
 LOG_DIR="${LOG_DIR:-/tmp/wepo-test-wallet-lab-logs}"
+RESET_LAB_STATE="${RESET_LAB_STATE:-0}"
 
 NODE_PID=""
 BACKEND_PID=""
@@ -101,6 +102,13 @@ NODE_LOG="${LOG_DIR}/node.log"
 BACKEND_LOG="${LOG_DIR}/backend.log"
 NODE_BASE_URL="http://${NODE_HOST}:${NODE_API_PORT}"
 BACKEND_BASE_URL="http://${BACKEND_HOST}:${BACKEND_PORT}"
+
+if [[ "${RESET_LAB_STATE}" == "1" ]]; then
+    print_step "Resetting disposable test-lab state"
+    rm -rf "${NODE_DATA_DIR}" "${LOG_DIR}"
+fi
+
+mkdir -p "${LOG_DIR}"
 
 check_port_free "${NODE_API_PORT}"
 check_port_free "${BACKEND_PORT}"

@@ -132,7 +132,7 @@ def test_quantum_regular_interoperability():
     print("   • Both address types can be queried through either endpoint")
     print("   • Unified blockchain supports both signature types")
     print("   • Cross-compatibility is fully functional")
-    print("   • Dilithium implementation is production-ready")
+    print("   • Dilithium implementation is not yet production-ready")
     print("\n🚀 WEPO is now the world's first quantum-regular interoperable cryptocurrency!")
     
     return True

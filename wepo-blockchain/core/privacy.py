@@ -4,21 +4,14 @@ WEPO Privacy Cryptographic Library - REAL CRYPTOGRAPHIC IMPLEMENTATION
 Implements real zk-STARK, Ring Signatures, and Confidential Transactions
 """
 
-import hashlib
-import secrets
 import struct
 import time
-import os
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Tuple, Dict, Any
 from dataclasses import dataclass
 from Crypto.Hash import SHA256, BLAKE2b
-from Crypto.PublicKey import ECC
-from Crypto.Signature import DSS
 from Crypto.Random import get_random_bytes
-from Crypto.Cipher import AES
 from Crypto.Util import number
-from ecdsa import SigningKey, VerifyingKey, SECP256k1
-from ecdsa.util import sigencode_string, sigdecode_string
+from ecdsa import SigningKey, SECP256k1
 import json
 
 # Privacy constants - Updated for real cryptographic implementations
@@ -280,7 +273,7 @@ class RingSignature:
         hash_result = self.hash_function.new(data).digest()
         return int.from_bytes(hash_result, 'big') % self.order
     
-    def _point_multiply(self, private_key: int, generator_point: bytes) -> bytes:
+    def _point_multiply(self, private_key: int, _generator_point: bytes) -> bytes:
         """Multiply point by scalar (simplified elliptic curve operation)"""
         # Use ECDSA library for proper point multiplication
         signing_key = SigningKey.from_string(private_key.to_bytes(32, 'big'), curve=self.curve)
@@ -290,7 +283,6 @@ class RingSignature:
         """Generate key image to prevent double spending"""
         # Key image = H(public_key) * private_key
         # This is a simplified implementation
-        private_scalar = int.from_bytes(private_key, 'big') % self.order
         hash_point = self.hash_function.new(public_key).digest()
         
         # Create key image by combining private key with hashed public key
@@ -316,8 +308,6 @@ class RingSignature:
                 raise ValueError("Ring signature requires at least 2 public keys")
             
             ring_size = len(public_keys)
-            private_scalar = int.from_bytes(private_key, 'big') % self.order
-            
             # Find position of signer's public key
             signer_public_key = SigningKey.from_string(private_key, curve=self.curve).get_verifying_key().to_string()
             signer_index = None

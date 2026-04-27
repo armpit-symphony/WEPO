@@ -7,17 +7,14 @@ Real Hash Time Locked Contract (HTLC) based atomic swaps between BTC and WEPO
 import hashlib
 import secrets
 import time
-import struct
-from typing import Optional, Dict, Any, Tuple, List
+from typing import Optional, Dict, Any, List
 from enum import Enum
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import json
-import asyncio
 
 # Bitcoin library imports
 try:
-    import bitcoin
     from bitcoin.core import *
     from bitcoin.core.script import *
     from bitcoin.core.scripteval import *

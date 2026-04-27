@@ -205,6 +205,6 @@ npm start
 
 MIT License - see LICENSE file for details.
 
-## Christmas Day 2025 🎄
+## genesis date 🎄
 
-This desktop wallet is ready for the WEPO Genesis Block launch on Christmas Day 2025!
+This desktop wallet is ready for the WEPO Genesis Block launch on genesis date!

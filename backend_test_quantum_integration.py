@@ -524,7 +524,7 @@ def run_all_tests():
     print(f"Success Rate: {success_rate:.1f}%")
     
     if success_rate >= 80:
-        print("\n🎉 EXCELLENT! WEPO backend systems are fully operational with REAL Dilithium2!")
+        print("\n🎉 EXCELLENT! WEPO backend systems are operational in current testing with REAL Dilithium2!")
         print("🔐 TRUE post-quantum security is now active instead of RSA simulation!")
         print("✅ All systems show quantum resistance status: TRUE")
         print("✅ Key sizes match NIST specifications: 1312/2528 bytes")

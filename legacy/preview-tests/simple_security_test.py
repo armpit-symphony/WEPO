@@ -12,7 +12,7 @@ import time
 import secrets
 
 # Use preview backend URL
-BACKEND_URL = "https://blockchain-sectest.preview.emergentagent.com"
+BACKEND_URL = "http://127.0.0.1:18021"
 
 print(f"🔐 SIMPLE SECURITY TEST - DIRECT VERIFICATION")
 print(f"Backend URL: {BACKEND_URL}")

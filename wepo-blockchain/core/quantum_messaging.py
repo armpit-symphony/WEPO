@@ -5,12 +5,10 @@ Provides quantum-resistant messaging for ALL wallet types
 """
 
 import hashlib
-import json
 import time
 import secrets
-from typing import List, Dict, Optional, Union
-from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta
+from typing import List, Dict, Optional
+from dataclasses import dataclass
 
 # Import our quantum cryptography
 from dilithium import (
@@ -18,7 +16,6 @@ from dilithium import (
     verify_dilithium_signature as verify_signature,
     DilithiumKeyPair
 )
-from address_utils import generate_wepo_address
 
 @dataclass
 class QuantumMessage:
@@ -144,8 +141,6 @@ class UniversalQuantumMessaging:
             from cryptography.fernet import Fernet
             from cryptography.hazmat.primitives import hashes, serialization
             from cryptography.hazmat.primitives.asymmetric import rsa, padding
-            from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-            import base64
             
             # Generate symmetric key for message content
             symmetric_key = Fernet.generate_key()
@@ -173,7 +168,7 @@ class UniversalQuantumMessaging:
                 print(f"✓ TRUE E2E: Symmetric key encrypted with recipient's public key")
                 print(f"   Server CANNOT decrypt this message")
                 
-            except Exception as key_error:
+            except Exception:
                 print(f"Warning: Using fallback RSA key generation for E2E encryption")
                 # Generate RSA key pair for this recipient if needed
                 private_key = rsa.generate_private_key(
@@ -256,7 +251,7 @@ class UniversalQuantumMessaging:
             sender_keypair = self.get_messaging_keypair(from_address)
             
             # Get or generate messaging keys for recipient
-            recipient_keypair = self.get_messaging_keypair(to_address)
+            self.get_messaging_keypair(to_address)
             
             # Encrypt message content
             # Use recipient RSA public key (TRUE E2E) to encrypt symmetric key
@@ -395,9 +390,6 @@ class UniversalQuantumMessaging:
     def get_conversation(self, user_address: str, other_address: str) -> List[QuantumMessage]:
         """Get conversation between two addresses"""
         try:
-            # Get thread
-            thread = self.get_or_create_thread([user_address, other_address])
-            
             # Get all messages for both users
             all_messages = self.get_messages(user_address, "all")
             

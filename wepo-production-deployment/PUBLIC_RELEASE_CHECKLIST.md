@@ -4,6 +4,11 @@ Use this checklist before calling WEPO or WEPO Wallet public-ready.
 
 This is the handoff point between platform hardening and multi-wallet validation.
 
+For the validated local pre-public-test stack and browser wallet flow, see:
+
+- `/home/sparky/WEPO/wepo-production-deployment/LOCAL_PUBLIC_TEST_CHECKLIST.md`
+- `/home/sparky/WEPO/wepo-production-deployment/PUBLIC_TEST_HANDOFF.md`
+
 ## 1. Canonical Platform Gate
 
 Require all of the following on staging:

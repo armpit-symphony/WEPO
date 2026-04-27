@@ -9,9 +9,8 @@ import hashlib
 import re
 import time
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from fastapi import HTTPException, Request
-from datetime import datetime, timedelta
 import redis
 import json
 
@@ -37,6 +36,7 @@ def init_redis(redis_url: str = "redis://localhost:6379"):
 # In-memory fallback for rate limiting when Redis is not available
 rate_limit_storage = {}
 failed_attempts_storage = {}
+auth_session_storage = {}
 
 class SecurityManager:
     """Centralized security management for WEPO backend"""
@@ -45,6 +45,7 @@ class SecurityManager:
     MAX_LOGIN_ATTEMPTS = 5
     LOCKOUT_DURATION = 300  # 5 minutes in seconds
     RATE_LIMIT_WINDOW = 60  # 1 minute
+    SESSION_DURATION = 30 * 60  # 30 minutes in seconds
     
     # Different rate limits for different endpoints
     RATE_LIMIT_CONFIG = {
@@ -241,15 +242,11 @@ class SecurityManager:
     @staticmethod
     def record_failed_login(username: str) -> Dict[str, Any]:
         """Record failed login attempt and check for lockout"""
-        print(f"DEBUG: ENTERING record_failed_login for {username}")  # Debug log
         current_time = time.time()
         key = f"failed_login:{username}"
-        
-        print(f"DEBUG: Recording failed login for {username}")  # Debug log
-        
+
         try:
             if redis_client:
-                print("DEBUG: Using Redis for failed login tracking")  # Debug log
                 # Use Redis for persistent storage
                 attempts_data = redis_client.get(key)
                 if attempts_data:
@@ -262,10 +259,8 @@ class SecurityManager:
                 
                 # Store for lockout duration
                 redis_client.setex(key, SecurityManager.LOCKOUT_DURATION, json.dumps(attempts_info))
-                print(f"DEBUG: Redis storage successful: {attempts_info}")  # Debug log
                     
             else:
-                print("DEBUG: Using in-memory storage for failed login tracking")  # Debug log
                 # Fallback to in-memory storage
                 if username not in failed_attempts_storage:
                     failed_attempts_storage[username] = {"count": 0, "first_attempt": current_time}
@@ -273,9 +268,6 @@ class SecurityManager:
                 failed_attempts_storage[username]["count"] += 1
                 failed_attempts_storage[username]["last_attempt"] = current_time
                 attempts_info = failed_attempts_storage[username]
-                print(f"DEBUG: In-memory storage successful: {attempts_info}")  # Debug log
-            
-            print(f"DEBUG: Attempts info: {attempts_info}")  # Debug log
             
             is_locked = attempts_info["count"] >= SecurityManager.MAX_LOGIN_ATTEMPTS
             time_remaining = SecurityManager.LOCKOUT_DURATION  # Default to full duration
@@ -290,13 +282,10 @@ class SecurityManager:
                 "time_remaining": int(time_remaining),
                 "max_attempts": SecurityManager.MAX_LOGIN_ATTEMPTS
             }
-            
-            print(f"DEBUG: Returning result: {result}")  # Debug log
             return result
         
         except Exception as e:
             logger.error(f"Failed login recording error: {e}")
-            print(f"DEBUG: Exception in record_failed_login: {e}")  # Debug log
             return {"is_locked": False, "attempts": 1, "time_remaining": 0, "max_attempts": SecurityManager.MAX_LOGIN_ATTEMPTS}
     
     @staticmethod
@@ -310,6 +299,81 @@ class SecurityManager:
                 del failed_attempts_storage[username]
         except Exception as e:
             logger.error(f"Failed to clear login attempts: {e}")
+
+    @staticmethod
+    def create_auth_session(username: str, address: str, client_id: str) -> Dict[str, Any]:
+        """Create a short-lived backend auth session for wallet actions."""
+        issued_at = int(time.time())
+        expires_at = issued_at + SecurityManager.SESSION_DURATION
+        token = SecurityManager.generate_secure_token()
+        session_data = {
+            "username": username,
+            "address": address,
+            "client_id": client_id,
+            "issued_at": issued_at,
+            "expires_at": expires_at,
+        }
+        key = f"auth_session:{token}"
+
+        try:
+            if redis_client:
+                redis_client.setex(key, SecurityManager.SESSION_DURATION, json.dumps(session_data))
+            else:
+                auth_session_storage[key] = session_data
+        except Exception as e:
+            logger.error(f"Auth session creation error: {e}")
+            raise
+
+        return {
+            "token": token,
+            "issued_at": issued_at,
+            "expires_at": expires_at,
+            "duration_seconds": SecurityManager.SESSION_DURATION,
+        }
+
+    @staticmethod
+    def get_auth_session(token: str) -> Dict[str, Any] | None:
+        """Load and validate a backend auth session."""
+        if not token:
+            return None
+
+        key = f"auth_session:{token}"
+        current_time = int(time.time())
+
+        try:
+            if redis_client:
+                raw_session = redis_client.get(key)
+                if not raw_session:
+                    return None
+                session_data = json.loads(raw_session)
+            else:
+                session_data = auth_session_storage.get(key)
+                if not session_data:
+                    return None
+
+            if current_time >= int(session_data.get("expires_at", 0)):
+                SecurityManager.revoke_auth_session(token)
+                return None
+
+            return session_data
+        except Exception as e:
+            logger.error(f"Auth session lookup error: {e}")
+            return None
+
+    @staticmethod
+    def revoke_auth_session(token: str) -> None:
+        """Revoke a backend auth session."""
+        if not token:
+            return
+
+        key = f"auth_session:{token}"
+        try:
+            if redis_client:
+                redis_client.delete(key)
+            else:
+                auth_session_storage.pop(key, None)
+        except Exception as e:
+            logger.error(f"Auth session revoke error: {e}")
     
     @staticmethod
     def generate_secure_token() -> str:

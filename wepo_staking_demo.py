@@ -285,7 +285,7 @@ def main():
             print("✅ PoS is now activated and functional")
             print("✅ Staking mechanism working")
             print("✅ Masternode system operational")
-            print("✅ WEPO staking is production-ready!")
+            print("✅ WEPO staking is not yet production-ready!")
             print("=" * 60)
             return 0
         else:

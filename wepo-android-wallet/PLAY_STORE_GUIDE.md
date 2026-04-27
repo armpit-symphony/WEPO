@@ -103,7 +103,7 @@ WEPO: Self-custodial crypto wallet with Bitcoin integration & privacy
 Full description:
 🔐 WEPO Wallet - Your Gateway to Decentralized Finance
 
-WEPO Wallet is a comprehensive self-custodial cryptocurrency wallet designed for privacy and security. Built for the Christmas 2025 genesis launch!
+WEPO Wallet is a comprehensive self-custodial cryptocurrency wallet designed for privacy and security.
 
 🔐 SECURITY FIRST
 • Self-custodial design - you control your keys
@@ -147,7 +147,7 @@ This is a self-custodial wallet. You are responsible for securely storing your r
 
 Cryptocurrency investments carry risk. Only invest what you can afford to lose.
 
-🎄 Ready for Christmas 2025 Genesis Launch!
+Release timing remains under review.
 
 For support: https://wepo.network
 ```
@@ -260,7 +260,7 @@ Security Practices:
    • No data tracking or analytics
    • Complete self-custody control
    
-   Ready for Christmas 2025 genesis launch! 🎄
+   Public release timing remains under review.
    ```
 
 4. **Review and Publish**:
@@ -311,7 +311,7 @@ android {
 - [ ] Zero policy violations
 
 **Growth Targets**:
-- [ ] 10,000+ active users by Christmas 2025
+- [ ] 10,000+ active users after public launch
 - [ ] Featured in Finance category
 - [ ] Community feedback integration
 - [ ] Multi-language support expansion
@@ -335,15 +335,15 @@ android {
 
 ---
 
-## 🎄 Christmas 2025 Timeline
+## Release Timeline
 
 **Recommended Schedule**:
 - **Now**: Play Console setup + internal testing
 - **Month 1**: Production release + community feedback
 - **Month 2**: Feature updates + optimization
 - **December 2024**: Final polish + marketing push
-- **Christmas Day 2025**: Genesis launch ready! 🎄
+- **Public Launch Review**: release timing TBD
 
-**Your WEPO Android Wallet is ready for Google Play Store! 🚀📱**
+**Google Play distribution should be treated as a later release step, not a current approval state.**
 
-The app is production-ready with modern Android architecture, comprehensive security, and all features needed for the Christmas 2025 genesis block launch.
+The app uses modern Android architecture and includes a substantial feature set, but it is still under production hardening.

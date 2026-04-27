@@ -179,7 +179,7 @@ def test_universal_quantum_messaging():
         return False
     
     print("\n" + "=" * 60)
-    print("🎉 UNIVERSAL QUANTUM MESSAGING SYSTEM FULLY OPERATIONAL!")
+    print("🎉 UNIVERSAL QUANTUM MESSAGING SYSTEM operational in current testing!")
     print("=" * 60)
     print("\n✅ Test Results Summary:")
     print("   • Messaging API endpoints working ✓")

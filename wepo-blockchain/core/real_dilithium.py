@@ -4,10 +4,8 @@ WEPO Real Dilithium2 Quantum-Resistant Signature Implementation
 Provides TRUE quantum-resistant digital signatures using NIST ML-DSA (Dilithium)
 """
 
-import os
-import hashlib
 import secrets
-from typing import Tuple, Optional
+from typing import Optional
 from dataclasses import dataclass
 from dilithium_py.dilithium import Dilithium2
 
@@ -187,7 +185,7 @@ def is_real_dilithium_available() -> bool:
     try:
         signer = RealDilithiumSigner()
         # Test key generation
-        keypair = signer.generate_keypair()
+        signer.generate_keypair()
         # Test signing
         test_message = b"WEPO quantum resistance test"
         signature = signer.sign(test_message)
@@ -199,7 +197,7 @@ def is_real_dilithium_available() -> bool:
         return False
 
 # Migration helpers
-def migrate_from_rsa_simulation(rsa_public_key_pem: bytes, rsa_private_key_pem: bytes) -> DilithiumKeyPair:
+def migrate_from_rsa_simulation(_rsa_public_key_pem: bytes, _rsa_private_key_pem: bytes) -> DilithiumKeyPair:
     """
     Migrate from RSA simulation to real Dilithium keys
     NOTE: This generates NEW keys - not a conversion!

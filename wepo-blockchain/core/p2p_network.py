@@ -10,8 +10,9 @@ import time
 import json
 import struct
 import hashlib
-from typing import List, Dict, Optional, Set, Callable
-from dataclasses import dataclass, asdict
+import os
+from typing import Any, Callable, Dict, List, Optional, Set
+from dataclasses import dataclass
 from enum import IntEnum
 import random
 import select
@@ -111,6 +112,7 @@ class WepoP2PNode:
             'tx': self.handle_tx,
             'getblocks': self.handle_getblocks,
             'getheaders': self.handle_getheaders,
+            'headers': self.handle_headers,
         }
         
         # Callbacks for blockchain integration
@@ -118,6 +120,11 @@ class WepoP2PNode:
         self.on_new_transaction: Optional[Callable] = None
         self.get_block_callback: Optional[Callable] = None
         self.get_headers_callback: Optional[Callable] = None
+        self.get_block_hashes_callback: Optional[Callable] = None
+        self.get_height_callback: Optional[Callable] = None
+        self.get_locator_callback: Optional[Callable] = None
+
+        self.static_seed_addresses = self._load_static_seed_addresses()
         
         # DNS seeds for peer discovery
         self.dns_seeds = [
@@ -128,6 +135,44 @@ class WepoP2PNode:
         
         print(f"WEPO P2P Node initialized: {self.node_id}")
         print(f"Listening on: {host}:{port}")
+
+    def _load_static_seed_addresses(self) -> List[tuple[str, int]]:
+        """Load fixed seed peers, allowing test/smoke overrides through env."""
+        configured_peers = os.getenv("WEPO_STATIC_PEERS", "").strip()
+        if configured_peers.lower() in {"none", "off", "disabled", "-"}:
+            return []
+        if not configured_peers:
+            return [
+                ("127.0.0.1", 22567),
+                ("127.0.0.1", 22568),
+            ]
+
+        seed_addresses: List[tuple[str, int]] = []
+        for entry in configured_peers.split(","):
+            host_port = entry.strip()
+            if not host_port or ":" not in host_port:
+                continue
+            host, port_text = host_port.rsplit(":", 1)
+            try:
+                seed_addresses.append((host.strip(), int(port_text)))
+            except ValueError:
+                continue
+        return seed_addresses
+
+    def _is_self_endpoint(self, host: str, port: int) -> bool:
+        """Reject obvious loopback/self peer targets during local discovery."""
+        if port != self.port:
+            return False
+
+        normalized_host = (host or "").strip().lower()
+        normalized_self_host = (self.host or "").strip().lower()
+        local_aliases = {"127.0.0.1", "localhost", "0.0.0.0"}
+
+        if normalized_host == normalized_self_host:
+            return True
+        if normalized_host in local_aliases and normalized_self_host in local_aliases:
+            return True
+        return False
     
     def create_message(self, command: str, payload: bytes = b'') -> bytes:
         """Create a P2P protocol message"""
@@ -186,7 +231,7 @@ class WepoP2PNode:
             'addr_from': {'ip': self.host, 'port': self.port},
             'nonce': random.randint(0, 2**64 - 1),
             'user_agent': self.user_agent,
-            'start_height': 0,  # TODO: Get from blockchain
+            'start_height': self.get_height_callback() if self.get_height_callback else 0,
             'relay': True
         }
         
@@ -252,6 +297,9 @@ class WepoP2PNode:
         """Connect to a peer"""
         if len(self.peers) >= MAX_PEERS:
             return False
+
+        if self._is_self_endpoint(host, port):
+            return False
         
         peer_id = f"{host}:{port}"
         if peer_id in self.peers:
@@ -274,13 +322,7 @@ class WepoP2PNode:
         """Discover peers through DNS seeds and existing connections"""
         print("Discovering peers...")
         
-        # Try DNS seeds (simplified - would use actual DNS resolution)
-        seed_addresses = [
-            ("127.0.0.1", 22567),  # Local node for testing
-            ("127.0.0.1", 22568),  # Another local node
-        ]
-        
-        for host, port in seed_addresses:
+        for host, port in self.static_seed_addresses:
             if len(self.peers) < MAX_PEERS:
                 self.connect_to_peer(host, port)
         
@@ -366,6 +408,7 @@ class WepoP2PNode:
         """Handle version acknowledgment"""
         peer.handshake_complete = True
         print(f"Handshake complete with {peer.peer_id}")
+        self.request_headers_sync(peer)
     
     def handle_ping(self, peer: 'WepoPeer', payload: bytes):
         """Handle ping message"""
@@ -414,7 +457,6 @@ class WepoP2PNode:
             getdata_items = []
             for item in inventory:
                 item_type = item.get('type')
-                item_hash = item.get('hash')
                 
                 if item_type == InventoryType.MSG_BLOCK:
                     # Check if we have this block
@@ -464,6 +506,31 @@ class WepoP2PNode:
                 
         except Exception as e:
             print(f"Error handling block: {e}")
+
+    def handle_headers(self, peer: 'WepoPeer', payload: bytes):
+        """Handle headers message by requesting the blocks we are missing."""
+        try:
+            data = json.loads(payload.decode())
+            headers = data.get('headers', [])
+            if not headers:
+                return
+
+            missing_inventory = []
+            for header in headers:
+                block_hash = header.get('hash')
+                if not block_hash:
+                    continue
+                if self.get_block_callback and self.get_block_callback(block_hash):
+                    continue
+                missing_inventory.append({
+                    'type': InventoryType.MSG_BLOCK,
+                    'hash': block_hash,
+                })
+
+            if missing_inventory:
+                peer.send_raw(self.create_getdata_message(missing_inventory))
+        except Exception as e:
+            print(f"Error handling headers: {e}")
     
     def handle_tx(self, peer: 'WepoPeer', payload: bytes):
         """Handle transaction message"""
@@ -479,13 +546,45 @@ class WepoP2PNode:
     
     def handle_getblocks(self, peer: 'WepoPeer', payload: bytes):
         """Handle getblocks message"""
-        # TODO: Implement block locator response
-        pass
+        try:
+            data = json.loads(payload.decode()) if payload else {}
+            locator_hashes = data.get('locator_hashes', [])
+            stop_hash = data.get('stop_hash')
+            limit = data.get('limit', 500)
+
+            if not self.get_block_hashes_callback:
+                return
+
+            block_hashes = self.get_block_hashes_callback(locator_hashes, stop_hash=stop_hash, limit=limit)
+            if not block_hashes:
+                return
+
+            inventory = [
+                {'type': InventoryType.MSG_BLOCK, 'hash': block_hash}
+                for block_hash in block_hashes
+            ]
+            peer.send_raw(self.create_inv_message(inventory))
+        except Exception as e:
+            print(f"Error handling getblocks: {e}")
     
     def handle_getheaders(self, peer: 'WepoPeer', payload: bytes):
         """Handle getheaders message"""
-        # TODO: Implement headers response
-        pass
+        try:
+            data = json.loads(payload.decode()) if payload else {}
+            locator_hashes = data.get('locator_hashes', [])
+            stop_hash = data.get('stop_hash')
+            limit = data.get('limit', 2000)
+
+            if not self.get_headers_callback:
+                return
+
+            headers = self.get_headers_callback(locator_hashes, stop_hash=stop_hash, limit=limit)
+            if headers is None:
+                headers = []
+
+            peer.send_raw(self.create_headers_message(headers))
+        except Exception as e:
+            print(f"Error handling getheaders: {e}")
     
     def create_addr_message(self, addresses: List[tuple]) -> bytes:
         """Create address message"""
@@ -513,11 +612,62 @@ class WepoP2PNode:
         }
         payload = json.dumps(payload_data).encode()
         return self.create_message('getdata', payload)
+
+    def create_getheaders_message(
+        self,
+        locator_hashes: List[str],
+        stop_hash: Optional[str] = None,
+        limit: int = 2000,
+    ) -> bytes:
+        """Create getheaders message with a block locator."""
+        payload_data = {
+            'locator_hashes': locator_hashes,
+            'stop_hash': stop_hash,
+            'limit': limit,
+        }
+        payload = json.dumps(payload_data).encode()
+        return self.create_message('getheaders', payload)
+
+    def create_getblocks_message(
+        self,
+        locator_hashes: List[str],
+        stop_hash: Optional[str] = None,
+        limit: int = 500,
+    ) -> bytes:
+        """Create getblocks message with a block locator."""
+        payload_data = {
+            'locator_hashes': locator_hashes,
+            'stop_hash': stop_hash,
+            'limit': limit,
+        }
+        payload = json.dumps(payload_data).encode()
+        return self.create_message('getblocks', payload)
+
+    def create_headers_message(self, headers: List[Dict[str, Any]]) -> bytes:
+        """Create headers message carrying block header summaries."""
+        payload_data = {
+            'count': len(headers),
+            'headers': headers,
+        }
+        payload = json.dumps(payload_data).encode()
+        return self.create_message('headers', payload)
     
     def create_block_message(self, block_data: dict) -> bytes:
         """Create block message"""
         payload = json.dumps(block_data).encode()
         return self.create_message('block', payload)
+
+    def request_headers_sync(self, peer: 'WepoPeer'):
+        """Request headers from a peer using the local locator, even for same-height forks."""
+        try:
+            if not peer.is_connected():
+                return
+            locator_hashes = self.get_locator_callback() if self.get_locator_callback else []
+            if not locator_hashes:
+                return
+            peer.send_raw(self.create_getheaders_message(locator_hashes))
+        except Exception as e:
+            print(f"Error requesting headers sync from {peer.peer_id}: {e}")
     
     def get_network_info(self) -> dict:
         """Get network information"""
@@ -562,10 +712,9 @@ class WepoPeer:
         
         # Start receive thread
         threading.Thread(target=self.receive_loop, daemon=True).start()
-        
-        # Send version message if outgoing connection
-        if not self.incoming:
-            self.send_version()
+
+        # Both sides of the connection must advertise version so the handshake can complete.
+        self.send_version()
     
     def send_raw(self, data: bytes):
         """Send raw data to peer"""

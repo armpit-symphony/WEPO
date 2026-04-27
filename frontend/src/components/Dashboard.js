@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Eye, EyeOff, Send, Download, Settings as SettingsIcon, Pickaxe, Shield, LogOut, Bitcoin, ChevronDown, Coins } from 'lucide-react';
+import { Eye, EyeOff, Send, Download, Settings as SettingsIcon, Pickaxe, Shield, LogOut, Bitcoin, ChevronDown, Coins, Package } from 'lucide-react';
 import { useWallet } from '../contexts/WalletContext';
 import SendWepo from './SendWepo';
 import ReceiveWepo from './ReceiveWepo';
@@ -8,6 +8,8 @@ import CommunityMining from './CommunityMining';
 import SettingsPanel from './SettingsPanel';
 import QuantumMessaging from './QuantumMessaging';
 import StakingInterface from './StakingInterface';
+import RWADashboard from './RWADashboard';
+import { sessionManager } from '../utils/securityUtils';
 
 const Dashboard = ({ onLogout }) => {
   const {
@@ -26,19 +28,45 @@ const Dashboard = ({ onLogout }) => {
   const [isPreGenesis, setIsPreGenesis] = useState(true);
   const [showVaultModal, setShowVaultModal] = useState(false);
   const [genesisLaunchTime, setGenesisLaunchTime] = useState(null);
-  const [posCountdown, setPosCountdown] = useState('Calculating...');
+
+  const refreshMiningStatus = async () => {
+    try {
+      const backendUrl = process.env.REACT_APP_BACKEND_URL || '';
+      const response = await fetch(`${backendUrl}/api/mining/status`);
+      if (!response.ok) {
+        setIsPreGenesis(true);
+        return false;
+      }
+
+      const payload = await response.json();
+      const powActive = payload.genesis_status === 'found' || payload.mining_mode === 'pow';
+      setIsPreGenesis(!powActive);
+      if (payload.genesis_launch_time) {
+        setGenesisLaunchTime(payload.genesis_launch_time);
+      }
+      return powActive;
+    } catch {
+      setIsPreGenesis(true);
+      return false;
+    }
+  };
 
   useEffect(() => {
     // Restore session wallet and data
     const init = async () => {
       try {
-        if (!wallet) {
+        const authSession = sessionManager.getAuthSession();
+        const isLocked = sessionManager.get('wepo_locked') === true;
+        const activeWallet = wallet || (() => {
           const sw = sessionStorage.getItem('wepo_current_wallet');
-          if (sw) {
-            const w = JSON.parse(sw);
-            setWallet(w);
-            await loadWalletData(w.address);
+          return sw ? JSON.parse(sw) : null;
+        })();
+
+        if (authSession && !isLocked && activeWallet) {
+          if (!wallet) {
+            setWallet(activeWallet);
           }
+          await loadWalletData(activeWallet.address || activeWallet.wepo?.address);
         }
       } catch (e) {
         setBalance(0);
@@ -49,25 +77,30 @@ const Dashboard = ({ onLogout }) => {
   }, [wallet, setWallet, setBalance, setTransactions, loadWalletData]);
 
   useEffect(() => {
-    // Determine pre-genesis from backend status
-    const check = async () => {
-      try {
-        const backendUrl = process.env.REACT_APP_BACKEND_URL || '';
-        const r = await fetch(`${backendUrl}/api/mining/status`);
-        if (r.ok) {
-          const d = await r.json();
-          const pow = d.genesis_status === 'found' || d.mining_mode === 'pow';
-          setIsPreGenesis(!pow);
-          if (d.genesis_launch_time) setGenesisLaunchTime(d.genesis_launch_time);
-        } else {
-          setIsPreGenesis(true);
-        }
-      } catch {
-        setIsPreGenesis(true);
+    let isMounted = true;
+
+    const syncMiningStatus = async () => {
+      if (!isMounted) {
+        return;
       }
+      await refreshMiningStatus();
     };
-    check();
+
+    syncMiningStatus();
+    const intervalId = window.setInterval(syncMiningStatus, 5000);
+    window.addEventListener('focus', syncMiningStatus);
+
+    return () => {
+      isMounted = false;
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', syncMiningStatus);
+    };
   }, []);
+
+  const openSendTab = async () => {
+    await refreshMiningStatus();
+    setActiveTab('send');
+  };
 
   const formatBalance = (amt) => new Intl.NumberFormat('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 }).format(amt || 0);
   const short = (s) => (s && s.length > 10 ? `${s.substring(0, 10)}...${s.substring(s.length - 6)}` : s || 'N/A');
@@ -92,7 +125,7 @@ const Dashboard = ({ onLogout }) => {
             <Shield className="h-12 w-12 text-purple-200 mb-2" />
           </div>
         </div>
-        <div className="text-sm text-purple-100">Address: {short(wallet?.address)}</div>
+        <div className="text-sm text-purple-100">Address: {short(wallet?.address || wallet?.wepo?.address)}</div>
         {!isPreGenesis && (
           <div className="text-xs text-green-200 mt-2">Network: PoW active</div>
         )}
@@ -114,8 +147,8 @@ const Dashboard = ({ onLogout }) => {
             </div>
             <div className="flex items-center gap-3">
               <div className="text-right">
-                <div className="text-green-400 text-sm">{true ? '✅ Active' : '⏳ Initializing...'}</div>
-                <div className="text-xs text-gray-400">Self-Custodial</div>
+                <div className="text-yellow-300 text-sm">Preview Only</div>
+                <div className="text-xs text-gray-400">Not live custody in this public test build</div>
               </div>
               <div className={`transform transition-transform duration-200 ${showBitcoinDetails ? 'rotate-180' : ''}`}>
                 <ChevronDown className="h-4 w-4 text-gray-400" />
@@ -129,20 +162,20 @@ const Dashboard = ({ onLogout }) => {
               <div className="bg-black/30 rounded-lg p-3">
                 <div className="text-gray-400">BTC Balance</div>
                 <div className="text-orange-400 font-semibold">0.00000000 BTC</div>
-                <div className="text-green-400 text-xs mt-1">Mainnet</div>
+                <div className="text-yellow-400 text-xs mt-1">Preview only</div>
               </div>
               <div className="bg-black/30 rounded-lg p-3">
                 <div className="text-gray-400">Mode</div>
-                <div className="text-white font-semibold">Public Mode</div>
-                <div className="text-blue-400 text-xs mt-1">Direct Bitcoin</div>
+                <div className="text-white font-semibold">Public Test Preview</div>
+                <div className="text-blue-400 text-xs mt-1">BTC custody not live in this build</div>
               </div>
               <div className="bg-black/30 rounded-lg p-3">
                 <div className="text-gray-400">Address Type</div>
-                <div className="text-white font-semibold">P2PKH (Legacy)</div>
+                <div className="text-white font-semibold">Not exposed</div>
               </div>
               <div className="bg-black/30 rounded-lg p-3">
                 <div className="text-gray-400">Derivation</div>
-                <div className="text-white font-mono">m/44'/0'/0'/0/x</div>
+                <div className="text-white font-mono">N/A in public test build</div>
               </div>
             </div>
           </div>
@@ -151,7 +184,7 @@ const Dashboard = ({ onLogout }) => {
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {/* 1: Send WEPO */}
-        <button onClick={() => setActiveTab('send')} className="bg-gray-800/50 hover:bg-gray-700/50 border border-purple-500/30 rounded-xl p-4 text-center transition-all">
+        <button onClick={openSendTab} className="bg-gray-800/50 hover:bg-gray-700/50 border border-purple-500/30 rounded-xl p-4 text-center transition-all">
           <Send className="h-6 w-6 text-purple-400 mx-auto mb-2" />
           <span className="text-white font-medium">Send WEPO</span>
         </button>
@@ -169,7 +202,7 @@ const Dashboard = ({ onLogout }) => {
         <button onClick={() => setActiveTab('staking')} className="bg-gray-800/50 hover:bg-gray-700/50 border border-purple-500/30 rounded-xl p-4 text-center transition-all">
           <Coins className="h-6 w-6 text-blue-400 mx-auto mb-2" />
           <span className="text-white font-medium">Proof of Stake (PoS)</span>
-          <div className="text-xs text-gray-400 mt-1">Activates at Block 131,400</div>
+          <div className="text-xs text-gray-400 mt-1">Status / preview</div>
         </button>
         {/* 5: Quantum Vault */}
         <button onClick={() => setShowVaultModal(true)} className="bg-gray-800/50 hover:bg-gray-700/50 border border-purple-500/30 rounded-xl p-4 text-center transition-all">
@@ -179,14 +212,21 @@ const Dashboard = ({ onLogout }) => {
         {/* 6: Quantum Messages */}
         <button onClick={() => setActiveTab('messaging')} className="bg-gray-800/50 hover:bg-gray-700/50 border border-purple-500/30 rounded-xl p-4 text-center transition-all">
           <span className="text-white font-medium">Quantum Messages</span>
+          <div className="text-xs text-gray-400 mt-1">Experimental preview</div>
         </button>
         {/* 7: Settings */}
         <button onClick={() => setActiveTab('settings')} className="bg-gray-800/50 hover:bg-gray-700/50 border border-purple-500/30 rounded-xl p-4 text-center transition-all">
           <SettingsIcon className="h-6 w-6 text-gray-400 mx-auto mb-2" />
           <span className="text-white font-medium">Settings</span>
         </button>
-        {/* 8: Logout */}
-        <button onClick={() => { logout(); onLogout && onLogout(); }} className="bg-gray-800/50 hover:bg-gray-700/50 border border-purple-500/30 rounded-xl p-4 text-center transition-all">
+        {/* 8: RWA / Exchange */}
+        <button onClick={() => setActiveTab('rwa')} className="bg-gray-800/50 hover:bg-gray-700/50 border border-purple-500/30 rounded-xl p-4 text-center transition-all">
+          <Package className="h-6 w-6 text-emerald-400 mx-auto mb-2" />
+          <span className="text-white font-medium">RWA / Exchange</span>
+          <div className="text-xs text-gray-400 mt-1">Public-test preview</div>
+        </button>
+        {/* 9: Logout */}
+        <button onClick={async () => { await logout(); onLogout && onLogout(); }} className="bg-gray-800/50 hover:bg-gray-700/50 border border-purple-500/30 rounded-xl p-4 text-center transition-all">
           <LogOut className="h-6 w-6 text-red-400 mx-auto mb-2" />
           <span className="text-white font-medium">Logout</span>
         </button>
@@ -203,6 +243,7 @@ const Dashboard = ({ onLogout }) => {
       {activeTab === 'settings' && <SettingsPanel onClose={() => setActiveTab('overview')} />}
       {activeTab === 'messaging' && <QuantumMessaging onBack={() => setActiveTab('overview')} />}
       {activeTab === 'staking' && <StakingInterface onClose={() => setActiveTab('overview')} />}
+      {activeTab === 'rwa' && <RWADashboard onBack={() => setActiveTab('overview')} />}
 
       {showVaultModal && (
         <QuantumVault onClose={() => setShowVaultModal(false)} isPreGenesis={isPreGenesis} />

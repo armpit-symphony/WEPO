@@ -7,12 +7,11 @@ Uses Dilithium signatures for quantum-resistant transaction signing
 import hashlib
 import json
 import time
-from typing import List, Dict, Optional, Union
-from dataclasses import dataclass, asdict
-from datetime import datetime
+from typing import List, Optional
+from dataclasses import dataclass
 
 from dilithium import (
-    DilithiumKeyPair, DilithiumSigner, DilithiumVerifier,
+    DilithiumKeyPair, DilithiumSigner,
     generate_dilithium_keypair, sign_message, verify_signature,
     generate_wepo_address, validate_wepo_address,
     DILITHIUM_SIGNATURE_SIZE, DILITHIUM_PUBKEY_SIZE

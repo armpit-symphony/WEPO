@@ -16,6 +16,12 @@ This repo should not be the long-term home for wallet clients. Web, desktop, iOS
 
 This repository is not production ready yet.
 
+The current local public-test status is stronger than the production status:
+
+- the accelerated wallet lab is validated on `127.0.0.1:18212` and `127.0.0.1:18021`
+- the built web wallet flow is validated on `127.0.0.1:3100`
+- create, refresh/session-restore, login/logout, receive, and authenticated send all passed on the live local stack
+
 Known gaps include:
 
 - backend, chain, and deployment code need production hardening
@@ -147,6 +153,27 @@ default. Set explicit allowlists through env when needed:
 - `WEPO_ALLOWED_ORIGINS` for backend/bridge CORS origins
 - `WEPO_FRONTEND_CONNECT_SRC` for frontend CSP `connect-src`
 
+For the full validated local public-test stack, including the built frontend on `127.0.0.1:3100`, use:
+
+```bash
+/home/sparky/WEPO/wepo-production-deployment/run-local-public-test-stack.sh start
+```
+
+For a fresh-chain test round from empty lab state, use:
+
+```bash
+/home/sparky/WEPO/wepo-production-deployment/run-local-public-test-stack.sh restart-clean
+```
+
+That operator launcher starts the accelerated wallet lab in tmux, builds the frontend by default, serves the secure frontend, and supports:
+
+- `start`
+- `start-clean`
+- `restart-clean`
+- `stop`
+- `status`
+- `logs`
+
 ## Legacy Paths
 
 The following files still exist in-tree but should not be treated as the canonical production path:
@@ -182,6 +209,8 @@ See also:
 - `wepo-production-deployment/CANONICAL_STAGING_DEPLOYMENT.md`
 - `wepo-production-deployment/bootstrap-canonical-staging.sh`
 - `wepo-production-deployment/verify-canonical-staging-host.sh`
+- `wepo-production-deployment/LOCAL_PUBLIC_TEST_CHECKLIST.md`
+- `wepo-production-deployment/PUBLIC_TEST_HANDOFF.md`
 - `wepo-production-deployment/PUBLIC_RELEASE_CHECKLIST.md`
 - `wepo-production-deployment/MULTI_WALLET_TEST_MATRIX.md`
 

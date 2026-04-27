@@ -12,7 +12,7 @@
 
 #### **1. GENESIS & COMMUNITY MINING**
 ```
-Christmas Day 2025 (Dec 25, 3PM EST)
+genesis date (Dec 25, 3PM EST)
 ↓
 Community Genesis Block Mining
 ↓ 
@@ -194,7 +194,7 @@ The WEPO blockchain flow is **fundamentally sound** with revolutionary features:
 3. Add price oracle for real-time adjustments
 4. Finalize governance voting system
 
-The architecture is **production-ready** with these enhancements.
+The architecture is **not yet production-ready** with these enhancements.
 
 ---
 

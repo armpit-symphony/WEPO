@@ -1052,7 +1052,7 @@ class QuantumVaultSystem:
         """
         Generate zero-knowledge proof for vault operations
         
-        UPGRADED: Now uses production-ready zk-STARK libraries (Cairo, StarkEx compatible)
+        UPGRADED: Now uses external zk-STARK libraries (Cairo, StarkEx compatible)
         instead of custom implementation for battle-tested security.
         
         Falls back to enhanced custom implementation if production libraries unavailable.
@@ -1079,7 +1079,7 @@ class QuantumVaultSystem:
         Generate production zk-STARK proof using battle-tested libraries
         
         This provides genuine zk-STARK proofs with mathematical soundness
-        guarantees from production-ready Cairo/StarkEx compatible systems.
+        guarantees from Cairo/StarkEx compatible systems.
         """
         try:
             # Prepare secret input (private data)
@@ -1275,7 +1275,7 @@ class QuantumVaultSystem:
     
     def verify_zk_proof(self, proof: ZKProof, expected_commitment: str) -> bool:
         """
-        Verify zero-knowledge proof with production-ready verification
+        Verify zero-knowledge proof with external-library-backed verification
         
         UPGRADED: Now supports both production zk-STARK proofs and enhanced custom proofs
         with rigorous mathematical verification.

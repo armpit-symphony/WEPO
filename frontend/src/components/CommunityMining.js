@@ -60,7 +60,7 @@ const CommunityMining = ({ onBack, miningMode = 'genesis', isPreGenesis = true }
       });
       if (r.ok) {
         setConnected(true);
-        setSuccess('Connected to genesis queue!');
+        setSuccess(isPreGenesis ? 'Connected to genesis queue!' : 'Connected to community PoW mining.');
         await fetchStatus();
       } else {
         const msg = await r.text();
@@ -127,15 +127,30 @@ const CommunityMining = ({ onBack, miningMode = 'genesis', isPreGenesis = true }
       <div className="bg-gray-800/40 border border-gray-700 rounded-lg p-5">
         <div className="flex items-center gap-2 mb-2">
           <AlertTriangle className="h-4 w-4 text-yellow-400" />
-          <div className="text-white font-medium">Pre-Genesis limitations</div>
+          <div className="text-white font-medium">
+            {isPreGenesis ? 'Pre-Genesis limitations' : 'Public-test mining controls'}
+          </div>
         </div>
         <ul className="text-gray-300 text-sm list-disc pl-6 space-y-1">
-          <li>Start/Stop mining and work submissions are disabled until genesis</li>
-          <li>Your early connection still counts toward the connected miners count</li>
+          {isPreGenesis ? (
+            <>
+              <li>Start/Stop mining and work submissions are disabled until genesis</li>
+              <li>Your early connection still counts toward the connected miners count</li>
+            </>
+          ) : (
+            <>
+              <li>Miner connection status is live on this public-test stack</li>
+              <li>Dedicated start/stop mining work controls are not yet exposed in this web UI</li>
+            </>
+          )}
         </ul>
         <div className="mt-3">
-          <button disabled className="bg-gray-600 text-gray-300 px-4 py-2 rounded mr-2 cursor-not-allowed">Start Mining</button>
-          <button disabled className="bg-gray-600 text-gray-300 px-4 py-2 rounded cursor-not-allowed">Submit Work</button>
+          <button disabled className="bg-gray-600 text-gray-300 px-4 py-2 rounded mr-2 cursor-not-allowed">
+            {isPreGenesis ? 'Start Mining' : 'Mining Controls Preview'}
+          </button>
+          <button disabled className="bg-gray-600 text-gray-300 px-4 py-2 rounded cursor-not-allowed">
+            {isPreGenesis ? 'Submit Work' : 'Work Submission Preview'}
+          </button>
         </div>
       </div>
     </div>

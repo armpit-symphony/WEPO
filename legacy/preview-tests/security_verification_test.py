@@ -57,7 +57,7 @@ import random
 import string
 
 # Use preview backend URL from frontend/.env
-BACKEND_URL = "https://blockchain-sectest.preview.emergentagent.com"
+BACKEND_URL = "http://127.0.0.1:18021"
 API_URL = f"{BACKEND_URL}/api"
 
 print(f"🔐 WEPO FINAL COMPREHENSIVE SECURITY VERIFICATION")
@@ -1041,7 +1041,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Use preview backend URL from frontend/.env
-BACKEND_URL = "https://blockchain-sectest.preview.emergentagent.com"
+BACKEND_URL = "http://127.0.0.1:18021"
 API_URL = f"{BACKEND_URL}/api"
 
 print(f"🔐 WEPO COMPREHENSIVE SECURITY VERIFICATION - FINAL PRODUCTION READINESS TEST")
@@ -2013,7 +2013,7 @@ import concurrent.futures
 from typing import List, Dict, Any
 
 # Use preview backend URL from frontend/.env
-BACKEND_URL = "https://blockchain-sectest.preview.emergentagent.com"
+BACKEND_URL = "http://127.0.0.1:18021"
 API_URL = f"{BACKEND_URL}/api"
 
 print(f"🔐 WEPO CRITICAL SECURITY VERIFICATION TEST")

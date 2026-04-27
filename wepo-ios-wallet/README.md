@@ -286,9 +286,9 @@ enum APIError: LocalizedError {
 - [ ] Performance optimizations
 - [ ] App Store submission
 
-## 🎄 Christmas 2025 Launch
+## Launch Planning
 
-The app is designed to be ready for the WEPO network genesis launch on Christmas Day 2025:
+The app is being developed toward a future public launch, with release timing still to be determined:
 
 - **Backend Integration**: 100% compatible with existing WEPO API
 - **Self-Custodial**: Full user control over funds and keys
@@ -321,4 +321,4 @@ This project is part of the WEPO cryptocurrency ecosystem. Please refer to the m
 
 **Ready for TestFlight Distribution! 🚀**
 
-The WEPO iOS Wallet is production-ready and can be submitted to TestFlight immediately. All core features are implemented, security is properly configured, and the app follows iOS development best practices.
+The WEPO iOS Wallet is under active development and should be treated as a TestFlight evaluation candidate, not a production-approved release.

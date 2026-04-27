@@ -1,96 +1,61 @@
-import React, { useState } from 'react';
-import { Coins, ArrowLeft, Lock, TrendingUp, AlertCircle, Clock } from 'lucide-react';
-import { useWallet } from '../contexts/WalletContext';
+import React, { useEffect, useState } from 'react';
+import { Coins, ArrowLeft, AlertCircle, Shield, Activity } from 'lucide-react';
 
 const StakingInterface = ({ onClose }) => {
-  const { balance, posEnabled } = useWallet();
-  const [stakeAmount, setStakeAmount] = useState('');
-  const [lockPeriod, setLockPeriod] = useState('1'); // years
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
+  const nodeUrl = process.env.REACT_APP_NODE_URL || 'http://127.0.0.1:18212';
+  const [networkStatus, setNetworkStatus] = useState({
+    loading: true,
+    chainHeight: null,
+    networkProfile: 'unknown',
+    posActivated: false,
+    posActivationHeight: null,
+    activeValidators: 0,
+    totalStakedRaw: 0
+  });
 
-  // Mock staking data - in real implementation, this would come from the blockchain
-  const minimumStake = 1000;
-  const baseAPR = 1; // 1% base APR
-  const lockPeriodBonus = 0.5; // 0.5% per year locked
+  useEffect(() => {
+    let isMounted = true;
 
-  const calculateAPR = () => {
-    return baseAPR + (lockPeriodBonus * parseInt(lockPeriod));
-  };
+    const loadStatus = async () => {
+      try {
+        const response = await fetch(`${nodeUrl}/api/network/status`);
+        if (!response.ok) {
+          throw new Error('Failed to load node status');
+        }
 
-  const calculateRewards = () => {
-    const amount = parseFloat(stakeAmount) || 0;
-    const apr = calculateAPR();
-    return (amount * apr / 100);
-  };
+        const payload = await response.json();
+        if (!isMounted) {
+          return;
+        }
 
-  const handleStake = async () => {
-    if (!posEnabled) {
-      setError('Proof of Stake is not yet enabled. Wait for 18 months after first PoW block.');
-      return;
-    }
+        setNetworkStatus({
+          loading: false,
+          chainHeight: payload.chain_height ?? payload.height ?? null,
+          networkProfile: payload.network_profile || payload.network || 'unknown',
+          posActivated: Boolean(payload.hybrid_consensus?.pos_activated),
+          posActivationHeight: payload.hybrid_consensus?.pos_activation_height ?? null,
+          activeValidators: payload.hybrid_consensus?.active_validators ?? 0,
+          totalStakedRaw: payload.hybrid_consensus?.total_staked ?? 0
+        });
+      } catch {
+        if (!isMounted) {
+          return;
+        }
 
-    if (!stakeAmount || parseFloat(stakeAmount) < minimumStake) {
-      setError(`Minimum stake amount is ${minimumStake} WEPO`);
-      return;
-    }
+        setNetworkStatus((current) => ({
+          ...current,
+          loading: false
+        }));
+      }
+    };
 
-    if (parseFloat(stakeAmount) > balance) {
-      setError('Insufficient balance for staking');
-      return;
-    }
+    loadStatus();
+    return () => {
+      isMounted = false;
+    };
+  }, [nodeUrl]);
 
-    setIsLoading(true);
-    try {
-      // Simulate staking process
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      setSuccess(`Successfully staked ${stakeAmount} WEPO for ${lockPeriod} year(s)!`);
-      setStakeAmount('');
-    } catch (error) {
-      setError('Staking failed. Please try again.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const setMaxStake = () => {
-    // Reserve small amount for transactions
-    const maxAmount = Math.max(0, balance - 1);
-    setStakeAmount(maxAmount.toString());
-  };
-
-  if (!posEnabled) {
-    return (
-      <div className="space-y-6">
-        <div className="flex items-center gap-3 mb-6">
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-white transition-colors"
-          >
-            <ArrowLeft size={24} />
-          </button>
-          <div className="flex items-center gap-2">
-            <Lock className="h-6 w-6 text-gray-500" />
-            <h2 className="text-xl font-semibold text-white">Proof of Stake</h2>
-          </div>
-          <div className="text-xs text-gray-400 ml-10">Activates at Block 131,400</div>
-        </div>
-
-        <div className="text-center py-12">
-          <Clock className="h-16 w-16 text-gray-500 mx-auto mb-4" />
-          <h3 className="text-xl font-semibold text-white mb-2">Staking Not Yet Available</h3>
-          <p className="text-gray-400 mb-4">
-            Proof of Stake and staking features will be unlocked 18 months after the first PoW block is mined.
-          </p>
-          <p className="text-sm text-purple-300">
-            This ensures the network has sufficient time to establish itself through mining before transitioning to hybrid consensus.
-          </p>
-        </div>
-      </div>
-    );
-  }
+  const totalStakedWepo = (networkStatus.totalStakedRaw || 0) / 100000000;
 
   return (
     <div className="space-y-6">
@@ -102,127 +67,80 @@ const StakingInterface = ({ onClose }) => {
           <ArrowLeft size={24} />
         </button>
         <div className="flex items-center gap-2">
-          <Coins className="h-6 w-6 text-green-400" />
-          <h2 className="text-xl font-semibold text-white">Proof of Stake Staking</h2>
+          <Coins className="h-6 w-6 text-blue-400" />
+          <h2 className="text-xl font-semibold text-white">Proof of Stake</h2>
         </div>
+        <div className="text-xs text-gray-400 ml-2">Status / preview</div>
       </div>
 
-      <div className="bg-green-900/30 rounded-lg p-4 border border-green-500/30">
+      <div className="bg-blue-900/30 rounded-lg p-4 border border-blue-500/30">
         <div className="flex items-center gap-2 mb-2">
-          <TrendingUp className="h-4 w-4 text-green-400" />
-          <span className="text-sm font-medium text-green-200">Earn Rewards</span>
+          <Shield className="h-4 w-4 text-blue-300" />
+          <span className="text-sm font-medium text-blue-200">Web Staking Preview</span>
         </div>
         <p className="text-sm text-gray-300">
-          Stake your WEPO to help secure the network and earn rewards. Longer lock periods provide higher APR.
+          The backend and node staking paths have been validated on the accelerated public-test network, but the full interactive web staking workflow is not yet exposed here. Treat this screen as live status plus release-scope guidance, not a finished staking product flow.
         </p>
       </div>
 
-      <div className="space-y-4">
-        <div>
-          <label className="block text-sm font-medium text-purple-200 mb-2">
-            Stake Amount (WEPO)
-          </label>
-          <div className="relative">
-            <input
-              type="number"
-              value={stakeAmount}
-              onChange={(e) => setStakeAmount(e.target.value)}
-              className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 pr-20"
-              placeholder="1000.0000"
-              step="0.0001"
-              min={minimumStake}
-            />
-            <button
-              type="button"
-              onClick={setMaxStake}
-              className="absolute right-2 top-2 bg-green-600 hover:bg-green-700 text-white text-xs px-3 py-1 rounded transition-colors"
-            >
-              MAX
-            </button>
-          </div>
-          <p className="text-xs text-gray-400 mt-1">
-            Minimum: {minimumStake} WEPO | Available: {balance.toFixed(4)} WEPO
-          </p>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-4">
+          <div className="text-gray-400 text-sm">Network Profile</div>
+          <div className="text-white font-semibold mt-1">{networkStatus.networkProfile}</div>
         </div>
-
-        <div>
-          <label className="block text-sm font-medium text-purple-200 mb-2">
-            Lock Period
-          </label>
-          <select
-            value={lockPeriod}
-            onChange={(e) => setLockPeriod(e.target.value)}
-            className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
-          >
-            <option value="1">1 Year (1.5% APR)</option>
-            <option value="2">2 Years (2.0% APR)</option>
-            <option value="3">3 Years (2.5% APR)</option>
-            <option value="4">4 Years (3.0% APR)</option>
-            <option value="5">5 Years (3.5% APR)</option>
-          </select>
-          <p className="text-xs text-gray-400 mt-1">
-            Longer lock periods provide higher annual percentage rates
-          </p>
+        <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-4">
+          <div className="text-gray-400 text-sm">Chain Height</div>
+          <div className="text-white font-semibold mt-1">
+            {networkStatus.loading ? 'Loading...' : (networkStatus.chainHeight ?? 'Unavailable')}
+          </div>
         </div>
-      </div>
-
-      {/* Staking Rewards Calculator */}
-      <div className="bg-gray-700/30 rounded-lg p-4">
-        <h3 className="text-white font-medium mb-3">Staking Rewards Calculator</h3>
-        <div className="grid grid-cols-2 gap-4 text-sm">
-          <div>
-            <span className="text-gray-400">Stake Amount:</span>
-            <div className="text-white font-medium">{stakeAmount || '0'} WEPO</div>
+        <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-4">
+          <div className="text-gray-400 text-sm">PoS Status</div>
+          <div className={`font-semibold mt-1 ${networkStatus.posActivated ? 'text-green-400' : 'text-yellow-400'}`}>
+            {networkStatus.loading ? 'Loading...' : (networkStatus.posActivated ? 'Active on test stack' : 'Not active')}
           </div>
-          <div>
-            <span className="text-gray-400">Lock Period:</span>
-            <div className="text-white font-medium">{lockPeriod} Year(s)</div>
+        </div>
+        <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-4">
+          <div className="text-gray-400 text-sm">Activation Height</div>
+          <div className="text-white font-semibold mt-1">
+            {networkStatus.loading ? 'Loading...' : (networkStatus.posActivationHeight ?? 'Unavailable')}
           </div>
-          <div>
-            <span className="text-gray-400">APR:</span>
-            <div className="text-green-400 font-medium">{calculateAPR().toFixed(1)}%</div>
+        </div>
+        <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-4">
+          <div className="text-gray-400 text-sm">Active Validators</div>
+          <div className="text-white font-semibold mt-1">
+            {networkStatus.loading ? 'Loading...' : networkStatus.activeValidators}
           </div>
-          <div>
-            <span className="text-gray-400">Annual Rewards:</span>
-            <div className="text-green-400 font-medium">{calculateRewards().toFixed(4)} WEPO</div>
+        </div>
+        <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-4">
+          <div className="text-gray-400 text-sm">Total Staked</div>
+          <div className="text-white font-semibold mt-1">
+            {networkStatus.loading ? 'Loading...' : `${totalStakedWepo.toFixed(4)} WEPO`}
           </div>
         </div>
       </div>
 
-      {error && (
-        <div className="bg-red-900/50 border border-red-500 rounded-lg p-3 text-red-200 text-sm">
-          {error}
-        </div>
-      )}
-
-      {success && (
-        <div className="bg-green-900/50 border border-green-500 rounded-lg p-3 text-green-200 text-sm">
-          {success}
-        </div>
-      )}
-
-      {/* Important Information */}
-      <div className="bg-yellow-900/30 rounded-lg p-4 border border-yellow-500/30">
+      <div className="bg-gray-800/40 border border-gray-700 rounded-lg p-5">
         <div className="flex items-center gap-2 mb-2">
-          <AlertCircle className="h-4 w-4 text-yellow-400" />
-          <span className="text-sm font-medium text-yellow-200">Important Information</span>
+          <Activity className="h-4 w-4 text-purple-400" />
+          <div className="text-white font-medium">Current public-test scope</div>
         </div>
-        <ul className="text-sm text-gray-300 space-y-1">
-          <li>• Staked WEPO will be locked for the selected period</li>
-          <li>• Rewards are distributed automatically to your wallet</li>
-          <li>• Early withdrawal is not possible during lock period</li>
-          <li>• Staking helps secure the WEPO network</li>
+        <ul className="text-gray-300 text-sm list-disc pl-6 space-y-1">
+          <li>Validator rewards and PoS persistence were validated on the accelerated test network</li>
+          <li>Reward visibility is now reconciled through the backend reward summaries</li>
+          <li>Interactive stake/unstake controls are not yet exposed in this web wallet build</li>
         </ul>
       </div>
 
-      <button
-        onClick={handleStake}
-        disabled={isLoading || !stakeAmount || parseFloat(stakeAmount) < minimumStake}
-        className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-6 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-      >
-        <Coins size={20} />
-        {isLoading ? 'Staking...' : `Stake ${stakeAmount || '0'} WEPO`}
-      </button>
+      <div className="bg-yellow-900/30 rounded-lg p-4 border border-yellow-500/30">
+        <div className="flex items-center gap-2 mb-2">
+          <AlertCircle className="h-4 w-4 text-yellow-400" />
+          <span className="text-sm font-medium text-yellow-200">Broader test guidance</span>
+        </div>
+        <p className="text-sm text-gray-300">
+          Outside testers should use this surface for visibility only. If interactive staking is needed for a later round, it should be implemented against the live test-node APIs instead of the old mock calculator flow.
+        </p>
+      </div>
     </div>
   );
 };

@@ -203,7 +203,7 @@ function createMenu() {
               type: 'info',
               title: 'About WEPO Wallet',
               message: 'WEPO Wallet v1.0.0',
-              detail: 'Decentralized cryptocurrency wallet with privacy features, Bitcoin integration, and quantum resistance.\\n\\nChristmas Day 2025 Genesis Launch Ready!',
+              detail: 'Decentralized cryptocurrency wallet with privacy features, Bitcoin integration, and quantum resistance.\\n\\nPublic release timing remains under review.',
               buttons: ['OK']
             });
           }

@@ -57,7 +57,7 @@ const CommunityMining = ({ onBack, miningMode = 'genesis' }) => {
   const [currentMode, setCurrentMode] = useState('genesis');
   const [modeDisplay, setModeDisplay] = useState('🎄 Genesis Block Mining');
   
-  // Christmas Day 2025 3pm EST = 8pm UTC
+  // genesis date 3pm EST = 8pm UTC
   const LAUNCH_TIMESTAMP = new Date('2025-12-25T20:00:00Z').getTime();
 
   useEffect(() => {
@@ -511,7 +511,7 @@ const CommunityMining = ({ onBack, miningMode = 'genesis' }) => {
           </div>
         </div>
         <div className="text-center mt-2 text-sm text-yellow-400">
-          🎄 December 25, 2025 - 3:00 PM EST
+          Network launch timing TBD
         </div>
       </div>
     );
@@ -770,7 +770,7 @@ const CommunityMining = ({ onBack, miningMode = 'genesis' }) => {
           </div>
           <p className="text-gray-300 text-sm">
             {currentMode === 'genesis' 
-              ? '🎄 Join the Christmas Day 2025 genesis mining event! Be part of history as we mine the very first WEPO block together as a community.'
+              ? '🎄 Join the genesis date genesis mining event! Be part of history as we mine the very first WEPO block together as a community.'
               : '⚡ Mining helps secure the WEPO network. Every hash counts in maintaining decentralization and financial freedom for all.'
             }
           </p>

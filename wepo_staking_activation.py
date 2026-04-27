@@ -415,7 +415,7 @@ def main():
         
         if success:
             print("\n🎉 STAKING MECHANISM ACTIVATION COMPLETED!")
-            print("The WEPO staking mechanism is production-ready!")
+            print("The WEPO staking mechanism is not yet production-ready!")
             return 0
         else:
             print("\n❌ STAKING MECHANISM ACTIVATION FAILED!")

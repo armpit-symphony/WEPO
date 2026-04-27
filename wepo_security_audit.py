@@ -814,11 +814,11 @@ def main():
         
         if security_acceptable:
             print("\n🎉 SECURITY AUDIT PASSED!")
-            print("WEPO blockchain meets security standards for production deployment.")
+            print("WEPO blockchain meets security standards for deployment review.")
             return 0
         else:
             print("\n⚠️ SECURITY AUDIT FAILED!")
-            print("Critical security issues must be addressed before production deployment.")
+            print("Critical security issues must be addressed before deployment review.")
             return 1
     
     except KeyboardInterrupt:

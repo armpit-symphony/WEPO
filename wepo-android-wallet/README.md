@@ -220,7 +220,7 @@ WEPO Wallet is a comprehensive self-custodial cryptocurrency wallet designed for
 IMPORTANT DISCLAIMER:
 This is a self-custodial wallet. You are responsible for securely storing your recovery phrase. Lost recovery phrases cannot be recovered. Cryptocurrency investments carry risk.
 
-Ready for the Christmas 2025 genesis launch! 🎄
+Public release timing remains under review.
 ```
 
 ### Content Rating & Compliance
@@ -376,9 +376,9 @@ sealed class ApiResult<T> {
 - [ ] Performance optimizations
 - [ ] Wear OS companion app
 
-## 🎄 Christmas 2025 Launch
+## Launch Planning
 
-The app is designed to be ready for the WEPO network genesis launch on Christmas Day 2025:
+The app is being developed toward a future public launch, with release timing still to be determined:
 
 - **Backend Integration**: 100% compatible with existing WEPO API
 - **Self-Custodial**: Full user control over funds and keys
@@ -417,8 +417,8 @@ This project is part of the WEPO cryptocurrency ecosystem. Please refer to the m
 4. **Submit for review**: Google typically reviews within 1-3 days
 5. **Monitor performance**: Use Play Console analytics
 
-**Ready for Google Play Store Distribution! 🚀📱**
+**Google Play Store distribution remains under review.**
 
-The WEPO Android Wallet is production-ready and can be submitted to Google Play Store immediately. All core features are implemented, security is properly configured, and the app follows Android development best practices.
+The WEPO Android Wallet is under active development and should not be treated as immediately ready for Google Play submission.
 
-**Christmas Day 2025 Genesis Launch - Let's make it happen! 🎄**
+**Public release timing remains TBD pending production review.**
