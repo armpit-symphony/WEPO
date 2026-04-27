@@ -43,7 +43,12 @@ from privacy import (
     RING_SIGNATURE_SIZE,
     CONFIDENTIAL_PROOF_SIZE,
 )
-from atomic_swaps import atomic_swap_engine, SwapType, validate_btc_address, validate_wepo_address
+try:
+    from atomic_swaps import atomic_swap_engine, SwapType, validate_btc_address, validate_wepo_address
+    ATOMIC_SWAPS_AVAILABLE = True
+except Exception:
+    atomic_swap_engine = None
+    ATOMIC_SWAPS_AVAILABLE = False
 
 # Import quantum-resistant components
 from quantum_blockchain import QuantumWepoBlockchain
