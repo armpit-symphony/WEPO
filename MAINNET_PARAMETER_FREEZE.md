@@ -13,6 +13,19 @@ Code reference commit: e281ebf (branch `wallet-lab-fixes-20260409`).
 > compressed activation) may appear in mainnet. All values below are the
 > `mainnet` profile.
 
+## Decisions recorded (2026-06-20)
+
+Owner decisions captured for the items below (final go/no-go still required):
+
+- **Supply:** the headline cap **69,000,003 WEPO is authoritative and fixed**. The
+  emission schedule must be corrected to sum exactly to it (see §3). A corrected-
+  schedule proposal is pending owner approval before any constant changes.
+- **Genesis timestamp / PRODUCTION_MODE:** left **set-at-launch** (see §9). Not
+  fixed to a public date until every blocker is green, per the release checklist.
+- **Disable-at-launch scope:** **confirmed as recommended** (see
+  MAINNET_V1_LAUNCH_SCOPE.md). Gating is enforced in code (commit 1a547b1).
+- **Seed nodes / bootstrap:** **not yet provisioned** — recorded as open (see §10).
+
 ## 1. Network identity
 
 | Parameter | Value | Source |
@@ -50,9 +63,23 @@ pre-fork balances/addresses are not carried into mainnet genesis.
 | Pre-PoS block reward | 6,900,000 / 131,400 ≈ 52.51 WEPO/block | network_profile.py:14 |
 | Total PoW supply | 20,702,037 WEPO | blockchain.py:99 |
 
-**DECISION-REQUIRED:** reconcile these constants against
-`WEPO_FINAL_TOKENOMICS_OPTION_A.md`. Confirm genesis bootstrap (400) and the
-PoS-era remainder sum to exactly `TOTAL_SUPPLY`; record the full issuance ledger.
+**DECISION (2026-06-20): 69,000,003 is the fixed cap — the schedule must be
+corrected to match it.** Reconciliation finding (computed from the constants):
+
+- Declared `TOTAL_POW_SUPPLY` = 20,702,037 WEPO, but the actual schedule
+  (pre-PoS + phases 2A–2D) emits **20,709,956 WEPO** — a **~7,919 WEPO gap**.
+- `blocks_per_year_longterm` = `int(365.25*24*60/9)` = **58,440**, not the
+  58,400 stated in the blockchain.py comment, so each long-term phase is larger
+  than documented.
+- PoW phase rewards (33.17 / 16.58 / 8.29 / 4.15) do not sum to the declared
+  constant once the real phase lengths are applied.
+
+**ACTION (pending owner approval):** produce a corrected emission schedule
+(adjust phase reward values and/or phase block-lengths, and confirm whether
+PoS-era issuance is a fixed schedule or a fill-to-cap remainder) so that
+genesis(400) + pre-PoS + 2A–2D + PoS-era == 69,000,003 exactly, then update the
+constants and fix the 58,400 comment. Do not change consensus emission constants
+until the corrected schedule is approved.
 
 ## 4. Block timing
 
@@ -73,7 +100,7 @@ PoS-era remainder sum to exactly `TOTAL_SUPPLY`; record the full issuance ledger
 | Phase 2B length | 6 × 58,400 = 350,400 blocks | network_profile.py:116 |
 | Phase 2C length | 3 × 58,400 = 175,200 blocks | network_profile.py:117 |
 | Phase 2D length | 3 × 58,400 = 175,200 blocks | network_profile.py:118 |
-| Blocks/year (long-term) | 58,400 (9-min blocks) | blockchain.py:73 |
+| Blocks/year (long-term) | **58,440** (9-min blocks; code comment says 58,400 — comment is wrong) | blockchain.py:73 |
 
 PoW phase rewards (post pre-PoS): 2A 33.17 → 2B 16.58 → 2C 8.29 → 2D 4.15
 WEPO/block (network_profile.py:15-18).
@@ -108,21 +135,38 @@ WEPO/block (network_profile.py:15-18).
 (staker share only exists once PoS is active at height 131,400). Record the
 minimum relay fee policy explicitly.
 
-## 9. Genesis block — MUST be set before launch
+## 9. Genesis block — set at launch (DECISION 2026-06-20)
 
-| Parameter | Current value | Status |
+Decision: the genesis timestamp and `PRODUCTION_MODE` flip are **deliberately
+deferred to launch day**, per the release-checklist rule not to fix a public date
+until every blocker is green. These are launch-day actions, tracked here.
+
+| Parameter | Current value | Launch action |
 |---|---|---|
-| Genesis timestamp | `1735138800` = 2024-12-25 15:00 UTC | **PLACEHOLDER — IN THE PAST. Must be reset to the real launch time.** |
-| `PRODUCTION_MODE` | `False` (blockchain.py:117) | **Must be `True` for mainnet.** |
-| Genesis block hash / merkle root | derived at genesis | Record the final canonical values once timestamp is set. |
-| Genesis coinbase script | `b"WEPO Genesis - We The People"` | blockchain.py:1413 — confirm final message. |
+| Genesis timestamp | `1735138800` = 2024-12-25 15:00 UTC (placeholder, in the past) | **SET-AT-LAUNCH:** set `MAINNET_GENESIS_TIMESTAMP` (network_profile.py:12) to the real launch time at deploy. |
+| `PRODUCTION_MODE` | `False` (blockchain.py:117) | **SET-AT-LAUNCH:** flip to `True` at deploy. |
+| Genesis block hash / merkle root | derived at genesis | Record the final canonical values once the timestamp is set. |
+| Genesis coinbase script | `b"WEPO Genesis - We The People"` | blockchain.py:1413 — confirm final message before launch. |
 
-## 10. Seed nodes, bootstrap, checkpoints — DECISION-REQUIRED (not in code)
+## 10. Seed nodes, bootstrap, checkpoints — OPEN (decision 2026-06-20: not yet provisioned)
 
-- [ ] Seed node list + ownership (hostnames/IPs, who runs them).
-- [ ] Bootstrap distribution plan (how the 400 WEPO genesis bootstrap / initial coins are handled).
+A blockchain creates its own genesis and rules, but a freshly started node cannot
+discover peers without at least one reachable, well-known node address baked into
+the software. Those are **seed nodes** — always-on servers the project operates.
+Without them, every new node is isolated and may fork its own genesis (this is the
+exact "stuck at height 0 / own genesis" failure seen on the multi-machine testnet).
+
+Current code state:
+- `wepo-blockchain/core/p2p_network.py:130` hardcodes DNS seeds
+  `seed1.wepo.network`, `seed2.wepo.network`, `seed3.wepo.network` — these
+  **do not resolve to anything yet** (placeholders).
+- Static seed fallback defaults to `127.0.0.1:22567` (local/test only).
+
+Open items (Blocker 7 — production infra):
+- [ ] Operator runs ≥1 (recommended 2–3) always-on public nodes on port 22567.
+- [ ] Point `seed{1,2,3}.wepo.network` DNS at those hosts, or ship their static IPs.
+- [ ] Bootstrap distribution plan: how the genesis bootstrap (400 WEPO) / initial coins reach holders.
 - [ ] Checkpoints: include or not — state the policy explicitly.
-- [ ] DNS seeds (if any).
 
 ## Sign-off
 

@@ -14,20 +14,42 @@ This repo should not be the long-term home for wallet clients. Web, desktop, iOS
 
 ## Status
 
-This repository is not production ready yet.
+This repository is not production ready yet, but the core consensus and backend
+security gaps from the 2026-06 audit are now closed. Mainnet still depends on
+launch decisions and production infrastructure (see the launch documents below).
 
-The current local public-test status is stronger than the production status:
+Release-blocker progress (June 2026):
 
-- the accelerated wallet lab is validated on `127.0.0.1:18212` and `127.0.0.1:18021`
-- the built web wallet flow is validated on `127.0.0.1:3100`
-- create, refresh/session-restore, login/logout, receive, and authenticated send all passed on the live local stack
+- **Consensus spend authorization (BLOCKER #1) — fixed.** Every non-coinbase
+  input must carry a Dilithium signature bound to the UTXO owner; unsigned spends
+  and forged coinbase are rejected. This is a hard fork to client-side signing
+  with quantum addresses (`wepo1q` + H(pubkey)); legacy `wepo1` sha256(seed)
+  addresses are invalid on mainnet. See `tests/test_spend_authorization.py`.
+- **Rate-limit identity bypass — fixed.** Rate limiting now keys on the real
+  socket peer unless `WEPO_TRUST_PROXY_HEADERS=1` (set behind nginx). See
+  `tests/test_rate_limit_identity.py`.
+- **Launch-scope feature gating (BLOCKER #6) — done.** Features not launch-ready
+  (zk-STARK privacy/Quantum Vault, RWA trading/vault, BTC relay/swaps, staging
+  toggles) are disabled by default and return HTTP 503. See
+  `backend/feature_flags.py` and `tests/test_launch_feature_gate.py`.
+- **Scope & parameter freeze (BLOCKERS 4/5) — drafted, decisions recorded.** See
+  `MAINNET_V1_LAUNCH_SCOPE.md` and `MAINNET_PARAMETER_FREEZE.md`.
 
-Known gaps include:
+Remaining gaps:
 
-- backend, chain, and deployment code need production hardening
-- deployment assets still include demo/test-oriented paths
-- docs and product claims have been ahead of actual implementation
-- repo cleanup is still required for generated artifacts and backup files
+- `WEPO-wallet` clients must implement client-side Dilithium keygen + signing
+  (mirror `wepo-blockchain/scripts/wepo_accelerated_simulation.py`).
+- Emission schedule must be corrected to sum to the fixed 69,000,003 cap
+  (reconciliation finding recorded in the parameter freeze).
+- Genesis timestamp + `PRODUCTION_MODE` are set-at-launch; seed nodes/bootstrap
+  not yet provisioned.
+- Production infrastructure, genesis rehearsal, and final signoff still pending.
+
+## Launch documents
+
+- `MAINNET_GENESIS_RELEASE_CHECKLIST.md` — the 10 launch blockers.
+- `MAINNET_V1_LAUNCH_SCOPE.md` — per-feature launch / disabled / post-launch scope (confirmed 2026-06-20).
+- `MAINNET_PARAMETER_FREEZE.md` — canonical mainnet parameters + recorded decisions.
 
 ## Intended Repo Boundary
 
@@ -73,7 +95,11 @@ Those wallet surfaces currently remain in-tree while the split is being planned,
 2. Replace test/demo deployment paths with a real staging and production model.
 3. Harden backend and chain behavior for public production.
 4. Remove stale under-launch-review messaging and align docs with reality.
-5. Clean generated artifacts, release bundles, and backup files from versioned source.
+5. Clean generated artifacts, release bundles, and backup files from versioned
+   source. (In progress: core `.bak`/`.new` backups removed, ~42 ad-hoc
+   root-level test harnesses quarantined to `legacy/root-test-harnesses/`, and
+   the large historical `test_result.md` moved to `legacy/`. The canonical
+   smoke/soak/gate scripts remain in place.)
 
 ## Canonical Local Verification
 
@@ -183,8 +209,15 @@ The following files still exist in-tree but should not be treated as the canonic
 - preview-era smoke/security scripts now quarantined under `legacy/preview-tests/`
 - unreferenced backend backup files now quarantined under `legacy/backend-backups/`
 - historical step2 result artifacts now stored under `legacy/step2-results/`
-- older ad hoc root-level API/stress harnesses now quarantined under `legacy/root-test-harnesses/`
+- ad hoc root-level API/stress/security harnesses quarantined under `legacy/root-test-harnesses/` (the 2026-06 cleanup moved ~42 more here)
+- the large historical `test_result.md` moved to `legacy/test_result.md`
 - historical launch-readiness/security notes under `ops-and-audit/` may reference quarantined preview-era scripts
+
+Current authoritative tests live under `tests/`:
+
+- `tests/test_spend_authorization.py` — consensus spend authorization
+- `tests/test_rate_limit_identity.py` — rate-limit client identity
+- `tests/test_launch_feature_gate.py` — launch-scope feature gating
 
 Use them only as historical reference until they are either removed or rewritten around the canonical backend/node stack.
 

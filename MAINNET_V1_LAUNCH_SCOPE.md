@@ -1,8 +1,12 @@
 # WEPO Mainnet v1 — Launch Scope Freeze
 
-Status: Draft for go/no-go review (Blocker 4 of MAINNET_GENESIS_RELEASE_CHECKLIST.md)
+Status: Scope CONFIRMED 2026-06-20 (owner confirmed the dispositions below); final go/no-go still required
 Date: 2026-06-20
 Owner sign-off required: protocol/chain, backend, wallet, security
+
+> Decision 2026-06-20: the disable-at-launch list below is confirmed as
+> recommended. Enforced in code via launch-scope feature flags (commit 1a547b1,
+> see backend/feature_flags.py) — disabled features return HTTP 503 by default.
 
 ## Purpose
 
