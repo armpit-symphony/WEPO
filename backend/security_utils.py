@@ -3,6 +3,7 @@ WEPO Backend Security Utilities
 Enhanced security implementation for comprehensive audit requirements
 """
 
+import os
 import bcrypt
 import secrets
 import hashlib
@@ -16,6 +17,14 @@ import json
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+# Only honor client-supplied forwarding headers (X-Real-IP / X-Forwarded-For)
+# for rate-limit identity when explicitly running behind a trusted reverse
+# proxy. Otherwise these headers are attacker-controllable and let a single
+# host rotate identities to bypass rate limiting. Set WEPO_TRUST_PROXY_HEADERS=1
+# in deployments where a proxy (e.g. nginx with `proxy_set_header X-Real-IP
+# $remote_addr`) overwrites these headers with the true peer address.
+TRUST_PROXY_HEADERS = os.environ.get("WEPO_TRUST_PROXY_HEADERS", "").strip().lower() in ("1", "true", "yes", "on")
 
 # Redis for rate limiting and session storage
 redis_client = None
@@ -157,14 +166,24 @@ class SecurityManager:
     
     @staticmethod
     def get_client_identifier(request: Request) -> str:
-        """Get client identifier for rate limiting"""
-        # Try to get real IP through headers (for proxy setups)
-        real_ip = (
-            request.headers.get("X-Real-IP") or
-            request.headers.get("X-Forwarded-For", "").split(",")[0] or
-            request.client.host if request.client else "unknown"
-        )
-        return real_ip.strip()
+        """Get client identifier for rate limiting.
+
+        Uses the real socket peer address by default. Client-supplied
+        forwarding headers are only trusted when WEPO_TRUST_PROXY_HEADERS is set
+        (i.e. behind a proxy that overwrites them), otherwise an attacker could
+        rotate those headers to get a fresh rate-limit bucket per request.
+        """
+        peer_ip = request.client.host if request.client else "unknown"
+
+        if TRUST_PROXY_HEADERS:
+            forwarded = (
+                request.headers.get("X-Real-IP")
+                or request.headers.get("X-Forwarded-For", "").split(",")[0]
+                or peer_ip
+            )
+            return (forwarded or peer_ip or "unknown").strip()
+
+        return peer_ip.strip()
     
     @staticmethod
     def is_rate_limited(client_id: str, endpoint: str) -> bool:
