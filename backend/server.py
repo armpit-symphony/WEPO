@@ -100,6 +100,12 @@ app = FastAPI(
 
 # Security middleware with global rate limiting and headers
 from fastapi.responses import JSONResponse
+try:
+    from .feature_flags import disabled_feature_for_path
+except ImportError:
+    from feature_flags import disabled_feature_for_path
+
+
 class SecurityMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         try:
@@ -107,6 +113,18 @@ class SecurityMiddleware(BaseHTTPMiddleware):
             client_id = SecurityManager.get_client_identifier(request)
             path = str(request.url.path)
             method = request.method.upper()
+
+            # Launch-scope feature gate: reject features disabled for this release
+            # before any handler runs, so they cannot be exercised or appear live.
+            gated_feature = disabled_feature_for_path(path)
+            if gated_feature:
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "error": f"{gated_feature} is not available in this release.",
+                        "feature_disabled": True,
+                    },
+                )
 
             # Skip global limiter for endpoints that already have strict per-endpoint limits
             skip_global = (

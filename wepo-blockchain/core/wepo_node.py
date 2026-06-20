@@ -137,7 +137,33 @@ class WepoFullNode:
             allow_methods=["*"],
             allow_headers=["*"],
         )
-        
+
+        # Launch-scope feature gate (MAINNET_V1_LAUNCH_SCOPE.md): privacy proofs
+        # (stubbed zk-STARK) and BTC atomic swaps are disabled unless explicitly
+        # enabled. Quantum (Dilithium) wallet endpoints are NOT gated - they are
+        # the standard signing wallet post-fork.
+        def _node_feature_enabled(env_name: str) -> bool:
+            return os.environ.get(env_name, "").strip().lower() in ("1", "true", "yes", "on")
+
+        _NODE_GATED_PREFIXES = [
+            ("/api/privacy", "WEPO_FEATURE_PRIVACY", "Privacy"),
+            ("/api/atomic-swap", "WEPO_FEATURE_BTC", "Atomic swap"),
+        ]
+
+        @self.app.middleware("http")
+        async def launch_feature_gate(request, call_next):
+            from fastapi.responses import JSONResponse
+            path = str(request.url.path)
+            for prefix, env_name, label in _NODE_GATED_PREFIXES:
+                if path.startswith(prefix) and not _node_feature_enabled(env_name):
+                    return JSONResponse(
+                        status_code=503,
+                        content={"error": f"{label} is not available in this release.",
+                                 "feature_disabled": True},
+                    )
+            return await call_next(request)
+
+
         @self.app.get("/")
         async def root():
             return {"message": "WEPO Full Node", "version": "1.0.0"}
