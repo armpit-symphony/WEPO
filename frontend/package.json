@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "dependencies": {
+    "@noble/hashes": "^2.2.0",
+    "@noble/post-quantum": "^0.6.1",
     "@types/bip39": "^3.0.4",
     "assert": "^2.1.0",
     "axios": "^1.8.4",

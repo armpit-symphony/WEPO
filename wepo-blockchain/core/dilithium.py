@@ -20,14 +20,17 @@ except ImportError:
         validate_wepo_address as _validate_wepo_address,
     )
 
-# Try to import real Dilithium2, fallback to RSA simulation if not available
+# Use FIPS-204 ML-DSA-44 (the standardized successor to round-3 Dilithium2).
+# ML-DSA-44 has matching public-key (1312) and signature (2420) sizes and is
+# implemented in both Python (dilithium_py.ml_dsa) and JavaScript
+# (@noble/post-quantum), enabling cross-language client-side wallet signing.
 try:
-    from dilithium_py.dilithium import Dilithium2
+    from dilithium_py.ml_dsa import ML_DSA_44
     REAL_DILITHIUM_AVAILABLE = True
-    print("✅ Real Dilithium2 imported successfully")
+    print("✅ ML-DSA-44 (FIPS 204) imported successfully")
 except ImportError:
     REAL_DILITHIUM_AVAILABLE = False
-    print("⚠️  Real Dilithium2 not available - using RSA simulation")
+    print("⚠️  ML-DSA-44 not available - using RSA simulation")
     # Fallback imports for RSA simulation
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import rsa, padding
@@ -35,9 +38,9 @@ except ImportError:
 
 import struct
 
-# Real Dilithium2 Parameters (NIST ML-DSA)
-DILITHIUM_PUBKEY_SIZE = 1312   # bytes (actual NIST standard)
-DILITHIUM_PRIVKEY_SIZE = 2528  # bytes (actual NIST standard)
+# ML-DSA-44 (FIPS 204) parameter sizes
+DILITHIUM_PUBKEY_SIZE = 1312   # bytes
+DILITHIUM_PRIVKEY_SIZE = 2560  # bytes (ML-DSA-44; round-3 Dilithium2 was 2528)
 DILITHIUM_SIGNATURE_SIZE = 2420 # bytes (actual NIST standard)
 DILITHIUM_SECURITY_LEVEL = 128  # bits (equivalent to AES-128)
 
@@ -66,13 +69,10 @@ class DilithiumSigner:
         self.is_real_dilithium = REAL_DILITHIUM_AVAILABLE
         
         if REAL_DILITHIUM_AVAILABLE:
-            # Use REAL Dilithium2 implementation
-            self._dilithium = Dilithium2
-            
-            # Set secure random seed
-            seed = secrets.randbits(384).to_bytes(48, 'big')  # 48 bytes for AES256_CTR_DRBG
-            self._dilithium.set_drbg_seed(seed)
-            print("🔐 Using REAL Dilithium2 - TRUE quantum resistance")
+            # Use REAL ML-DSA-44 (FIPS 204) implementation. Signing draws fresh
+            # OS randomness per call (hedged ML-DSA), so we do not pin a DRBG seed.
+            self._dilithium = ML_DSA_44
+            print("🔐 Using ML-DSA-44 (FIPS 204) - TRUE quantum resistance")
         else:
             # Fallback to RSA simulation
             self._rsa_key_pair = None
@@ -297,8 +297,8 @@ class DilithiumSigner:
     def get_algorithm_info(self) -> dict:
         """Get information about the Dilithium algorithm"""
         return {
-            "algorithm": "Dilithium2",
-            "variant": "NIST ML-DSA" if self.is_real_dilithium else "RSA Simulation",
+            "algorithm": "ML-DSA-44" if self.is_real_dilithium else "Dilithium2",
+            "variant": "FIPS 204 ML-DSA-44" if self.is_real_dilithium else "RSA Simulation",
             "security_level": DILITHIUM_SECURITY_LEVEL,
             "quantum_resistant": self.is_real_dilithium,
             "public_key_size": DILITHIUM_PUBKEY_SIZE,
