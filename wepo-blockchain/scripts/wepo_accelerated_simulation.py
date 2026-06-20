@@ -16,6 +16,7 @@ if str(CORE_DIR) not in sys.path:
     sys.path.insert(0, str(CORE_DIR))
 
 from address_utils import generate_wepo_address  # noqa: E402
+from dilithium import generate_dilithium_keypair  # noqa: E402
 from blockchain import (  # noqa: E402
     BLOCK_TIME_INITIAL_18_MONTHS,
     BLOCK_TIME_LONGTERM,
@@ -111,6 +112,31 @@ def coinbase_output_totals(block) -> dict[str, int]:
     return totals
 
 
+# Self-custody actors: each holds a Dilithium keypair and a quantum address
+# (address = wepo1q + H(pubkey)). Consensus requires every spend to be signed by
+# the keypair that owns the spent UTXO, so the simulation must sign like a real
+# wallet would. This mirrors the build-unsigned -> sign -> submit flow that the
+# WEPO-wallet client must implement.
+_ACTOR_KEYS: dict = {}
+
+
+def new_actor(label: str) -> str:
+    """Create a keypair-backed quantum address and register its signing key."""
+    keypair = generate_dilithium_keypair()
+    address = generate_wepo_address(keypair.public_key, address_type="quantum")
+    _ACTOR_KEYS[address] = keypair
+    return address
+
+
+def sign_tx(tx, owner_address: str):
+    """Sign every input of tx with the owner's Dilithium key (single-owner spend)."""
+    keypair = _ACTOR_KEYS.get(owner_address)
+    if keypair is None:
+        raise RuntimeError(f"No signing key registered for {owner_address}")
+    tx.sign_all_inputs(keypair.private_key, keypair.public_key)
+    return tx
+
+
 def send_and_confirm(chain: WepoBlockchain, miner_address: str, to_address: str, amount: int):
     funding_tx = chain.create_transaction(
         from_address=miner_address,
@@ -119,6 +145,7 @@ def send_and_confirm(chain: WepoBlockchain, miner_address: str, to_address: str,
     )
     if funding_tx is None:
         raise RuntimeError(f"Failed to create funding transaction for {to_address}")
+    sign_tx(funding_tx, miner_address)
     if not chain.add_transaction_to_mempool(funding_tx):
         raise RuntimeError(f"Failed to add funding transaction for {to_address}")
     staking_info = chain.get_staking_info()
@@ -141,11 +168,13 @@ def main() -> int:
         chain.current_difficulty = 1
         chain.adjust_difficulty = lambda: None
 
+        # Genesis address is read-only here (its bootstrap UTXO is never spent).
         genesis_address = generate_wepo_address("wepo-mainnet-genesis", address_type="regular")
-        miner_address = generate_wepo_address("sim-miner", address_type="regular")
-        recipient_address = generate_wepo_address("sim-recipient", address_type="regular")
-        staker_address = generate_wepo_address("sim-staker", address_type="regular")
-        masternode_address = generate_wepo_address("sim-masternode", address_type="regular")
+        # Spending actors hold real Dilithium keypairs so they can sign their spends.
+        miner_address = new_actor("sim-miner")
+        recipient_address = new_actor("sim-recipient")
+        staker_address = new_actor("sim-staker")
+        masternode_address = new_actor("sim-masternode")
 
         genesis = chain.get_latest_block()
         genesis_balance = chain.get_balance(genesis_address)
@@ -172,6 +201,7 @@ def main() -> int:
         if tx is None:
             raise RuntimeError("Failed to create wallet transfer transaction")
 
+        sign_tx(tx, miner_address)
         mempool_accepted = chain.add_transaction_to_mempool(tx)
         if not mempool_accepted:
             raise RuntimeError("Failed to add wallet transfer to mempool")
@@ -195,7 +225,15 @@ def main() -> int:
         pre_activation_stake_id = None
         pre_activation_stake_error = None
         try:
-            pre_activation_stake_id = chain.create_stake(miner_address, MIN_STAKE_AMOUNT)
+            # Expected to be rejected pre-activation; create_stake raises before
+            # building, so there is nothing to sign on this path.
+            pre_activation_stake_tx = chain.create_stake(
+                miner_address, MIN_STAKE_AMOUNT, return_unsigned=True
+            )
+            sign_tx(pre_activation_stake_tx, miner_address)
+            if not chain.add_transaction_to_mempool(pre_activation_stake_tx):
+                raise RuntimeError("Pre-activation stake unexpectedly rejected at mempool")
+            pre_activation_stake_id = pre_activation_stake_tx.extra_data["stake_id"]
         except Exception as exc:  # pragma: no cover - simulation reporting path
             pre_activation_stake_error = str(exc)
         stake_balance_after = chain.get_balance(miner_address)
@@ -208,6 +246,7 @@ def main() -> int:
         )
         if pre_pos_fee_tx is None:
             raise RuntimeError("Failed to create pre-PoS fee probe transaction")
+        sign_tx(pre_pos_fee_tx, miner_address)
         if not chain.add_transaction_to_mempool(pre_pos_fee_tx):
             raise RuntimeError("Failed to add pre-PoS fee probe transaction to mempool")
 
@@ -251,12 +290,17 @@ def main() -> int:
         if collateral_utxo is None:
             raise RuntimeError("Failed to locate pre-PoS masternode collateral UTXO")
 
-        pre_pos_masternode_id = chain.create_masternode(
+        pre_pos_masternode_tx = chain.create_masternode(
             masternode_address,
             collateral_utxo["txid"],
             collateral_utxo["vout"],
             ip_address="127.0.0.1",
+            return_unsigned=True,
         )
+        sign_tx(pre_pos_masternode_tx, masternode_address)
+        if not chain.add_transaction_to_mempool(pre_pos_masternode_tx):
+            raise RuntimeError("Failed to submit canonical pre-PoS masternode registration")
+        pre_pos_masternode_id = pre_pos_masternode_tx.extra_data["masternode_id"]
         pre_pos_masternode_registration_block = chain.mine_next_block(miner_address)
         if not pre_pos_masternode_registration_block:
             raise RuntimeError("Failed to confirm canonical pre-PoS masternode registration")
@@ -268,6 +312,7 @@ def main() -> int:
         )
         if pre_pos_fee_tx_with_masternode is None:
             raise RuntimeError("Failed to create pre-PoS fee probe transaction with masternode")
+        sign_tx(pre_pos_fee_tx_with_masternode, miner_address)
         if not chain.add_transaction_to_mempool(pre_pos_fee_tx_with_masternode):
             raise RuntimeError("Failed to add pre-PoS fee probe transaction with masternode to mempool")
 
@@ -297,7 +342,13 @@ def main() -> int:
 
         staker_funding_tx, _ = send_and_confirm(chain, miner_address, staker_address, MIN_STAKE_AMOUNT)
 
-        activated_stake_id = chain.create_stake(staker_address, MIN_STAKE_AMOUNT)
+        activated_stake_tx = chain.create_stake(
+            staker_address, MIN_STAKE_AMOUNT, return_unsigned=True
+        )
+        sign_tx(activated_stake_tx, staker_address)
+        if not chain.add_transaction_to_mempool(activated_stake_tx):
+            raise RuntimeError("Failed to submit canonical stake registration")
+        activated_stake_id = activated_stake_tx.extra_data["stake_id"]
         activated_stake_confirmation_block = chain.mine_block(miner_address)
         if not activated_stake_confirmation_block:
             raise RuntimeError("Failed to confirm canonical stake registration")
@@ -327,6 +378,7 @@ def main() -> int:
             )
             if fee_tx is None:
                 raise RuntimeError("Failed to create fee-series transaction")
+            sign_tx(fee_tx, miner_address)
             if not chain.add_transaction_to_mempool(fee_tx):
                 raise RuntimeError("Failed to add fee-series transaction to mempool")
 

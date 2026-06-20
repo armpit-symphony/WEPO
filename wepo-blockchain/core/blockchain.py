@@ -14,9 +14,9 @@ import argon2
 import sqlite3
 import os
 try:
-    from .address_utils import generate_wepo_address, validate_wepo_address, is_quantum_address
+    from .address_utils import generate_wepo_address, validate_wepo_address, is_quantum_address, addresses_equal
 except ImportError:
-    from address_utils import generate_wepo_address, validate_wepo_address, is_quantum_address
+    from address_utils import generate_wepo_address, validate_wepo_address, is_quantum_address, addresses_equal
 try:
     from .network_profile import (
         format_block_time,
@@ -302,54 +302,212 @@ class Transaction:
         signature_types = set(inp.signature_type for inp in self.inputs)
         return len(signature_types) > 1
     
-    def verify_quantum_signature(self, input_index: int) -> bool:
-        """Verify quantum signature for specific input"""
-        if input_index >= len(self.inputs):
-            return False
-        
-        inp = self.inputs[input_index]
-        
-        if inp.signature_type != "dilithium":
-            return False
-        
-        if not inp.quantum_signature or not inp.quantum_public_key:
-            return False
-        
-        try:
-            # Import quantum signature verification
-            from dilithium import verify_signature
-            
-            # Create signing message
-            signing_message = self.get_signing_message_for_input(input_index)
-            
-            # Verify quantum signature
-            return verify_signature(signing_message, inp.quantum_signature, inp.quantum_public_key)
-        except Exception as e:
-            print(f"Quantum signature verification failed: {e}")
-            return False
-    
-    def get_signing_message_for_input(self, input_index: int) -> bytes:
-        """Get message to be signed for specific input"""
-        # Create deterministic message for signing
-        message_parts = [
+    def get_canonical_sighash(self) -> bytes:
+        """Deterministic digest committing to the ENTIRE transaction.
+
+        Every input signs this same digest (SIGHASH_ALL style). It commits to
+        the version, lock_time, fee, tx_type, every input outpoint (and
+        sequence), every output (value, address, script marker), and the
+        canonicalized extra_data. Signature fields themselves are excluded so
+        the digest is stable before and after signing. Because the digest binds
+        all inputs and outputs, a valid signature cannot be replayed against a
+        different transaction or a re-pointed output.
+        """
+        parts = [
+            "WEPO-SIGHASH-v1",
             str(self.version),
             str(self.lock_time),
             str(self.fee),
-            str(input_index)
+            str(self.tx_type),
         ]
-        
-        # Add outputs
+        for inp in self.inputs:
+            parts.extend([str(inp.prev_txid), str(inp.prev_vout), str(inp.sequence)])
         for out in self.outputs:
-            message_parts.extend([str(out.value), out.address])
-        
-        # Add other inputs (without signatures)
-        for i, inp in enumerate(self.inputs):
-            if i != input_index:
-                message_parts.extend([inp.prev_txid, str(inp.prev_vout)])
-        
-        message = "|".join(message_parts)
-        return message.encode('utf-8')
-    
+            marker = ""
+            if out.script_pubkey:
+                try:
+                    marker = out.script_pubkey.decode("utf-8")
+                except Exception:
+                    marker = out.script_pubkey.hex()
+            parts.extend([str(out.value), str(out.address), marker])
+        try:
+            parts.append(json.dumps(self.extra_data or {}, sort_keys=True, separators=(",", ":")))
+        except Exception:
+            parts.append(str(self.extra_data))
+        message = "|".join(parts)
+        return hashlib.sha256(message.encode("utf-8")).digest()
+
+    def sign_input(self, input_index: int, private_key: bytes, public_key: bytes) -> bool:
+        """Attach a Dilithium signature authorizing one input.
+
+        The caller must supply the keypair whose public key hashes to the
+        address that owns the UTXO referenced by this input; consensus will
+        reject the spend otherwise (see validate_transaction).
+        """
+        if input_index < 0 or input_index >= len(self.inputs):
+            return False
+        try:
+            from dilithium import sign_with_dilithium
+        except ImportError:
+            from .dilithium import sign_with_dilithium
+        sighash = self.get_canonical_sighash()
+        signature = sign_with_dilithium(sighash, private_key)
+        inp = self.inputs[input_index]
+        inp.signature_type = "dilithium"
+        inp.quantum_public_key = bytes(public_key)
+        inp.quantum_signature = bytes(signature)
+        inp.script_sig = b""
+        return True
+
+    def sign_all_inputs(self, private_key: bytes, public_key: bytes) -> bool:
+        """Convenience: sign every input with a single keypair (single-owner spend)."""
+        if not self.inputs:
+            return False
+        ok = True
+        for i in range(len(self.inputs)):
+            ok = self.sign_input(i, private_key, public_key) and ok
+        return ok
+
+    def verify_quantum_signature(self, input_index: int, expected_address: Optional[str] = None) -> bool:
+        """Verify the Dilithium signature authorizing one input.
+
+        When expected_address is provided (the address that owns the spent
+        UTXO), this ALSO enforces the binding that the signing public key hashes
+        to that address. Without the binding check, a valid signature made with
+        an attacker's own key would pass while spending someone else's coins, so
+        consensus always passes the UTXO's owning address here.
+        """
+        if input_index < 0 or input_index >= len(self.inputs):
+            return False
+
+        inp = self.inputs[input_index]
+
+        if inp.signature_type != "dilithium":
+            return False
+
+        if not inp.quantum_signature or not inp.quantum_public_key:
+            return False
+
+        # Defense in depth: enforce NIST ML-DSA sizes before doing crypto work.
+        if len(inp.quantum_public_key) != 1312 or len(inp.quantum_signature) != 2420:
+            return False
+
+        # Owner binding: public key must hash to the UTXO's address.
+        if expected_address is not None:
+            try:
+                derived_address = generate_wepo_address(inp.quantum_public_key, address_type="quantum")
+            except Exception as e:
+                print(f"Failed to derive address from public key for input {input_index}: {e}")
+                return False
+            if not addresses_equal(derived_address, expected_address):
+                print(f"Public key does not own UTXO for input {input_index}")
+                return False
+
+        try:
+            from dilithium import verify_signature
+        except ImportError:
+            from .dilithium import verify_signature
+        sighash = self.get_canonical_sighash()
+        try:
+            return bool(verify_signature(sighash, inp.quantum_signature, inp.quantum_public_key))
+        except Exception as e:
+            print(f"Quantum signature verification failed: {e}")
+            return False
+
+    def get_signing_message_for_input(self, input_index: int) -> bytes:
+        """Backward-compatible signing message; now the canonical whole-tx sighash."""
+        return self.get_canonical_sighash()
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize to a JSON-friendly dict (bytes encoded as hex)."""
+        def enc(b):
+            return b.hex() if isinstance(b, (bytes, bytearray)) else b
+        return {
+            'version': self.version,
+            'lock_time': self.lock_time,
+            'fee': self.fee,
+            'tx_type': self.tx_type,
+            'timestamp': self.timestamp,
+            'extra_data': self.extra_data or {},
+            'privacy_proof': enc(self.privacy_proof),
+            'ring_signature': enc(self.ring_signature),
+            'inputs': [
+                {
+                    'prev_txid': inp.prev_txid,
+                    'prev_vout': inp.prev_vout,
+                    'sequence': inp.sequence,
+                    'script_sig': enc(inp.script_sig) if inp.script_sig else '',
+                    'signature_type': inp.signature_type,
+                    'quantum_signature': enc(inp.quantum_signature),
+                    'quantum_public_key': enc(inp.quantum_public_key),
+                }
+                for inp in self.inputs
+            ],
+            'outputs': [
+                {
+                    'value': out.value,
+                    'address': out.address,
+                    'script_pubkey': enc(out.script_pubkey) if out.script_pubkey else '',
+                }
+                for out in self.outputs
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'Transaction':
+        """Reconstruct a Transaction from a client-supplied dict (e.g. a signed tx).
+
+        Hex-encoded byte fields are decoded back to bytes. TransactionInput
+        __post_init__ enforces Dilithium key/signature sizes, so malformed
+        signed transactions raise here rather than reaching consensus.
+        """
+        def dec(v):
+            if v is None or v == '':
+                return None
+            if isinstance(v, (bytes, bytearray)):
+                return bytes(v)
+            if isinstance(v, str):
+                try:
+                    return bytes.fromhex(v)
+                except ValueError:
+                    return v.encode()
+            return v
+
+        inputs = []
+        for i in data.get('inputs', []):
+            inputs.append(TransactionInput(
+                prev_txid=i['prev_txid'],
+                prev_vout=int(i['prev_vout']),
+                script_sig=dec(i.get('script_sig')) or b'',
+                sequence=int(i.get('sequence', 0xffffffff)),
+                quantum_signature=dec(i.get('quantum_signature')),
+                quantum_public_key=dec(i.get('quantum_public_key')),
+                signature_type=i.get('signature_type', 'ecdsa'),
+            ))
+
+        outputs = []
+        for o in data.get('outputs', []):
+            outputs.append(TransactionOutput(
+                value=int(o['value']),
+                script_pubkey=dec(o.get('script_pubkey')) or b'',
+                address=o.get('address', ''),
+            ))
+
+        tx = cls(
+            version=int(data.get('version', 1)),
+            inputs=inputs,
+            outputs=outputs,
+            lock_time=int(data.get('lock_time', 0)),
+            fee=int(data.get('fee', 0)),
+            privacy_proof=dec(data.get('privacy_proof')),
+            ring_signature=dec(data.get('ring_signature')),
+            tx_type=data.get('tx_type', TX_TYPE_TRANSFER),
+            extra_data=data.get('extra_data') or {},
+        )
+        if data.get('timestamp'):
+            tx.timestamp = int(data['timestamp'])
+        return tx
+
     def calculate_txid(self) -> str:
         """Calculate transaction hash"""
         # Create a string representation for hashing that avoids bytes serialization
@@ -2442,7 +2600,14 @@ class WepoBlockchain:
     def add_transaction_to_mempool(self, transaction: Transaction) -> bool:
         """Add transaction to mempool"""
         txid = transaction.calculate_txid()
-        
+
+        # Coinbase transactions are minted by block production only. validate_transaction
+        # exempts coinbase from UTXO/signature checks, so accepting one here (or over the
+        # P2P relay path) would let a forged "coinbase" mint coins from nothing.
+        if transaction.is_coinbase():
+            print(f"Rejected coinbase transaction submitted to mempool: {txid}")
+            return False
+
         # Basic validation
         if self.validate_transaction(transaction):
             self.mempool[txid] = transaction
@@ -2655,13 +2820,24 @@ class WepoBlockchain:
                     print("Masternode deactivation transaction must not charge a fee")
                     return False
             
-            # Validate quantum signatures if present
+            # Enforce spend authorization for EVERY non-coinbase input.
+            #
+            # Each input must carry a Dilithium signature whose public key hashes
+            # to the address that owns the spent UTXO (input_rows[i]['address']),
+            # and that signature must verify over the canonical transaction
+            # sighash. This is the consensus-level proof that the spender owns
+            # the coins. Without it, value conservation alone would let anyone
+            # spend any UTXO they merely reference.
             for i, inp in enumerate(transaction.inputs):
-                if inp.signature_type == "dilithium":
-                    if not transaction.verify_quantum_signature(i):
-                        print(f"Invalid quantum signature for input {i}")
-                        return False
-            
+                utxo_address = input_rows[i]['address']
+                if inp.signature_type != "dilithium":
+                    print(f"Input {i} is not authorized: Dilithium signature required "
+                          f"(got signature_type={inp.signature_type!r})")
+                    return False
+                if not transaction.verify_quantum_signature(i, expected_address=utxo_address):
+                    print(f"Input {i} failed spend authorization (signature/owner binding)")
+                    return False
+
             return True
             
         except Exception as e:
@@ -2888,8 +3064,14 @@ class WepoBlockchain:
     
     # ===== STAKING SYSTEM =====
     
-    def create_stake(self, staker_address: str, amount: int) -> str:
-        """Create a new stake"""
+    def create_stake(self, staker_address: str, amount: int, return_unsigned: bool = False):
+        """Create a new stake.
+
+        With return_unsigned=True, returns the deterministic UNSIGNED stake
+        Transaction (for client-side Dilithium signing) instead of submitting it.
+        The staker spends their own UTXOs into the canonical stake-lock output, so
+        consensus now requires the staker's signature on every input.
+        """
         if self.get_block_height() <= POS_ACTIVATION_HEIGHT:
             raise ValueError(f"Staking is not active until block {POS_ACTIVATION_HEIGHT + 1}")
 
@@ -2951,14 +3133,22 @@ class WepoBlockchain:
                 'amount': amount,
             },
         )
+        if return_unsigned:
+            return transaction
         if not self.add_transaction_to_mempool(transaction):
             raise ValueError("Failed to submit canonical stake transaction")
 
         print(f"Submitted canonical stake transaction: {stake_id} for {amount / COIN} WEPO")
         return stake_id
 
-    def deactivate_stake(self, stake_id: str, staker_address: str) -> dict:
-        """Deactivate an active stake and release the principal back to spendable balance."""
+    def deactivate_stake(self, stake_id: str, staker_address: str, return_unsigned: bool = False):
+        """Deactivate an active stake and release the principal back to spendable balance.
+
+        With return_unsigned=True the canonical path returns the UNSIGNED
+        deactivation Transaction (the staker must sign to spend the stake-lock
+        UTXO). The legacy side-state path has no real UTXO to spend and still
+        completes server-side, returning its result dict unchanged.
+        """
         cursor = self.conn.execute('''
             SELECT stake_id, staker_address, amount, status, total_rewards, lock_txid, lock_vout
             FROM stakes
@@ -3041,6 +3231,8 @@ class WepoBlockchain:
                 'amount': row[2],
             },
         )
+        if return_unsigned:
+            return transaction
         if not self.add_transaction_to_mempool(transaction):
             raise ValueError("Failed to submit canonical stake deactivation transaction")
 
@@ -3063,8 +3255,15 @@ class WepoBlockchain:
         collateral_vout: int,
         ip_address: str = None,
         port: int = 22567,
-    ) -> str:
-        """Create a new masternode"""
+        return_unsigned: bool = False,
+    ):
+        """Create a new masternode.
+
+        With return_unsigned=True, returns the deterministic UNSIGNED masternode
+        registration Transaction for client-side signing. The operator spends
+        their collateral UTXO into the masternode-lock output, so consensus now
+        requires the operator's signature.
+        """
         current_height = self.get_block_height()
         required_collateral = self.get_masternode_collateral_for_height(current_height)
         
@@ -3116,14 +3315,20 @@ class WepoBlockchain:
                 'port': port,
             },
         )
+        if return_unsigned:
+            return transaction
         if not self.add_transaction_to_mempool(transaction):
             raise ValueError("Failed to submit canonical masternode registration transaction")
 
         print(f"Submitted canonical masternode registration: {masternode_id}")
         return masternode_id
 
-    def deactivate_masternode(self, masternode_id: str, operator_address: str) -> dict:
-        """Deactivate an active masternode and release its collateral back to spendable balance."""
+    def deactivate_masternode(self, masternode_id: str, operator_address: str, return_unsigned: bool = False):
+        """Deactivate an active masternode and release its collateral back to spendable balance.
+
+        With return_unsigned=True, returns the UNSIGNED deactivation Transaction
+        (the operator must sign to spend the masternode-lock collateral UTXO).
+        """
         self.get_active_masternodes()
 
         cursor = self.conn.execute('''
@@ -3171,6 +3376,8 @@ class WepoBlockchain:
                 'operator_address': operator_address,
             },
         )
+        if return_unsigned:
+            return transaction
         if not self.add_transaction_to_mempool(transaction):
             raise ValueError("Failed to submit canonical masternode deactivation transaction")
 

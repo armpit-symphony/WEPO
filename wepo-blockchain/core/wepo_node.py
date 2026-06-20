@@ -225,53 +225,31 @@ class WepoFullNode:
             
             raise HTTPException(status_code=404, detail="Transaction not found")
         
-        @self.app.post("/api/transaction/send")
-        async def send_transaction(request: dict):
-            """Submit transaction to network with privacy features"""
+        @self.app.post("/api/transaction/build-unsigned")
+        async def build_unsigned_transaction(request: dict):
+            """Build an UNSIGNED transaction skeleton plus its canonical sighash.
+
+            Self-custody flow: the client calls this, signs the returned sighash
+            locally with its Dilithium private key (filling quantum_signature,
+            quantum_public_key and signature_type='dilithium' on each input it
+            owns), then resubmits the completed transaction to
+            /api/transaction/send as {"signed_tx": {...}}. The node never holds
+            private keys and cannot authorize a spend on the user's behalf.
+            """
             try:
                 from_address = request.get('from_address')
                 to_address = request.get('to_address')
                 amount = request.get('amount')
                 fee = request.get('fee', 0.0001)
-                fee_mode = request.get('fee_mode', 'standard')
-                privacy_level = request.get('privacy_level', 'standard')  # 'standard', 'high', 'maximum'
-                
-                # Input validation
+                allow_fee_only = request.get('fee_mode') == 'canonical_settlement'
+
                 if from_address is None or to_address is None or amount is None:
                     raise HTTPException(status_code=400, detail="Missing required fields: from_address, to_address, amount")
-                
-                # Validate addresses
-                if not from_address.startswith("wepo1") or len(from_address) < 30:
-                    raise HTTPException(status_code=400, detail="Invalid sender address format")
-                
-                if not to_address.startswith("wepo1") or len(to_address) < 30:
-                    raise HTTPException(status_code=400, detail="Invalid recipient address format")
-                
-                if fee_mode not in ['standard', 'canonical_settlement']:
-                    raise HTTPException(status_code=400, detail="Invalid fee_mode")
-
-                # Validate amount
                 if not isinstance(amount, (int, float)) or amount < 0:
                     raise HTTPException(status_code=400, detail="Amount must be a non-negative number")
-
                 if not isinstance(fee, (int, float)) or fee <= 0:
                     raise HTTPException(status_code=400, detail="Fee must be a positive number")
 
-                allow_fee_only = fee_mode == 'canonical_settlement'
-                if amount == 0 and not allow_fee_only:
-                    raise HTTPException(status_code=400, detail="Amount must be positive for standard transfers")
-
-                # Check sender balance
-                sender_balance = self.blockchain.get_balance_wepo(from_address)
-                required_amount = amount + fee
-                
-                if sender_balance < required_amount:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Insufficient balance. Available: {sender_balance:.8f} WEPO, Required: {required_amount:.8f} WEPO"
-                    )
-                
-                # Create transaction using blockchain method
                 tx = self.blockchain.create_transaction(
                     from_address,
                     to_address,
@@ -279,66 +257,64 @@ class WepoFullNode:
                     int(round(fee * COIN)),
                     allow_fee_only=allow_fee_only,
                 )
-                
                 if not tx:
-                    raise HTTPException(status_code=400, detail="Failed to create transaction")
-                
-                # Add privacy features based on privacy level.
-                # `enhanced` should produce an actual privacy proof rather than silently
-                # degrading to a standard transfer.
-                if privacy_level in ['enhanced', 'high', 'maximum']:
-                    try:
-                        ephemeral_private_key = generate_real_private_key()
+                    raise HTTPException(status_code=400, detail="Failed to build transaction (insufficient funds or no UTXOs)")
 
-                        # Generate privacy proof
-                        privacy_data = {
-                            'sender_private_key': ephemeral_private_key,
-                            'recipient_address': to_address,
-                            'amount': int(round(amount * COIN)),
-                        }
-                        
-                        privacy_proof = create_privacy_proof(privacy_data)
-                        if privacy_proof:
-                            tx.privacy_proof = privacy_proof
-                        
-                        # Generate ring signature for maximum privacy
-                        if privacy_level == 'maximum':
-                            ring_signature = create_ring_signature_proof(
-                                tx.calculate_txid().encode(),
-                                ephemeral_private_key,
-                                ring_size=6,
-                            )
-                            if ring_signature:
-                                tx.ring_signature = ring_signature
-                        
-                        if tx.privacy_proof or tx.ring_signature:
-                            print(f"🔒 Privacy features added: {privacy_level}")
-                        else:
-                            print(f"⚠️ Privacy feature generation returned empty output for: {privacy_level}")
-                        
+                return {
+                    'unsigned_tx': tx.to_dict(),
+                    'sighash': tx.get_canonical_sighash().hex(),
+                    'message': 'Sign sighash with your Dilithium key, then POST the completed tx to /api/transaction/send as {"signed_tx": ...}',
+                }
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+        @self.app.post("/api/transaction/send")
+        async def send_transaction(request: dict):
+            """Submit a transaction to the network.
+
+            Self-custody only: callers must supply a fully client-signed
+            transaction as {"signed_tx": {...}} (see /api/transaction/build-unsigned).
+            The node will not build or sign spends from a bare from_address —
+            consensus rejects unsigned spends, so that legacy path is closed.
+            """
+            try:
+                signed_tx = request.get('signed_tx')
+                if signed_tx is not None:
+                    try:
+                        from blockchain import Transaction as _Tx
+                    except ImportError:
+                        from core.blockchain import Transaction as _Tx
+                    try:
+                        tx = _Tx.from_dict(signed_tx)
                     except Exception as e:
-                        print(f"⚠️ Privacy feature generation failed: {e}")
-                        # Continue without privacy features
-                
-                # Validate and add to mempool
-                if self.blockchain.add_transaction_to_mempool(tx):
-                    txid = tx.calculate_txid()
-                    
-                    # Broadcast to P2P network
-                    self.p2p_node.broadcast_transaction({'txid': txid, 'tx_data': 'transaction_data'})
-                    
-                    return {
-                        'transaction_id': txid,
-                        'tx_hash': txid,
-                        'status': 'pending',
-                        'message': 'Transaction submitted to mempool',
-                        'privacy_protected': bool(tx.privacy_proof or tx.ring_signature),
-                        'privacy_level': privacy_level,
-                        'fee_mode': fee_mode,
-                    }
-                else:
-                    raise HTTPException(status_code=400, detail="Transaction validation failed")
-                    
+                        raise HTTPException(status_code=400, detail=f"Malformed signed transaction: {e}")
+
+                    if self.blockchain.add_transaction_to_mempool(tx):
+                        txid = tx.calculate_txid()
+                        self.p2p_node.broadcast_transaction({'txid': txid, 'tx_data': 'transaction_data'})
+                        return {
+                            'transaction_id': txid,
+                            'tx_hash': txid,
+                            'status': 'pending',
+                            'message': 'Signed transaction submitted to mempool',
+                        }
+                    raise HTTPException(status_code=400, detail="Transaction rejected: invalid signature, owner binding, or inputs")
+
+                # No signed_tx supplied. Unsigned, node-built spends are closed under
+                # client-side custody: the node cannot authorize a spend it cannot
+                # sign. Build the skeleton via /api/transaction/build-unsigned, sign
+                # locally with your Dilithium key, then resubmit here as
+                # {"signed_tx": ...}. Privacy fields (privacy_proof, ring_signature)
+                # may be attached to the signed transaction and are carried through.
+                raise HTTPException(
+                    status_code=400,
+                    detail="A client-signed transaction is required. Build via "
+                           "/api/transaction/build-unsigned, sign locally, then resubmit "
+                           "as {'signed_tx': ...}.",
+                )
+
             except HTTPException:
                 raise
             except Exception as e:
@@ -402,46 +378,37 @@ class WepoFullNode:
         # Staking operations
         @self.app.post("/api/stake")
         async def create_stake(request: dict):
-            """Submit a canonical staking transaction."""
+            """Build an UNSIGNED canonical staking transaction for client-side signing.
+
+            Self-custody: returns the deterministic stake skeleton plus its
+            sighash. The staker signs locally and submits the completed tx to
+            /api/transaction/send as {"signed_tx": ...}.
+            """
             try:
                 staker_address = request.get('staker_address')
                 amount = request.get('amount')
-                
+
                 if not all([staker_address, amount]):
                     raise HTTPException(status_code=400, detail="Missing required fields: staker_address, amount")
-                
+
                 if not isinstance(amount, (int, float)) or amount <= 0:
                     raise HTTPException(status_code=400, detail="Stake amount must be a positive WEPO value")
 
                 amount_atomic = int(round(float(amount) * COIN))
-                
-                # Submit stake through the canonical transaction path.
-                stake_id = self.blockchain.create_stake(staker_address, amount_atomic)
-                txid = next(
-                    (
-                        candidate_txid
-                        for candidate_txid, tx in self.blockchain.mempool.items()
-                        if getattr(tx, 'tx_type', None) == TX_TYPE_STAKE_CREATE
-                        and (getattr(tx, 'extra_data', {}) or {}).get('stake_id') == stake_id
-                    ),
-                    None,
-                )
-                
-                if stake_id:
-                    return {
-                        'success': True,
-                        'status': 'pending',
-                        'stake_id': stake_id,
-                        'txid': txid,
-                        'tx_hash': txid,
-                        'staker_address': staker_address,
-                        'amount': amount_atomic / COIN,
-                        'amount_atomic': amount_atomic,
-                        'message': 'Stake transaction submitted to mempool'
-                    }
-                else:
-                    raise HTTPException(status_code=400, detail="Failed to submit stake transaction")
-                    
+
+                tx = self.blockchain.create_stake(staker_address, amount_atomic, return_unsigned=True)
+                stake_id = (getattr(tx, 'extra_data', {}) or {}).get('stake_id')
+                return {
+                    'success': True,
+                    'status': 'unsigned',
+                    'stake_id': stake_id,
+                    'staker_address': staker_address,
+                    'amount': amount_atomic / COIN,
+                    'amount_atomic': amount_atomic,
+                    'unsigned_tx': tx.to_dict(),
+                    'sighash': tx.get_canonical_sighash().hex(),
+                    'message': 'Sign sighash with your Dilithium key, then POST to /api/transaction/send as {"signed_tx": ...}',
+                }
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
             except HTTPException:
@@ -451,7 +418,12 @@ class WepoFullNode:
 
         @self.app.post("/api/stake/deactivate")
         async def deactivate_stake(request: dict):
-            """Submit stake deactivation through the canonical transaction path."""
+            """Build an UNSIGNED stake deactivation (canonical) or complete legacy unlock.
+
+            Canonical stakes spend the stake-lock UTXO, so the staker must sign:
+            this returns the unsigned tx + sighash for /api/transaction/send.
+            Legacy side-state stakes have no on-chain UTXO and complete here.
+            """
             try:
                 stake_id = request.get('stake_id')
                 staker_address = request.get('staker_address')
@@ -462,8 +434,24 @@ class WepoFullNode:
                 result = self.blockchain.deactivate_stake(
                     stake_id=stake_id,
                     staker_address=staker_address,
+                    return_unsigned=True,
                 )
 
+                # Canonical path returns an unsigned Transaction to be signed client-side.
+                if not isinstance(result, dict):
+                    tx = result
+                    return {
+                        'success': True,
+                        'status': 'unsigned',
+                        'stake_id': stake_id,
+                        'staker_address': staker_address,
+                        'unsigned_tx': tx.to_dict(),
+                        'sighash': tx.get_canonical_sighash().hex(),
+                        'source': 'canonical_transaction',
+                        'message': 'Sign sighash with your Dilithium key, then POST to /api/transaction/send as {"signed_tx": ...}',
+                    }
+
+                # Legacy side-state path completed server-side (no UTXO to spend).
                 return {
                     'success': True,
                     'status': result['status'],
@@ -476,11 +464,7 @@ class WepoFullNode:
                     'unlock_txid': result['unlock_txid'],
                     'txid': result.get('txid', result['unlock_txid']),
                     'source': result.get('source'),
-                    'message': (
-                        'Stake deactivated successfully'
-                        if result['status'] == 'inactive'
-                        else 'Stake deactivation transaction submitted to mempool'
-                    ),
+                    'message': 'Stake deactivated successfully',
                 }
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
@@ -572,41 +556,29 @@ class WepoFullNode:
                 if not all([operator_address, collateral_txid, collateral_vout is not None]):
                     raise HTTPException(status_code=400, detail="Missing required fields: operator_address, collateral_txid, collateral_vout")
                 
-                # Submit the masternode registration through the canonical transaction path.
-                masternode_id = self.blockchain.create_masternode(
+                # Build the UNSIGNED masternode registration for client-side signing.
+                tx = self.blockchain.create_masternode(
                     operator_address,
                     collateral_txid,
                     collateral_vout,
                     ip_address=ip_address,
                     port=port,
+                    return_unsigned=True,
                 )
-                txid = next(
-                    (
-                        candidate_txid
-                        for candidate_txid, tx in self.blockchain.mempool.items()
-                        if getattr(tx, 'tx_type', None) == TX_TYPE_MASTERNODE_CREATE
-                        and (getattr(tx, 'extra_data', {}) or {}).get('masternode_id') == masternode_id
-                    ),
-                    None,
-                )
-                
-                if masternode_id:
-                    return {
-                        'success': True,
-                        'status': 'pending',
-                        'masternode_id': masternode_id,
-                        'txid': txid,
-                        'tx_hash': txid,
-                        'operator_address': operator_address,
-                        'collateral_txid': collateral_txid,
-                        'collateral_vout': collateral_vout,
-                        'ip_address': ip_address,
-                        'port': port,
-                        'message': 'Masternode registration transaction submitted to mempool'
-                    }
-                else:
-                    raise HTTPException(status_code=400, detail="Failed to submit masternode transaction")
-                    
+                masternode_id = (getattr(tx, 'extra_data', {}) or {}).get('masternode_id')
+                return {
+                    'success': True,
+                    'status': 'unsigned',
+                    'masternode_id': masternode_id,
+                    'operator_address': operator_address,
+                    'collateral_txid': collateral_txid,
+                    'collateral_vout': collateral_vout,
+                    'ip_address': ip_address,
+                    'port': port,
+                    'unsigned_tx': tx.to_dict(),
+                    'sighash': tx.get_canonical_sighash().hex(),
+                    'message': 'Sign sighash with your Dilithium key, then POST to /api/transaction/send as {"signed_tx": ...}',
+                }
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
             except HTTPException:
@@ -616,7 +588,11 @@ class WepoFullNode:
 
         @self.app.post("/api/masternode/deactivate")
         async def deactivate_masternode(request: dict):
-            """Submit masternode deactivation through the canonical transaction path."""
+            """Build an UNSIGNED masternode deactivation for client-side signing.
+
+            Spends the masternode-lock collateral UTXO, so the operator must
+            sign: returns the unsigned tx + sighash for /api/transaction/send.
+            """
             try:
                 masternode_id = request.get('masternode_id')
                 operator_address = request.get('operator_address')
@@ -624,19 +600,20 @@ class WepoFullNode:
                 if not all([masternode_id, operator_address]):
                     raise HTTPException(status_code=400, detail="Missing required fields: masternode_id, operator_address")
 
-                result = self.blockchain.deactivate_masternode(
+                tx = self.blockchain.deactivate_masternode(
                     masternode_id=masternode_id,
                     operator_address=operator_address,
+                    return_unsigned=True,
                 )
 
                 return {
                     'success': True,
-                    'message': (
-                        'Masternode deactivated successfully'
-                        if result['status'] == 'inactive'
-                        else 'Masternode deactivation transaction submitted to mempool'
-                    ),
-                    **result,
+                    'status': 'unsigned',
+                    'masternode_id': masternode_id,
+                    'operator_address': operator_address,
+                    'unsigned_tx': tx.to_dict(),
+                    'sighash': tx.get_canonical_sighash().hex(),
+                    'message': 'Sign sighash with your Dilithium key, then POST to /api/transaction/send as {"signed_tx": ...}',
                 }
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
