@@ -54,6 +54,11 @@ GENESIS_TIME = PROFILE_MAINNET_GENESIS_TIMESTAMP  # configured genesis timestamp
 
 # Total Supply - DEFINITIVE VALUE
 TOTAL_SUPPLY = 69000003  # 69,000,003 WEPO total supply
+# HARD SUPPLY CAP (consensus-enforced). The 400 WEPO genesis bootstrap is counted
+# INSIDE this cap (owner decision D1, 2026-06-20). Cumulative base-reward issuance
+# (genesis + PoW + PoS) is clamped so the network total can never exceed this.
+# Transaction-fee redistribution is NOT new issuance and is excluded from the cap.
+SUPPLY_CAP = TOTAL_SUPPLY * COIN  # 69,000,003 WEPO in base units
 
 # Block Time Configuration
 BLOCK_TIME_TARGET = BLOCK_TIME_INITIAL_18_MONTHS = 360  # 6 minutes per block (first 18 months)
@@ -70,7 +75,12 @@ PRE_POS_REWARD = PROFILE_PRE_POS_REWARD  # 52.51 WEPO per block
 PRE_POS_TOTAL_SUPPLY = 6900000 * COIN  # 6.9M WEPO (10% of total)
 
 # Long-term PoW phases (alongside PoS/Masternodes) - 20% of total supply
-BLOCKS_PER_YEAR_LONGTERM = int(365.25 * 24 * 60 / 9)  # 58,400 blocks per year (9-min blocks)
+BLOCKS_PER_YEAR_LONGTERM = int(365.25 * 24 * 60 / 9)  # 58,440 blocks per year (9-min blocks)
+# NOTE (owner decision D2, 2026-06-20): emission phases are bounded by BLOCK HEIGHT,
+# not wall-clock time. With hybrid PoW/PoS the real calendar duration of each phase
+# differs from the "3yr/6yr" labels below (PoS blocks arrive faster than PoW), so
+# those year labels are nominal targets used only to size per-block rewards. The
+# exact total is guaranteed by SUPPLY_CAP, not by the phase math summing precisely.
 
 # PHASE 2A: Post-PoS Years 1-3 (Months 19-54)
 PHASE_2A_BLOCKS = 3 * BLOCKS_PER_YEAR_LONGTERM  # 175,200 blocks
@@ -1201,7 +1211,7 @@ class WepoBlockchain:
         self.record_fee_distribution_rewards(block)
 
         if block.height > POS_ACTIVATION_HEIGHT:
-            self.distribute_staking_rewards(block.height, block.get_block_hash())
+            self.distribute_staking_rewards(block.height, block.get_block_hash(), block)
 
         self._apply_protocol_state_transitions(block)
 
@@ -1928,6 +1938,87 @@ class WepoBlockchain:
         """Get current block height"""
         return len(self.chain) - 1 if self.chain else -1
     
+    # === Issuance model (owner decision 2026-06-20, "distribution-only") =========
+    # Every block can mint coins via at most TWO newly-minted paths, processed in
+    # this order so the hard cap is applied identically in production and on replay:
+    #   1. coinbase base reward  -> genesis bootstrap, or the PoW block subsidy.
+    #      PoS blocks mint NO coinbase base reward (the forger earns through the
+    #      staking/masternode distribution, not the coinbase).
+    #   2. PoS reward pool       -> minted via distribute_staking_rewards() to
+    #      stakers + masternodes, once per block above PoS activation (both PoW and
+    #      PoS blocks in the hybrid era).
+    # Transaction fees are redistribution, not new issuance, and are excluded here.
+
+    def scheduled_coinbase_base(self, height: int, consensus_type: str) -> int:
+        """Unclamped newly-minted reward paid through the block's coinbase.
+
+        Pure function of (height, consensus_type), branch-independent. PoS blocks
+        return 0 (distribution-only model). The cap is applied via
+        clamped_coinbase_base().
+        """
+        if height == 0:
+            return GENESIS_BOOTSTRAP_REWARD
+        if consensus_type == "pow":
+            return self.calculate_block_reward(height)
+        return 0  # PoS coinbase mints no base reward
+
+    def scheduled_pos_pool(self, height: int) -> int:
+        """Unclamped newly-minted PoS reward pool for stakers + masternodes.
+
+        Minted once per block above PoS activation (PoW and PoS blocks alike) via
+        distribute_staking_rewards(). The cap is applied via clamped_pos_pool().
+        """
+        if height <= POS_ACTIVATION_HEIGHT:
+            return 0
+        return self.calculate_pos_reward(height)
+
+    def get_issued_supply(self, up_to_height: Optional[int] = None) -> int:
+        """Cumulative newly-minted supply over the canonical chain, hard-cap clamped.
+
+        Accounts for BOTH minting paths (coinbase base + PoS distribution pool) in
+        production order. Deterministic and reorg-safe: derived purely from the
+        canonical chain (height + consensus type) and the deterministic schedule,
+        with the same clamp block production used, so recomputation always matches
+        what was minted. Fee redistribution is excluded (not new issuance).
+        """
+        issued = 0
+        for block in self.chain:
+            if up_to_height is not None and block.height > up_to_height:
+                break
+            consensus_type = "pos" if block.header.is_pos_block() else "pow"
+            base = self.scheduled_coinbase_base(block.height, consensus_type)
+            issued += min(base, max(0, SUPPLY_CAP - issued))
+            pool = self.scheduled_pos_pool(block.height)
+            issued += min(pool, max(0, SUPPLY_CAP - issued))
+        return issued
+
+    def clamped_coinbase_base(self, height: int, consensus_type: str) -> int:
+        """Coinbase base reward clamped so cumulative issuance never exceeds SUPPLY_CAP.
+
+        Issuance of all prior canonical blocks (height-1 and below) is the clamp
+        baseline. Once the cap is reached this returns 0 and only fees are paid.
+        """
+        scheduled = self.scheduled_coinbase_base(height, consensus_type)
+        issued_before = self.get_issued_supply(up_to_height=height - 1)
+        return min(scheduled, max(0, SUPPLY_CAP - issued_before))
+
+    def clamped_pos_pool(self, height: int, consensus_type: str) -> int:
+        """PoS reward pool clamped to remaining cap headroom AFTER this block's
+        coinbase base reward (which is minted first). Guarantees the distribution
+        path can never push cumulative issuance past SUPPLY_CAP.
+        """
+        scheduled = self.scheduled_pos_pool(height)
+        issued_before = self.get_issued_supply(up_to_height=height - 1)
+        base = self.clamped_coinbase_base(height, consensus_type)
+        return min(scheduled, max(0, SUPPLY_CAP - issued_before - base))
+
+    # Backward-compatible aliases (pre-2026-06-20 callers referenced these names).
+    def scheduled_base_reward(self, height: int, consensus_type: str) -> int:
+        return self.scheduled_coinbase_base(height, consensus_type)
+
+    def clamped_base_reward(self, height: int, consensus_type: str) -> int:
+        return self.clamped_coinbase_base(height, consensus_type)
+
     def calculate_block_reward(self, height: int) -> int:
         """Calculate block reward based on new 20-year sustainable mining schedule"""
         if height == 0:
@@ -1971,36 +2062,10 @@ class WepoBlockchain:
         # - PoS/Masternodes: 48.3M WEPO (70% of supply)
         # - Post-PoW: Miners earn via 25% transaction fee redistribution
     
-    def calculate_pos_reward(self, height: int) -> int:
-        """Calculate PoS block reward based on height"""
-        if height <= POS_ACTIVATION_HEIGHT:
-            return 0
-        
-        # PoS rewards are smaller than PoW since they occur more frequently
-        # PoS blocks every 3 minutes vs PoW every 9 minutes = 3x more frequent
-        # So PoS rewards should be ~1/3 of PoW rewards for same total distribution
-        
-        # PHASE 2A: Post-PoS Years 1-3 (Months 19-54)
-        if height <= PHASE_2A_END_HEIGHT:
-            # PoS gets 1/3 of PoW reward since 3x more frequent
-            return int(PHASE_2A_REWARD * 0.33)  # ~11 WEPO per PoS block
-        
-        # PHASE 2B: Post-PoS Years 4-9 (Months 55-126) - First Halving
-        elif height <= PHASE_2B_END_HEIGHT:
-            return int(PHASE_2B_REWARD * 0.33)  # ~5.5 WEPO per PoS block
-        
-        # PHASE 2C: Post-PoS Years 10-12 (Months 127-162) - Second Halving  
-        elif height <= PHASE_2C_END_HEIGHT:
-            return int(PHASE_2C_REWARD * 0.33)  # ~2.75 WEPO per PoS block
-        
-        # PHASE 2D: Post-PoS Years 13-15 (Months 163-198) - Final Halving
-        elif height <= PHASE_2D_END_HEIGHT:
-            return int(PHASE_2D_REWARD * 0.33)  # ~1.38 WEPO per PoS block
-        
-        else:
-            # After PoW ends, PoS continues with fee redistribution only
-            return 0
-    
+    # NOTE: the canonical PoS reward schedule is calculate_pos_reward() defined
+    # later in this class. An earlier duplicate (with a "* 0.33" approximation) was
+    # removed 2026-06-20 — it was shadowed/dead and never executed.
+
     def create_coinbase_transaction(
         self,
         height: int,
@@ -2009,13 +2074,21 @@ class WepoBlockchain:
         candidate_transactions: Optional[List[Transaction]] = None,
     ) -> Transaction:
         """Create coinbase transaction for new block with canonical fee redistribution."""
-        # Get appropriate reward based on consensus type
-        if consensus_type == "pow":
-            base_reward = self.calculate_block_reward(height)
-            print(f"PoW Block {height}: Base reward {base_reward / COIN:.8f} WEPO")
-        elif consensus_type == "pos":
-            base_reward = self.calculate_pos_reward(height)
-            print(f"PoS Block {height}: Base reward {base_reward / COIN:.8f} WEPO")
+        # Coinbase base reward, clamped to the hard cap so cumulative issuance can
+        # never exceed SUPPLY_CAP (final rewards truncate; once the cap is hit only
+        # fees are paid). PoS blocks mint NO coinbase base reward in the
+        # distribution-only model — the forger earns via distribute_staking_rewards;
+        # its coinbase carries only the fee share.
+        if consensus_type in ("pow", "pos"):
+            scheduled = self.scheduled_coinbase_base(height, consensus_type)
+            base_reward = self.clamped_coinbase_base(height, consensus_type)
+            if base_reward < scheduled:
+                print(
+                    f"{consensus_type.upper()} Block {height}: coinbase base clamped to cap "
+                    f"{base_reward / COIN:.8f} WEPO (scheduled {scheduled / COIN:.8f})"
+                )
+            else:
+                print(f"{consensus_type.upper()} Block {height}: coinbase base reward {base_reward / COIN:.8f} WEPO")
         else:
             base_reward = 0
         
@@ -2451,9 +2524,30 @@ class WepoBlockchain:
             return False
         
         # Check coinbase transaction
-        if not block.transactions[0].is_coinbase():
+        coinbase = block.transactions[0]
+        if not coinbase.is_coinbase():
             return False
-        
+
+        # Enforce the hard supply cap at consensus level: the coinbase may mint at
+        # most the cap-clamped base reward, plus a redistribution of this block's
+        # transaction fees. This bounds new issuance regardless of the block
+        # producer, so cumulative issuance can never exceed SUPPLY_CAP.
+        consensus_type = "pos" if block.header.is_pos_block() else "pow"
+        allowed_base_reward = self.clamped_base_reward(block.height, consensus_type)
+        total_block_fees = sum(
+            tx.fee for tx in block.transactions[1:] if getattr(tx, "fee", 0)
+        )
+        coinbase_total = sum(out.value for out in coinbase.outputs)
+        max_allowed_coinbase = allowed_base_reward + total_block_fees
+        if coinbase_total > max_allowed_coinbase:
+            print(
+                f"Invalid coinbase at height {block.height}: mints "
+                f"{coinbase_total / COIN:.8f} WEPO, max allowed "
+                f"{max_allowed_coinbase / COIN:.8f} (base {allowed_base_reward / COIN:.8f} "
+                f"+ fees {total_block_fees / COIN:.8f})"
+            )
+            return False
+
         # Validate based on consensus type
         if block.header.is_pos_block():
             # PoS block validation
@@ -3657,8 +3751,17 @@ class WepoBlockchain:
 
         return masternodes
 
-    def calculate_staking_reward_entries(self, block_height: int) -> List[Dict[str, Union[str, int]]]:
-        """Calculate detailed PoS reward entries for active stakes and masternodes."""
+    def calculate_staking_reward_entries(self, block_height: int, block: Optional[Block] = None) -> List[Dict[str, Union[str, int]]]:
+        """Calculate detailed PoS reward entries for active stakes and masternodes.
+
+        The total pool is the hard-cap-clamped PoS pool (clamped_pos_pool), so this
+        distribution path can never push cumulative issuance past SUPPLY_CAP. The
+        pool is split 60% stakers / 40% masternodes; the split conserves every
+        satoshi (no rounding loss), and if one side has no active members its share
+        rolls to the other side so the full clamped pool is always paid out to the
+        workers that exist (no dead coins). If neither side exists, nothing is
+        minted (issuance simply pauses, staying under the cap).
+        """
         reward_entries = []
 
         if block_height <= POS_ACTIVATION_HEIGHT:
@@ -3670,12 +3773,21 @@ class WepoBlockchain:
         if not active_stakes and not active_masternodes:
             return reward_entries
 
-        total_pos_reward = self.calculate_pos_reward(block_height)
+        consensus_type = "pos" if (block is not None and block.header.is_pos_block()) else "pow"
+        total_pos_reward = self.clamped_pos_pool(block_height, consensus_type)
         if total_pos_reward <= 0:
             return reward_entries
 
-        staking_reward_pool = int(total_pos_reward * 0.6)
-        masternode_reward_pool = int(total_pos_reward * 0.4)
+        # Conserve every satoshi and roll an empty side's share to the other side.
+        if active_stakes and active_masternodes:
+            staking_reward_pool = int(total_pos_reward * 0.6)
+            masternode_reward_pool = total_pos_reward - staking_reward_pool
+        elif active_stakes:
+            staking_reward_pool = total_pos_reward
+            masternode_reward_pool = 0
+        else:  # masternodes only
+            staking_reward_pool = 0
+            masternode_reward_pool = total_pos_reward
 
         if active_stakes and staking_reward_pool > 0:
             total_stake_amount = sum(stake.amount for stake in active_stakes)
@@ -3735,27 +3847,29 @@ class WepoBlockchain:
         # After PoS activation, use a decreasing reward schedule
         # This is separate from PoW rewards and represents newly minted coins for PoS
         years_since_pos = (block_height - POS_ACTIVATION_HEIGHT) // BLOCKS_PER_YEAR_LONGTERM
-        
+
         if years_since_pos < 2:
             base_reward = 25 * COIN  # 25 WEPO per block for first 2 years
         elif years_since_pos < 5:
-            base_reward = 12.5 * COIN  # 12.5 WEPO per block for years 2-5
+            base_reward = (25 * COIN) // 2  # 12.5 WEPO per block for years 2-5
         elif years_since_pos < 10:
-            base_reward = 6.25 * COIN  # 6.25 WEPO per block for years 5-10
+            base_reward = (25 * COIN) // 4  # 6.25 WEPO per block for years 5-10
         else:
             # Continue halving every 5 years
             halvings = (years_since_pos - 10) // 5
-            base_reward = 6.25 * COIN
+            base_reward = (25 * COIN) // 4
             for _ in range(halvings):
                 base_reward //= 2
 
         # The returned value is the total PoS reward pool for the block.
         # Downstream distribution splits it between stakers and masternodes.
-        return int(base_reward * 0.5)
+        # (integer half — exact, no float rounding)
+        return base_reward // 2
     
-    def distribute_staking_rewards(self, block_height: int, block_hash: str):
-        """Distribute staking rewards for a block"""
-        reward_entries = self.calculate_staking_reward_entries(block_height)
+    def distribute_staking_rewards(self, block_height: int, block_hash: str, block: Optional[Block] = None):
+        """Distribute the hard-cap-clamped PoS reward pool for a block to stakers
+        and masternodes (the single PoS issuance path, distribution-only model)."""
+        reward_entries = self.calculate_staking_reward_entries(block_height, block)
         if not reward_entries:
             return
         
@@ -4127,7 +4241,8 @@ class WepoBlockchain:
             'best_block_hash': self.get_latest_block().get_block_hash() if self.chain else None,
             'difficulty': self.current_difficulty,
             'mempool_size': len(self.mempool),
-            'total_supply': sum(self.calculate_block_reward(i) for i in range(len(self.chain))),
+            'total_supply': self.get_issued_supply(),
+            'supply_cap': SUPPLY_CAP,
             'network': NETWORK_NAME,
             'network_profile': NETWORK_PROFILE_NAME,
             'version': WEPO_VERSION,

@@ -57,29 +57,57 @@ pre-fork balances/addresses are not carried into mainnet genesis.
 
 | Parameter | Value | Source |
 |---|---|---|
-| Total supply | 69,000,003 WEPO | blockchain.py:56 `TOTAL_SUPPLY` |
-| Genesis bootstrap reward | 400 WEPO | network_profile.py:13 / blockchain.py:102 |
-| Pre-PoS phase supply | 6,900,000 WEPO (10%) | blockchain.py:70 |
+| Total supply (hard cap) | 69,000,003 WEPO | blockchain.py `SUPPLY_CAP` |
+| Genesis bootstrap reward | 400 WEPO (**inside the cap**, D1) | network_profile.py:13 / blockchain.py |
+| Pre-PoS phase supply | 6,900,000 WEPO (10%) | blockchain.py |
 | Pre-PoS block reward | 6,900,000 / 131,400 ≈ 52.51 WEPO/block | network_profile.py:14 |
-| Total PoW supply | 20,702,037 WEPO | blockchain.py:99 |
+| PoW phases 2A–2D | 13,800,000 WEPO (nominal target) | blockchain.py |
+| PoS / masternode era | 48,299,603 WEPO (fill-to-cap remainder) | derived |
+| Blocks/year (9-min) | 58,440 | blockchain.py `BLOCKS_PER_YEAR_LONGTERM` |
 
-**DECISION (2026-06-20): 69,000,003 is the fixed cap — the schedule must be
-corrected to match it.** Reconciliation finding (computed from the constants):
+**DECISION (2026-06-20) — APPROVED & IMPLEMENTED (D1–D3):** 69,000,003 is the
+fixed cap, guaranteed by **consensus-enforced hard-cap clamping**, not by the
+phase schedule summing precisely.
 
-- Declared `TOTAL_POW_SUPPLY` = 20,702,037 WEPO, but the actual schedule
-  (pre-PoS + phases 2A–2D) emits **20,709,956 WEPO** — a **~7,919 WEPO gap**.
-- `blocks_per_year_longterm` = `int(365.25*24*60/9)` = **58,440**, not the
-  58,400 stated in the blockchain.py comment, so each long-term phase is larger
-  than documented.
-- PoW phase rewards (33.17 / 16.58 / 8.29 / 4.15) do not sum to the declared
-  constant once the real phase lengths are applied.
+- **D1 — genesis inside cap:** the 400 WEPO bootstrap is counted inside the
+  69,000,003 total.
+- **D2 — phases are height-bounded:** emission boundaries are by block height;
+  the "3yr/6yr" labels are nominal (hybrid PoS makes calendar durations differ).
+  Comments corrected (incl. the 58,400 → 58,440 fix).
+- **D3 — hard cap clamp:** cumulative base-reward issuance (genesis + PoW + PoS)
+  is clamped every coinbase so the network total can never exceed the cap; the
+  final rewards truncate and, once exhausted, only fees are paid. Fee
+  redistribution is not new issuance and is excluded from the cap.
 
-**ACTION (pending owner approval):** produce a corrected emission schedule
-(adjust phase reward values and/or phase block-lengths, and confirm whether
-PoS-era issuance is a fixed schedule or a fill-to-cap remainder) so that
-genesis(400) + pre-PoS + 2A–2D + PoS-era == 69,000,003 exactly, then update the
-constants and fix the 58,400 comment. Do not change consensus emission constants
-until the corrected schedule is approved.
+**Why a clamp rather than a hand-tuned schedule:** the PoW/PoS block mix is
+variable, so no fixed per-block schedule can sum exactly to a target. The clamp
+makes 69,000,003 exact by construction regardless of the mix.
+
+**Issuance model — distribution-only (owner decision 2026-06-20).** Every block
+mints via at most two paths, both clamped to the cap in this order:
+1. **Coinbase base reward** — genesis bootstrap, or the PoW block subsidy. **PoS
+   blocks mint NO coinbase base reward**; the PoS forger earns through the staking
+   distribution, and its coinbase carries only the fee share.
+2. **PoS reward pool** — minted via `distribute_staking_rewards()` to stakers +
+   masternodes, once per block above PoS activation. Split 60% stakers / 40%
+   masternodes, satoshi-conserving, with an empty side's share rolling to the
+   other so the full clamped pool is always paid out (no dead coins).
+
+This closes a prior **double-mint** (the PoS coinbase used to pay a base reward on
+top of the distribution) and a **cap bypass** (`distribute_staking_rewards` minted
+UTXOs outside any cap check).
+
+**Implementation (blockchain.py):** `SUPPLY_CAP`, `scheduled_coinbase_base()`,
+`scheduled_pos_pool()`, `get_issued_supply()` (counts BOTH mint paths;
+deterministic / reorg-safe, derived from the canonical chain),
+`clamped_coinbase_base()`, `clamped_pos_pool()`. The coinbase clamp is applied in
+`create_coinbase_transaction()` and **enforced as a consensus rule in
+`validate_block()`** (a coinbase may mint at most clamped-base + this block's
+fees); the PoS pool clamp is applied in `calculate_staking_reward_entries()`.
+Reconciliation gaps noted previously (the ~7,919 WEPO `TOTAL_POW_SUPPLY` mismatch)
+are absorbed by the clamp. **Fee redistribution is fully conserved — no dead coins
+— and continues even after the cap is exhausted.** Tests:
+`tests/test_supply_cap.py`, `tests/test_fee_redistribution.py`.
 
 ## 4. Block timing
 

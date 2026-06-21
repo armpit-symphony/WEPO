@@ -48,16 +48,20 @@ Because the PoW/PoS block mix is **variable and non-deterministic**, no fixed
 per-block schedule can be guaranteed to sum to an exact target. The total must be
 guaranteed by enforcement, not by arithmetic on per-block rewards.
 
-## 4. Decisions required from the owner
+## 4. Decisions required from the owner — APPROVED & IMPLEMENTED (2026-06-20)
 
-- **D1 — Genesis in cap?** Is the 400 WEPO genesis bootstrap counted inside the
-  69,000,003 cap? (Recommended: yes, inside.)
-- **D2 — Phase boundaries.** Confirm phases are bounded by block height (as
-  coded) and accept that, with hybrid PoS, calendar durations differ from the
-  "3yr/6yr" labels; or redefine boundaries by time/halving. (Recommended: keep
-  height-bounded, fix the labels/comments to match.)
-- **D3 — Emission curve vs cap.** Approve guaranteeing the total via a hard cap
-  (below), with the phase curve only shaping issuance speed. (Recommended: yes.)
+- **D1 — Genesis in cap? ✅ YES, inside.** The 400 WEPO bootstrap is counted
+  inside the 69,000,003 cap.
+- **D2 — Phase boundaries. ✅ Keep height-bounded; fix misleading time labels.**
+  Phases stay bounded by block height; nominal "3yr/6yr" labels documented as
+  approximate under hybrid PoS; 58,400 → 58,440 comment corrected.
+- **D3 — Emission curve vs cap. ✅ YES, hard cap clamp.** The total is guaranteed
+  by clamping cumulative issuance (PoW and PoS) every coinbase; once exhausted
+  only fees are paid. The phase curve only shapes issuance speed.
+
+Implemented in `wepo-blockchain/core/blockchain.py` and enforced as a consensus
+rule in `validate_block()`; covered by `tests/test_supply_cap.py`. See
+`MAINNET_PARAMETER_FREEZE.md` §3 for the reconciled figures.
 
 ## 5. Recommended solution
 
