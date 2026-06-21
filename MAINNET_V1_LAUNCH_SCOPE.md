@@ -7,6 +7,20 @@ Owner sign-off required: protocol/chain, backend, wallet, security
 > Decision 2026-06-20: the disable-at-launch list below is confirmed as
 > recommended. Enforced in code via launch-scope feature flags (commit 1a547b1,
 > see backend/feature_flags.py) — disabled features return HTTP 503 by default.
+>
+> Owner priorities 2026-06-21 (post-launch roadmap, ordered): these stay
+> disabled-at-launch because they are demo-grade today, but they are the TOP
+> build priorities — they must ship as real, audited features, not flag flips:
+>   1. True private sends + Quantum Vault — quantum- AND AI-resistant. Approach:
+>      proven primitives now (confidential amounts + decoy/ring graph privacy +
+>      Dandelion++/Tor metadata privacy), zk-STARK revisited later. See
+>      PRIVACY_DESIGN.md. First build target = Phase 1 (metadata privacy).
+>   2. Private messaging service (quantum_messaging.py exists; needs real PQ E2E
+>      + metadata privacy via the same transport).
+>   3. On-chain RWA *creation* (today /rwa/create-asset only writes a DB record,
+>      tokenized:false — must become real on-chain issuance/anchoring).
+> Explicitly NOT now (separate later tracks): RWA trading, BTC swaps/relay, all
+> mobile, governance.
 
 ## Purpose
 

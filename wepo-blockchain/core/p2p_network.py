@@ -26,6 +26,14 @@ CONNECTION_TIMEOUT = 30
 PING_INTERVAL = 60
 MAX_MESSAGE_SIZE = 32 * 1024 * 1024  # 32MB
 
+# Dandelion++ transaction-origin privacy (metadata layer — see PRIVACY_DESIGN.md L1).
+# A new tx first travels a random single-relay "stem" before "fluff" (normal flood),
+# so the broadcasting IP is decoupled from the originating IP. This defeats the
+# "first node to announce == sender" heuristic that AI/heuristic de-anon relies on.
+DANDELION_EPOCH_SECONDS = 600        # rotate the stem route every ~10 min
+DANDELION_FLUFF_PROBABILITY = 0.1    # per-hop chance to switch from stem to fluff
+DANDELION_EMBARGO_SECONDS = 45       # failsafe: fluff a stem tx if not relayed onward in time
+
 class MessageType(IntEnum):
     """P2P Message types"""
     VERSION = 0x01
@@ -124,8 +132,23 @@ class WepoP2PNode:
         self.get_height_callback: Optional[Callable] = None
         self.get_locator_callback: Optional[Callable] = None
 
+        # Dandelion++ transaction-origin privacy state
+        self.dandelion_enabled = os.getenv("WEPO_DANDELION", "1").strip().lower() not in {
+            "0", "off", "false", "no", "disabled"
+        }
+        self.dandelion_epoch_seconds = DANDELION_EPOCH_SECONDS
+        self.dandelion_fluff_probability = DANDELION_FLUFF_PROBABILITY
+        self.dandelion_embargo_seconds = DANDELION_EMBARGO_SECONDS
+        self._dandelion_rng = random.Random()
+        self._stem_pool: Dict[str, tuple] = {}  # txid -> (tx_data, embargo_deadline)
+        self._stem_lock = threading.Lock()
+
+        # Optional outbound SOCKS5 proxy (e.g. Tor at 127.0.0.1:9050) so the P2P
+        # layer never exposes a real IP. See PRIVACY_DESIGN.md L1.
+        self.socks5_proxy = self._parse_socks5_proxy(os.getenv("WEPO_SOCKS5_PROXY", ""))
+
         self.static_seed_addresses = self._load_static_seed_addresses()
-        
+
         # DNS seeds for peer discovery
         self.dns_seeds = [
             "seed1.wepo.network",
@@ -306,10 +329,14 @@ class WepoP2PNode:
             return False
         
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(CONNECTION_TIMEOUT)
-            sock.connect((host, port))
-            
+            if self.socks5_proxy:
+                # Route outbound P2P through the SOCKS5 proxy (e.g. Tor).
+                sock = self._socks5_connect(self.socks5_proxy, host, port)
+            else:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(CONNECTION_TIMEOUT)
+                sock.connect((host, port))
+
             peer = WepoPeer(sock, (host, port), self, incoming=False)
             peer.start()
             return True
@@ -349,7 +376,10 @@ class WepoP2PNode:
                 # Try to maintain connections
                 if len(self.peers) < MAX_PEERS // 2:
                     self.discover_peers()
-                
+
+                # Dandelion++ failsafe: fluff any stem tx whose embargo expired.
+                self.process_embargoes()
+
                 time.sleep(PING_INTERVAL)
                 
             except Exception as e:
@@ -362,13 +392,162 @@ class WepoP2PNode:
                 peer.send_raw(message)
     
     def broadcast_transaction(self, tx_data: dict):
-        """Broadcast transaction to network"""
+        """Originate a transaction onto the network with Dandelion++ origin privacy."""
+        self.dandelion_relay_transaction(tx_data, from_peer_id=None)
+
+    # ===== Dandelion++ transaction-origin privacy (PRIVACY_DESIGN.md L1) =====
+
+    def _dandelion_epoch_index(self, now: Optional[float] = None) -> int:
+        now = time.time() if now is None else now
+        return int(now // self.dandelion_epoch_seconds)
+
+    def select_stem_peer(self, epoch_index: int, peer_ids: List[str]) -> Optional[str]:
+        """Pick ONE stem relay for this epoch — stable within the epoch, rotating
+        between epochs, deterministic per (node, epoch). None when no peers."""
+        if not peer_ids:
+            return None
+        ordered = sorted(peer_ids)
+        digest = hashlib.sha256(f"{self.node_id}:{epoch_index}".encode()).digest()
+        return ordered[int.from_bytes(digest[:8], "big") % len(ordered)]
+
+    def dandelion_decision(self, peer_ids: List[str], now: Optional[float] = None,
+                           rng: Optional[random.Random] = None):
+        """Pure routing decision: ('fluff', None) or ('stem', stem_peer_id).
+
+        Fluffs when Dandelion is disabled, when there is no eligible stem peer, or
+        with probability `dandelion_fluff_probability` per hop (so a tx eventually
+        fluffs even if every hop chooses stem).
+        """
+        if not self.dandelion_enabled:
+            return ('fluff', None)
+        stem_peer = self.select_stem_peer(self._dandelion_epoch_index(now), list(peer_ids))
+        if stem_peer is None:
+            return ('fluff', None)
+        roll = (rng or self._dandelion_rng).random()
+        if roll < self.dandelion_fluff_probability:
+            return ('fluff', None)
+        return ('stem', stem_peer)
+
+    def _connected_peer_ids(self, exclude: Optional[str] = None) -> List[str]:
+        return [pid for pid, p in list(self.peers.items())
+                if p.is_connected() and pid != exclude]
+
+    def fluff_transaction(self, tx_data: dict):
+        """Fluff phase: announce via inventory to all peers (normal flood)."""
         inv_msg = self.create_inv_message([{
             'type': InventoryType.MSG_TX,
             'hash': tx_data.get('txid', '')
         }])
         self.broadcast_to_peers(inv_msg)
-    
+
+    def _send_stem_transaction(self, peer_id: str, tx_data: dict) -> bool:
+        """Relay the full tx to a single stem peer, tagged as stem phase."""
+        peer = self.peers.get(peer_id)
+        if not peer or not peer.is_connected():
+            return False
+        payload = dict(tx_data)
+        payload['_dandelion_phase'] = 'stem'
+        peer.send_raw(self.create_message('tx', json.dumps(payload).encode()))
+        return True
+
+    def dandelion_relay_transaction(self, tx_data: dict, from_peer_id: Optional[str] = None):
+        """Route a new or stem-received tx through Dandelion++.
+
+        Stem: forward to one relay and hold an embargo (failsafe to fluff later).
+        Fluff: announce to all peers now and drop any embargo.
+        """
+        txid = tx_data.get('txid', '')
+        action, stem_peer = self.dandelion_decision(self._connected_peer_ids(exclude=from_peer_id))
+        if action == 'stem' and self._send_stem_transaction(stem_peer, tx_data):
+            with self._stem_lock:
+                self._stem_pool[txid] = (tx_data, time.time() + self.dandelion_embargo_seconds)
+            return ('stem', stem_peer)
+        # Chosen fluff, or stem relay failed -> fluff now.
+        with self._stem_lock:
+            self._stem_pool.pop(txid, None)
+        self.fluff_transaction(tx_data)
+        return ('fluff', None)
+
+    def expired_embargoes(self, now: Optional[float] = None) -> List[tuple]:
+        now = time.time() if now is None else now
+        with self._stem_lock:
+            expired = [(txid, data) for txid, (data, deadline) in self._stem_pool.items()
+                       if now >= deadline]
+            for txid, _ in expired:
+                self._stem_pool.pop(txid, None)
+        return expired
+
+    def process_embargoes(self, now: Optional[float] = None):
+        """Failsafe: fluff any stem tx not relayed onward before its embargo expired."""
+        for _txid, tx_data in self.expired_embargoes(now):
+            self.fluff_transaction(tx_data)
+
+    # ===== Outbound SOCKS5 / Tor transport =====
+
+    @staticmethod
+    def _parse_socks5_proxy(value: str) -> Optional[tuple]:
+        """Parse 'host:port' into a (host, port) tuple, or None if unset/invalid."""
+        value = (value or "").strip()
+        if not value or ":" not in value:
+            return None
+        host, port_text = value.rsplit(":", 1)
+        try:
+            return (host.strip(), int(port_text))
+        except ValueError:
+            return None
+
+    def _socks5_connect(self, proxy: tuple, host: str, port: int) -> socket.socket:
+        """Open a TCP connection to host:port through a SOCKS5 proxy (e.g. Tor).
+
+        No-auth CONNECT with the destination sent as a domain name, so the proxy
+        (not this node) performs resolution — required for .onion and to avoid DNS
+        leaks. Raises on any SOCKS-level failure.
+        """
+        proxy_host, proxy_port = proxy
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(CONNECTION_TIMEOUT)
+        sock.connect((proxy_host, proxy_port))
+        try:
+            # Greeting: version 5, one method, "no authentication".
+            sock.sendall(b"\x05\x01\x00")
+            greeting = self._recv_exact(sock, 2)
+            if greeting[0] != 0x05 or greeting[1] != 0x00:
+                raise OSError("SOCKS5 proxy rejected no-auth method")
+
+            # CONNECT request with domain-name address type (0x03).
+            host_bytes = host.encode()
+            if len(host_bytes) > 255:
+                raise OSError("SOCKS5 destination host too long")
+            request = b"\x05\x01\x00\x03" + bytes([len(host_bytes)]) + host_bytes + struct.pack(">H", port)
+            sock.sendall(request)
+
+            reply = self._recv_exact(sock, 4)
+            if reply[1] != 0x00:
+                raise OSError(f"SOCKS5 CONNECT failed (reply code {reply[1]})")
+            # Drain the bound address per the address type in reply[3].
+            atyp = reply[3]
+            if atyp == 0x01:
+                self._recv_exact(sock, 4 + 2)
+            elif atyp == 0x03:
+                ln = self._recv_exact(sock, 1)[0]
+                self._recv_exact(sock, ln + 2)
+            elif atyp == 0x04:
+                self._recv_exact(sock, 16 + 2)
+            return sock
+        except Exception:
+            sock.close()
+            raise
+
+    @staticmethod
+    def _recv_exact(sock: socket.socket, n: int) -> bytes:
+        buf = b""
+        while len(buf) < n:
+            chunk = sock.recv(n - len(buf))
+            if not chunk:
+                raise OSError("SOCKS5 proxy closed the connection")
+            buf += chunk
+        return buf
+
     def broadcast_block(self, block_data: dict):
         """Broadcast block to network"""
         inv_msg = self.create_inv_message([{
@@ -533,14 +712,21 @@ class WepoP2PNode:
             print(f"Error handling headers: {e}")
     
     def handle_tx(self, peer: 'WepoPeer', payload: bytes):
-        """Handle transaction message"""
+        """Handle transaction message (including Dandelion++ stem relays)."""
         try:
             data = json.loads(payload.decode())
-            print(f"Received transaction from {peer.peer_id}: {data.get('txid', 'unknown')}")
-            
+            phase = data.pop('_dandelion_phase', None)
+            print(f"Received transaction from {peer.peer_id}: {data.get('txid', 'unknown')}"
+                  f"{' [stem]' if phase == 'stem' else ''}")
+
             if self.on_new_transaction:
                 self.on_new_transaction(data)
-                
+
+            # A stem-phase tx must continue down the Dandelion route from us
+            # (forward to our stem peer, or fluff) rather than being flooded here.
+            if phase == 'stem':
+                self.dandelion_relay_transaction(data, from_peer_id=peer.peer_id)
+
         except Exception as e:
             print(f"Error handling tx: {e}")
     
