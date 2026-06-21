@@ -945,6 +945,80 @@ async def send_transaction(request: Request, data: dict):
         logger.error(f"Transaction error from {client_id}: {str(e)}")
         raise HTTPException(status_code=500, detail="Transaction failed due to internal error")
 
+
+@app.post("/api/rwa/build-unsigned-create")
+async def rwa_build_unsigned_create(request: Request, data: dict):
+    """Build an UNSIGNED on-chain RWA creation tx for client signing (self-custody).
+
+    Proxies to the live node. The owner signs the returned sighash locally and
+    submits via /api/transaction/send {signed_tx}; the asset is anchored on-chain.
+    (Gated by WEPO_FEATURE_RWA — returns 503 while RWA is disabled for launch.)
+    """
+    client_id = SecurityManager.get_client_identifier(request)
+    if SecurityManager.is_rate_limited(client_id, "transaction_send"):
+        raise HTTPException(status_code=429, detail="Too many transaction attempts. Please try again later.")
+
+    owner_address = SecurityManager.sanitize_input(data.get("owner_address", ""))
+    asset_hash = SecurityManager.sanitize_input(data.get("asset_hash", ""))
+    if not owner_address or not asset_hash:
+        raise HTTPException(status_code=400, detail="owner_address and asset_hash are required")
+    if not SecurityManager.validate_wepo_address(owner_address):
+        raise HTTPException(status_code=400, detail="Invalid owner_address format")
+
+    body = {
+        "owner_address": owner_address,
+        "asset_hash": asset_hash,
+        "name": data.get("name"),
+        "asset_type": data.get("asset_type"),
+        "metadata": data.get("metadata"),
+        "asset_id": data.get("asset_id"),
+    }
+    if data.get("fee") is not None:
+        body["fee"] = data.get("fee")
+
+    try:
+        response = requests.post(f"{WEPO_NODE_API_URL}/api/rwa/build-unsigned-create", json=body, timeout=5)
+    except requests.RequestException as e:
+        logger.error(f"Node RWA build proxy error from {client_id}: {e}")
+        raise HTTPException(status_code=502, detail="Live node is unavailable")
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {}
+    if not response.ok:
+        raise HTTPException(status_code=response.status_code,
+                            detail=payload.get("detail") or payload.get("error") or "Failed to build RWA creation")
+    return payload
+
+
+@app.get("/api/rwa/asset/{asset_id}")
+async def rwa_get_asset(asset_id: str):
+    """Read one on-chain RWA asset from canonical chain state (via the node)."""
+    try:
+        response = requests.get(f"{WEPO_NODE_API_URL}/api/rwa/asset/{asset_id}", timeout=5)
+    except requests.RequestException:
+        raise HTTPException(status_code=502, detail="Live node is unavailable")
+    if response.status_code == 404:
+        raise HTTPException(status_code=404, detail="RWA asset not found")
+    try:
+        return response.json()
+    except ValueError:
+        raise HTTPException(status_code=502, detail="Invalid node response")
+
+
+@app.get("/api/rwa/assets/{owner_address}")
+async def rwa_get_assets_for_owner(owner_address: str):
+    """Read all on-chain RWA assets owned by an address (via the node)."""
+    try:
+        response = requests.get(f"{WEPO_NODE_API_URL}/api/rwa/assets/{owner_address}", timeout=5)
+    except requests.RequestException:
+        raise HTTPException(status_code=502, detail="Live node is unavailable")
+    try:
+        return response.json()
+    except ValueError:
+        raise HTTPException(status_code=502, detail="Invalid node response")
+
+
 @api_router.post("/stake")
 async def create_stake(request: StakeRequest):
     """Compatibility route that proxies to the live node-backed staking API."""

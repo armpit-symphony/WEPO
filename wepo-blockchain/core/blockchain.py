@@ -140,6 +140,15 @@ TX_TYPE_STAKE_CREATE = "stake_create"
 TX_TYPE_STAKE_DEACTIVATE = "stake_deactivate"
 TX_TYPE_MASTERNODE_CREATE = "masternode_create"
 TX_TYPE_MASTERNODE_DEACTIVATE = "masternode_deactivate"
+TX_TYPE_RWA_CREATE = "rwa_create"
+
+# Real-world-asset on-chain issuance. An rwa_create tx is an ordinary
+# self-custody (Dilithium-signed) transaction that pays an anti-spam fee and
+# anchors an asset commitment in extra_data: the asset_hash (sha256 of the
+# off-chain asset definition/document) bound to the owner address. Ownership and
+# authenticity are proven by the on-chain, signed commitment — not a backend DB.
+RWA_CREATION_MIN_FEE = 10000  # 0.0001 WEPO anti-spam minimum (atomic units)
+RWA_ASSET_HASH_HEX_LEN = 64   # sha256 hex digest length
 
 PROTOCOL_LIFECYCLE_TX_TYPES = {
     TX_TYPE_STAKE_CREATE,
@@ -863,8 +872,26 @@ class WepoBlockchain:
         ''')
 
         self.conn.execute('''
+            CREATE TABLE IF NOT EXISTS rwa_assets (
+                asset_id TEXT PRIMARY KEY,
+                owner_address TEXT NOT NULL,
+                asset_hash TEXT NOT NULL,
+                name TEXT,
+                asset_type TEXT,
+                create_txid TEXT NOT NULL,
+                create_height INTEGER NOT NULL,
+                created_time INTEGER NOT NULL,
+                metadata_json TEXT
+            )
+        ''')
+
+        self.conn.execute('''
             CREATE INDEX IF NOT EXISTS idx_utxos_address_spent
             ON utxos(address, spent)
+        ''')
+        self.conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_rwa_assets_owner
+            ON rwa_assets(owner_address, create_height DESC)
         ''')
         self.conn.execute('''
             CREATE INDEX IF NOT EXISTS idx_masternodes_status_collateral
@@ -1132,6 +1159,81 @@ class WepoBlockchain:
         for transaction in block.transactions:
             self._apply_protocol_state_transition(transaction, block)
 
+    def _index_rwa_transactions(self, block: Block) -> None:
+        """Index confirmed on-chain RWA creations into the derived rwa_assets table.
+
+        Deterministic and reorg-safe: rwa_assets is cleared in
+        _reset_derived_chain_tables and rebuilt by replaying confirmed blocks, so
+        this is the single source of truth for asset existence/ownership (no DB of
+        record off-chain). Idempotent via INSERT OR REPLACE.
+        """
+        for transaction in block.transactions:
+            if getattr(transaction, "tx_type", TX_TYPE_TRANSFER) != TX_TYPE_RWA_CREATE:
+                continue
+            metadata = dict(transaction.extra_data or {})
+            asset_id = metadata.get("asset_id")
+            owner_address = metadata.get("owner_address")
+            asset_hash = metadata.get("asset_hash")
+            if not asset_id or not owner_address or not asset_hash:
+                # validate_transaction rejects these, so a confirmed block should
+                # never carry one; skip defensively rather than corrupt the index.
+                continue
+            txid = transaction.calculate_txid()
+            timestamp = transaction.timestamp or block.header.timestamp
+            reserved = {"asset_id", "owner_address", "asset_hash", "name", "asset_type"}
+            extra_meta = {k: v for k, v in metadata.items() if k not in reserved}
+            self.conn.execute('''
+                INSERT OR REPLACE INTO rwa_assets (
+                    asset_id, owner_address, asset_hash, name, asset_type,
+                    create_txid, create_height, created_time, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                asset_id,
+                owner_address,
+                asset_hash,
+                metadata.get("name"),
+                metadata.get("asset_type"),
+                txid,
+                block.height,
+                timestamp,
+                json.dumps(extra_meta, sort_keys=True, separators=(",", ":")) if extra_meta else None,
+            ))
+
+    @staticmethod
+    def _rwa_row_to_dict(row) -> Dict[str, Any]:
+        return {
+            "asset_id": row[0],
+            "owner_address": row[1],
+            "asset_hash": row[2],
+            "name": row[3],
+            "asset_type": row[4],
+            "create_txid": row[5],
+            "create_height": row[6],
+            "created_time": row[7],
+            "metadata": json.loads(row[8]) if row[8] else {},
+        }
+
+    def get_rwa_asset(self, asset_id: str) -> Optional[Dict[str, Any]]:
+        """Return one on-chain RWA asset by id, or None."""
+        cursor = self.conn.execute(
+            "SELECT asset_id, owner_address, asset_hash, name, asset_type, "
+            "create_txid, create_height, created_time, metadata_json "
+            "FROM rwa_assets WHERE asset_id = ?",
+            (asset_id,),
+        )
+        row = cursor.fetchone()
+        return self._rwa_row_to_dict(row) if row else None
+
+    def get_rwa_assets_for_owner(self, owner_address: str) -> List[Dict[str, Any]]:
+        """Return all on-chain RWA assets owned by an address (newest first)."""
+        cursor = self.conn.execute(
+            "SELECT asset_id, owner_address, asset_hash, name, asset_type, "
+            "create_txid, create_height, created_time, metadata_json "
+            "FROM rwa_assets WHERE owner_address = ? ORDER BY create_height DESC",
+            (owner_address,),
+        )
+        return [self._rwa_row_to_dict(r) for r in cursor.fetchall()]
+
     def rebuild_protocol_state_from_chain(self) -> None:
         """Reconstruct stake and masternode state from canonical lifecycle transactions."""
         has_canonical_lifecycle = any(
@@ -1195,6 +1297,7 @@ class WepoBlockchain:
             "staking_rewards",
             "stakes",
             "masternodes",
+            "rwa_assets",
             "utxos",
             "transactions",
             "blocks",
@@ -1214,6 +1317,7 @@ class WepoBlockchain:
             self.distribute_staking_rewards(block.height, block.get_block_hash(), block)
 
         self._apply_protocol_state_transitions(block)
+        self._index_rwa_transactions(block)
 
     def _rebuild_canonical_state_from_blocks(self, canonical_blocks: List[Block]) -> None:
         """Rebuild all chain-derived state from an explicit canonical block list."""
@@ -2913,7 +3017,41 @@ class WepoBlockchain:
                 if fee != 0:
                     print("Masternode deactivation transaction must not charge a fee")
                     return False
-            
+            elif tx_type == TX_TYPE_RWA_CREATE:
+                asset_id = metadata.get('asset_id')
+                owner_address = metadata.get('owner_address')
+                asset_hash = (metadata.get('asset_hash') or '')
+                if not asset_id or not owner_address or not asset_hash:
+                    print("RWA create transaction missing asset_id/owner_address/asset_hash")
+                    return False
+                # asset_hash must be a sha256 hex digest (the off-chain asset
+                # definition's commitment) so the anchor is well-formed.
+                if len(asset_hash) != RWA_ASSET_HASH_HEX_LEN or any(
+                    c not in "0123456789abcdef" for c in asset_hash.lower()
+                ):
+                    print("RWA create asset_hash must be a 64-char sha256 hex digest")
+                    return False
+                # The creator must own the inputs being spent (signature is checked
+                # below); this binds asset ownership to a key the user controls.
+                if input_addresses != {owner_address}:
+                    print("RWA create inputs do not belong to the declared owner")
+                    return False
+                if fee < RWA_CREATION_MIN_FEE:
+                    print(f"RWA create fee below anti-spam minimum {RWA_CREATION_MIN_FEE}")
+                    return False
+                # Outputs may only return change to the owner (no value is created;
+                # the asset itself is an extra_data commitment, not a UTXO).
+                for out in transaction.outputs:
+                    if out.address != owner_address:
+                        print("RWA create outputs may only return change to the owner")
+                        return False
+                existing_cursor = self.conn.execute(
+                    'SELECT 1 FROM rwa_assets WHERE asset_id = ?', (asset_id,)
+                )
+                if existing_cursor.fetchone():
+                    print(f"RWA asset already exists: {asset_id}")
+                    return False
+
             # Enforce spend authorization for EVERY non-coinbase input.
             #
             # Each input must carry a Dilithium signature whose public key hashes
@@ -3158,6 +3296,73 @@ class WepoBlockchain:
     
     # ===== STAKING SYSTEM =====
     
+    def create_rwa_creation(self, owner_address: str, asset_hash: str, name: Optional[str] = None,
+                            asset_type: Optional[str] = None, fee: int = RWA_CREATION_MIN_FEE,
+                            metadata: Optional[Dict[str, Any]] = None, asset_id: Optional[str] = None,
+                            return_unsigned: bool = False):
+        """Build an on-chain RWA creation transaction (self-custody, client-signed).
+
+        Spends the owner's UTXOs to cover the anti-spam fee, returns change to the
+        owner, and anchors {asset_id, owner_address, asset_hash, ...} in extra_data
+        (signed via the canonical sighash). With return_unsigned=True, returns the
+        deterministic UNSIGNED Transaction for client-side Dilithium signing.
+        """
+        asset_hash = (asset_hash or "").lower()
+        if len(asset_hash) != RWA_ASSET_HASH_HEX_LEN or any(c not in "0123456789abcdef" for c in asset_hash):
+            raise ValueError("asset_hash must be a 64-char sha256 hex digest of the asset definition")
+        fee = int(fee)
+        if fee < RWA_CREATION_MIN_FEE:
+            raise ValueError(f"RWA creation fee must be at least {RWA_CREATION_MIN_FEE} atomic units")
+
+        balance = self.get_balance(owner_address)
+        if balance < fee:
+            raise ValueError(f"Insufficient balance for RWA creation fee: {balance / COIN} WEPO")
+
+        selected_utxos = []
+        input_total = 0
+        for utxo in self.get_utxos_for_address(owner_address):
+            selected_utxos.append(utxo)
+            input_total += utxo['amount']
+            if input_total >= fee:
+                break
+        if input_total < fee:
+            raise ValueError("Insufficient spendable balance to cover the RWA creation fee")
+
+        if asset_id is None:
+            asset_id = f"rwa_{owner_address}_{int(time.time())}_{asset_hash[:8]}"
+
+        inputs = [
+            TransactionInput(prev_txid=u['txid'], prev_vout=u['vout'],
+                             script_sig=b"signature_placeholder", sequence=0xffffffff)
+            for u in selected_utxos
+        ]
+        outputs = []
+        change_amount = input_total - fee
+        if change_amount > 0:
+            outputs.append(TransactionOutput(value=change_amount, script_pubkey=b"change_script",
+                                             address=owner_address))
+
+        extra: Dict[str, Any] = {
+            'asset_id': asset_id,
+            'owner_address': owner_address,
+            'asset_hash': asset_hash,
+        }
+        if name:
+            extra['name'] = name
+        if asset_type:
+            extra['asset_type'] = asset_type
+        for k, v in dict(metadata or {}).items():
+            if k not in extra:
+                extra[k] = v
+
+        transaction = Transaction(version=1, inputs=inputs, outputs=outputs, lock_time=0,
+                                  fee=fee, tx_type=TX_TYPE_RWA_CREATE, extra_data=extra)
+        if return_unsigned:
+            return transaction
+        if not self.add_transaction_to_mempool(transaction):
+            raise ValueError("Failed to submit RWA creation transaction")
+        return asset_id
+
     def create_stake(self, staker_address: str, amount: int, return_unsigned: bool = False):
         """Create a new stake.
 

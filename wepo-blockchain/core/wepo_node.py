@@ -24,6 +24,7 @@ from blockchain import (
     COIN,
     TX_TYPE_STAKE_CREATE,
     TX_TYPE_MASTERNODE_CREATE,
+    RWA_CREATION_MIN_FEE,
 )
 from network_profile import (
     describe_reward_schedule,
@@ -441,6 +442,64 @@ class WepoFullNode:
                 raise
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/api/rwa/build-unsigned-create")
+        async def build_unsigned_rwa_create(request: dict):
+            """Build an UNSIGNED on-chain RWA creation transaction for client signing.
+
+            Self-custody: the owner signs the returned sighash locally and submits
+            the completed tx to /api/transaction/send as {"signed_tx": ...}. The
+            asset is anchored on-chain via the signed extra_data commitment
+            (asset_hash = sha256 of the off-chain asset definition).
+            """
+            try:
+                owner_address = request.get('owner_address')
+                asset_hash = request.get('asset_hash')
+                if not owner_address or not asset_hash:
+                    raise HTTPException(status_code=400, detail="Missing required fields: owner_address, asset_hash")
+
+                fee = request.get('fee', RWA_CREATION_MIN_FEE / COIN)
+                fee_atomic = int(round(float(fee) * COIN))
+
+                tx = self.blockchain.create_rwa_creation(
+                    owner_address=owner_address,
+                    asset_hash=asset_hash,
+                    name=request.get('name'),
+                    asset_type=request.get('asset_type'),
+                    fee=fee_atomic,
+                    metadata=request.get('metadata'),
+                    asset_id=request.get('asset_id'),
+                    return_unsigned=True,
+                )
+                return {
+                    'success': True,
+                    'status': 'unsigned',
+                    'asset_id': (getattr(tx, 'extra_data', {}) or {}).get('asset_id'),
+                    'owner_address': owner_address,
+                    'unsigned_tx': tx.to_dict(),
+                    'sighash': tx.get_canonical_sighash().hex(),
+                    'message': 'Sign sighash with your Dilithium key, then POST to /api/transaction/send as {"signed_tx": ...}',
+                }
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.get("/api/rwa/asset/{asset_id}")
+        async def get_rwa_asset(asset_id: str):
+            """Return one on-chain RWA asset (from canonical chain state)."""
+            asset = self.blockchain.get_rwa_asset(asset_id)
+            if not asset:
+                raise HTTPException(status_code=404, detail="RWA asset not found")
+            return {'success': True, 'asset': asset}
+
+        @self.app.get("/api/rwa/assets/{owner_address}")
+        async def get_rwa_assets_for_owner(owner_address: str):
+            """Return all on-chain RWA assets owned by an address."""
+            assets = self.blockchain.get_rwa_assets_for_owner(owner_address)
+            return {'success': True, 'owner_address': owner_address, 'count': len(assets), 'assets': assets}
 
         @self.app.post("/api/stake/deactivate")
         async def deactivate_stake(request: dict):
