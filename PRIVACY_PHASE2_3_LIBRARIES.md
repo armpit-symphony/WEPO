@@ -49,6 +49,11 @@ amounts ≥ 0) — verified as a **raw STARK** on-chain (no SNARK wrap).
   specialized; still needs audit. This is the very zk-STARK work the v1 audit
   flagged as stubbed (`production_zk_stark.py`) — done **for real** this time.
 
+> **OWNER DECISION 2026-06-21: Direction B (STARK shielded pool) selected.** This
+> is the committed PQ privacy backbone for Layers 2/3, to be built as a resourced
+> R&D + external-audit track (not started yet; sequenced after on-chain RWA
+> creation). Privacy stays Layer 1 only until B ships and is audited.
+
 ## 4. Recommendation — direction B (STARK shielded pool)
 
 Counter to the earlier "avoid STARK for now" lean, the post-quantum requirement
