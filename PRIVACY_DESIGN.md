@@ -94,6 +94,12 @@ so signatures bind to them.
   commitment/range-proof generation (via the same audited library compiled to WASM).
 - Keep the `WEPO_FEATURE_PRIVACY` gate; flip per-layer only after audit.
 
+> **Phase 2/3 backbone:** the post-quantum library evaluation
+> (`PRIVACY_PHASE2_3_LIBRARIES.md`) found no audited PQ privacy library exists, and
+> recommends a **transparent STARK shielded pool** (raw on-chain verification, no
+> SNARK wrap) over lattice RingCT — which *revisits* the "zk-STARK later" lean.
+> Awaiting owner pick (direction A lattice RingCT vs B STARK) before any L2/L3 code.
+
 ## 6. Phased plan
 
 1. **Phase 1 — metadata privacy:** Dandelion++ in `p2p_network.py` + SOCKS5/Tor
