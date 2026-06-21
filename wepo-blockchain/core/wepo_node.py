@@ -25,6 +25,7 @@ from blockchain import (
     TX_TYPE_STAKE_CREATE,
     TX_TYPE_MASTERNODE_CREATE,
     RWA_CREATION_MIN_FEE,
+    MSG_KEY_REGISTER_MIN_FEE,
 )
 from network_profile import (
     describe_reward_schedule,
@@ -486,6 +487,49 @@ class WepoFullNode:
                 raise
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/api/messages/keys/build-unsigned-register")
+        async def build_unsigned_key_register(request: dict):
+            """Build an UNSIGNED on-chain messaging-key registration for client signing.
+
+            Anchors the owner's ML-KEM-768 + ML-DSA-44 messaging public keys on
+            the chain (trustless discovery). The owner signs the returned sighash
+            and submits via /api/transaction/send as {"signed_tx": ...}.
+            """
+            try:
+                owner_address = request.get('owner_address')
+                kem_pub = request.get('kem_pub')
+                sig_pub = request.get('sig_pub')
+                if not owner_address or not kem_pub or not sig_pub:
+                    raise HTTPException(status_code=400, detail="owner_address, kem_pub and sig_pub are required")
+                fee = request.get('fee', MSG_KEY_REGISTER_MIN_FEE / COIN)
+                fee_atomic = int(round(float(fee) * COIN))
+                tx = self.blockchain.create_key_registration(
+                    owner_address=owner_address, kem_pub=kem_pub, sig_pub=sig_pub,
+                    fee=fee_atomic, return_unsigned=True,
+                )
+                return {
+                    'success': True,
+                    'status': 'unsigned',
+                    'owner_address': owner_address,
+                    'unsigned_tx': tx.to_dict(),
+                    'sighash': tx.get_canonical_sighash().hex(),
+                    'message': 'Sign sighash with your Dilithium key, then POST to /api/transaction/send as {"signed_tx": ...}',
+                }
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.get("/api/messages/keys/onchain/{address}")
+        async def get_onchain_messaging_keys(address: str):
+            """Return an address's on-chain-anchored messaging public keys (trustless)."""
+            rec = self.blockchain.get_messaging_keys(address)
+            if not rec:
+                raise HTTPException(status_code=404, detail="No on-chain messaging keys for this address")
+            return {'success': True, **rec}
 
         @self.app.get("/api/rwa/asset/{asset_id}")
         async def get_rwa_asset(asset_id: str):

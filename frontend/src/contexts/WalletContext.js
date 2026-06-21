@@ -853,14 +853,49 @@ export const WalletProvider = ({ children }) => {
     return payload;
   };
 
+  // Anchor this wallet's messaging public keys ON-CHAIN (trustless discovery).
+  // Build -> sign -> submit, mirroring the wallet send/RWA flow.
+  const registerMessagingKeysOnChain = async (password) => {
+    const { spend, msg } = _messagingIdentity(password);
+    const backendUrl = getBackendUrl();
+    const buildResp = await fetch(`${backendUrl}/api/messages/keys/build-unsigned-register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner_address: spend.address, kem_pub: msg.publicBundle.kem, sig_pub: msg.publicBundle.sig }),
+    });
+    const build = await buildResp.json().catch(() => ({}));
+    if (!buildResp.ok) throw new Error(build.detail || build.error || 'Failed to build key registration');
+    const signedTx = signTransaction(build.unsigned_tx, spend.secretKey, spend.publicKey, build.sighash);
+    const resp = await fetch(`${backendUrl}/api/transaction/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ signed_tx: signedTx }),
+    });
+    const payload = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(payload.detail || payload.error || 'Failed to anchor messaging keys');
+    return payload;
+  };
+
+  // Resolve a recipient's messaging keys, preferring the trustless on-chain
+  // anchor and falling back to the relay registry.
+  const _resolveRecipientKeys = async (toAddress) => {
+    try {
+      const onchain = await fetch(`${getBackendUrl()}/api/messages/keys/onchain/${encodeURIComponent(toAddress)}`);
+      if (onchain.ok) {
+        const k = await onchain.json();
+        if (k.kem_pub && k.sig_pub) return { kem_pub: k.kem_pub, sig_pub: k.sig_pub, source: 'on-chain' };
+      }
+    } catch (e) { /* fall through to relay registry */ }
+    const reg = await fetch(`${getRelayUrl()}/api/messages/keys/${encodeURIComponent(toAddress)}`);
+    const k = await reg.json().catch(() => ({}));
+    if (!reg.ok) throw new Error(k.detail || 'Recipient has not published messaging keys yet');
+    return { kem_pub: k.kem_pub, sig_pub: k.sig_pub, source: 'registry' };
+  };
+
   // Encrypt + send a message to a recipient address (E2E; relay stays blind).
   const sendMessage = async (toAddress, plaintext, password) => {
     const { spend, msg } = _messagingIdentity(password);
-    const keysResp = await fetch(`${getRelayUrl()}/api/messages/keys/${encodeURIComponent(toAddress)}`);
-    const keys = await keysResp.json().catch(() => ({}));
-    if (!keysResp.ok) {
-      throw new Error(keys.detail || 'Recipient has not published messaging keys yet');
-    }
+    const keys = await _resolveRecipientKeys(toAddress);
     const envelope = encryptMessage({
       plaintext,
       fromAddress: spend.address,
@@ -977,6 +1012,7 @@ export const WalletProvider = ({ children }) => {
     sendWepo,
     createRwaAsset,
     publishMessagingKeys,
+    registerMessagingKeysOnChain,
     sendMessage,
     fetchMessages,
     loadWalletData,

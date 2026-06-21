@@ -82,7 +82,14 @@ key can recover the shared secret and decrypt.
    separately-configurable relay endpoint (`REACT_APP_MESSAGING_RELAY_URL`) that
    can point at a `.onion` hidden service, reached over Tor Browser / a SOCKS
    proxy (browsers can't self-route Tor, so this is a deployment choice).
-3. Anchor messaging public keys on-chain for fully trustless key discovery.
+3. ~~Anchor messaging public keys on-chain for fully trustless key discovery.~~
+   **DONE 2026-06-21** — `key_register` consensus tx anchors a user's ML-KEM-768 +
+   ML-DSA-44 messaging keys on-chain, bound to the address (inputs must be the
+   owner's); reorg-safe `messaging_keys` index; latest-wins. Node + gateway
+   endpoints (`/api/messages/keys/build-unsigned-register`,
+   `/api/messages/keys/onchain/{address}`); client anchors on-chain and resolves
+   recipient keys on-chain-first with relay-registry fallback. Tests:
+   `tests/test_messaging_key_registration.py`.
 4. Live browser e2e (two wallets, enable → send → receive → verify).
 
 ## 6. Non-negotiables

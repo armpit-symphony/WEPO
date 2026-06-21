@@ -150,6 +150,16 @@ TX_TYPE_RWA_CREATE = "rwa_create"
 RWA_CREATION_MIN_FEE = 10000  # 0.0001 WEPO anti-spam minimum (atomic units)
 RWA_ASSET_HASH_HEX_LEN = 64   # sha256 hex digest length
 
+TX_TYPE_KEY_REGISTER = "key_register"
+# On-chain anchoring of a user's messaging public keys, so key discovery is
+# trustless (no reliance on the relay registry). A key_register tx is an ordinary
+# self-custody (Dilithium-signed) transaction that pays an anti-spam fee and
+# anchors the owner's ML-KEM-768 + ML-DSA-44 messaging public keys in extra_data,
+# bound to the owner address (inputs must belong to the owner). Latest wins.
+MSG_KEY_REGISTER_MIN_FEE = 10000        # 0.0001 WEPO anti-spam minimum
+ML_KEM768_PUB_HEX_LEN = 1184 * 2        # 2368 hex chars
+ML_DSA44_PUB_HEX_LEN = 1312 * 2         # 2624 hex chars
+
 PROTOCOL_LIFECYCLE_TX_TYPES = {
     TX_TYPE_STAKE_CREATE,
     TX_TYPE_STAKE_DEACTIVATE,
@@ -886,6 +896,17 @@ class WepoBlockchain:
         ''')
 
         self.conn.execute('''
+            CREATE TABLE IF NOT EXISTS messaging_keys (
+                address TEXT PRIMARY KEY,
+                kem_pub TEXT NOT NULL,
+                sig_pub TEXT NOT NULL,
+                register_txid TEXT NOT NULL,
+                register_height INTEGER NOT NULL,
+                registered_time INTEGER NOT NULL
+            )
+        ''')
+
+        self.conn.execute('''
             CREATE INDEX IF NOT EXISTS idx_utxos_address_spent
             ON utxos(address, spent)
         ''')
@@ -1234,6 +1255,47 @@ class WepoBlockchain:
         )
         return [self._rwa_row_to_dict(r) for r in cursor.fetchall()]
 
+    def _index_messaging_key_registrations(self, block: Block) -> None:
+        """Index confirmed on-chain messaging-key registrations (trustless discovery).
+
+        Deterministic and reorg-safe: messaging_keys is cleared in
+        _reset_derived_chain_tables and rebuilt by replaying blocks. Latest
+        registration per address wins (INSERT OR REPLACE).
+        """
+        for transaction in block.transactions:
+            if getattr(transaction, "tx_type", TX_TYPE_TRANSFER) != TX_TYPE_KEY_REGISTER:
+                continue
+            metadata = dict(transaction.extra_data or {})
+            owner_address = metadata.get("owner_address")
+            kem_pub = metadata.get("kem_pub")
+            sig_pub = metadata.get("sig_pub")
+            if not owner_address or not kem_pub or not sig_pub:
+                continue
+            self.conn.execute('''
+                INSERT OR REPLACE INTO messaging_keys (
+                    address, kem_pub, sig_pub, register_txid, register_height, registered_time
+                ) VALUES (?, ?, ?, ?, ?, ?)
+            ''', (
+                owner_address, kem_pub, sig_pub,
+                transaction.calculate_txid(), block.height,
+                transaction.timestamp or block.header.timestamp,
+            ))
+
+    def get_messaging_keys(self, address: str) -> Optional[Dict[str, Any]]:
+        """Return an address's on-chain-anchored messaging public keys, or None."""
+        cursor = self.conn.execute(
+            "SELECT address, kem_pub, sig_pub, register_txid, register_height, registered_time "
+            "FROM messaging_keys WHERE address = ?",
+            (address,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "address": row[0], "kem_pub": row[1], "sig_pub": row[2],
+            "register_txid": row[3], "register_height": row[4], "registered_time": row[5],
+        }
+
     def rebuild_protocol_state_from_chain(self) -> None:
         """Reconstruct stake and masternode state from canonical lifecycle transactions."""
         has_canonical_lifecycle = any(
@@ -1298,6 +1360,7 @@ class WepoBlockchain:
             "stakes",
             "masternodes",
             "rwa_assets",
+            "messaging_keys",
             "utxos",
             "transactions",
             "blocks",
@@ -1318,6 +1381,7 @@ class WepoBlockchain:
 
         self._apply_protocol_state_transitions(block)
         self._index_rwa_transactions(block)
+        self._index_messaging_key_registrations(block)
 
     def _rebuild_canonical_state_from_blocks(self, canonical_blocks: List[Block]) -> None:
         """Rebuild all chain-derived state from an explicit canonical block list."""
@@ -3051,6 +3115,34 @@ class WepoBlockchain:
                 if existing_cursor.fetchone():
                     print(f"RWA asset already exists: {asset_id}")
                     return False
+            elif tx_type == TX_TYPE_KEY_REGISTER:
+                owner_address = metadata.get('owner_address')
+                kem_pub = (metadata.get('kem_pub') or '')
+                sig_pub = (metadata.get('sig_pub') or '')
+                if not owner_address or not kem_pub or not sig_pub:
+                    print("Key register transaction missing owner_address/kem_pub/sig_pub")
+                    return False
+                # Public keys must be the correct post-quantum sizes (hex).
+                hexset = set("0123456789abcdef")
+                if (len(kem_pub) != ML_KEM768_PUB_HEX_LEN
+                        or any(c not in hexset for c in kem_pub.lower())):
+                    print("Key register kem_pub must be a 1184-byte ML-KEM-768 hex pubkey")
+                    return False
+                if (len(sig_pub) != ML_DSA44_PUB_HEX_LEN
+                        or any(c not in hexset for c in sig_pub.lower())):
+                    print("Key register sig_pub must be a 1312-byte ML-DSA-44 hex pubkey")
+                    return False
+                # Binds the messaging keys to a key the owner controls.
+                if input_addresses != {owner_address}:
+                    print("Key register inputs do not belong to the declared owner")
+                    return False
+                if fee < MSG_KEY_REGISTER_MIN_FEE:
+                    print(f"Key register fee below anti-spam minimum {MSG_KEY_REGISTER_MIN_FEE}")
+                    return False
+                for out in transaction.outputs:
+                    if out.address != owner_address:
+                        print("Key register outputs may only return change to the owner")
+                        return False
 
             # Enforce spend authorization for EVERY non-coinbase input.
             #
@@ -3362,6 +3454,62 @@ class WepoBlockchain:
         if not self.add_transaction_to_mempool(transaction):
             raise ValueError("Failed to submit RWA creation transaction")
         return asset_id
+
+    def create_key_registration(self, owner_address: str, kem_pub: str, sig_pub: str,
+                                fee: int = MSG_KEY_REGISTER_MIN_FEE,
+                                return_unsigned: bool = False):
+        """Build an on-chain messaging-key registration transaction (self-custody).
+
+        Anchors the owner's ML-KEM-768 + ML-DSA-44 messaging public keys on-chain,
+        bound to the owner address, so peers can discover them trustlessly. Spends
+        the owner's UTXOs for the anti-spam fee and returns change. With
+        return_unsigned=True returns the deterministic UNSIGNED Transaction.
+        """
+        kem_pub = (kem_pub or "").lower()
+        sig_pub = (sig_pub or "").lower()
+        hexset = set("0123456789abcdef")
+        if len(kem_pub) != ML_KEM768_PUB_HEX_LEN or any(c not in hexset for c in kem_pub):
+            raise ValueError("kem_pub must be a 1184-byte ML-KEM-768 hex public key")
+        if len(sig_pub) != ML_DSA44_PUB_HEX_LEN or any(c not in hexset for c in sig_pub):
+            raise ValueError("sig_pub must be a 1312-byte ML-DSA-44 hex public key")
+        fee = int(fee)
+        if fee < MSG_KEY_REGISTER_MIN_FEE:
+            raise ValueError(f"Key registration fee must be at least {MSG_KEY_REGISTER_MIN_FEE} atomic units")
+
+        balance = self.get_balance(owner_address)
+        if balance < fee:
+            raise ValueError(f"Insufficient balance for key registration fee: {balance / COIN} WEPO")
+
+        selected_utxos = []
+        input_total = 0
+        for utxo in self.get_utxos_for_address(owner_address):
+            selected_utxos.append(utxo)
+            input_total += utxo['amount']
+            if input_total >= fee:
+                break
+        if input_total < fee:
+            raise ValueError("Insufficient spendable balance to cover the key registration fee")
+
+        inputs = [
+            TransactionInput(prev_txid=u['txid'], prev_vout=u['vout'],
+                             script_sig=b"signature_placeholder", sequence=0xffffffff)
+            for u in selected_utxos
+        ]
+        outputs = []
+        change_amount = input_total - fee
+        if change_amount > 0:
+            outputs.append(TransactionOutput(value=change_amount, script_pubkey=b"change_script",
+                                             address=owner_address))
+
+        transaction = Transaction(version=1, inputs=inputs, outputs=outputs, lock_time=0,
+                                  fee=fee, tx_type=TX_TYPE_KEY_REGISTER,
+                                  extra_data={'owner_address': owner_address,
+                                              'kem_pub': kem_pub, 'sig_pub': sig_pub})
+        if return_unsigned:
+            return transaction
+        if not self.add_transaction_to_mempool(transaction):
+            raise ValueError("Failed to submit key registration transaction")
+        return owner_address
 
     def create_stake(self, staker_address: str, amount: int, return_unsigned: bool = False):
         """Create a new stake.

@@ -1057,9 +1057,55 @@ async def publish_messaging_keys(request: Request, data: dict):
     return {"success": True, "address": address}
 
 
+@app.post("/api/messages/keys/build-unsigned-register")
+async def messaging_keys_build_register(request: Request, data: dict):
+    """Build an UNSIGNED on-chain messaging-key registration (trustless discovery).
+
+    Proxies to the live node; the owner signs and submits via
+    /api/transaction/send {signed_tx}. Anchors keys on-chain so discovery does not
+    trust the relay registry.
+    """
+    client_id = SecurityManager.get_client_identifier(request)
+    if SecurityManager.is_rate_limited(client_id, "messaging_keys"):
+        raise HTTPException(status_code=429, detail="Too many key operations. Please try again later.")
+    owner_address = SecurityManager.sanitize_input(data.get("owner_address", ""))
+    if not SecurityManager.validate_wepo_address(owner_address):
+        raise HTTPException(status_code=400, detail="Invalid owner_address")
+    body = {"owner_address": owner_address, "kem_pub": data.get("kem_pub"), "sig_pub": data.get("sig_pub")}
+    if data.get("fee") is not None:
+        body["fee"] = data.get("fee")
+    try:
+        response = requests.post(f"{WEPO_NODE_API_URL}/api/messages/keys/build-unsigned-register", json=body, timeout=5)
+    except requests.RequestException:
+        raise HTTPException(status_code=502, detail="Live node is unavailable")
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {}
+    if not response.ok:
+        raise HTTPException(status_code=response.status_code,
+                            detail=payload.get("detail") or payload.get("error") or "Failed to build key registration")
+    return payload
+
+
+@app.get("/api/messages/keys/onchain/{address}")
+async def get_onchain_messaging_keys(address: str):
+    """Read an address's on-chain-anchored messaging keys (trustless, via the node)."""
+    try:
+        response = requests.get(f"{WEPO_NODE_API_URL}/api/messages/keys/onchain/{address}", timeout=5)
+    except requests.RequestException:
+        raise HTTPException(status_code=502, detail="Live node is unavailable")
+    if response.status_code == 404:
+        raise HTTPException(status_code=404, detail="No on-chain messaging keys for this address")
+    try:
+        return response.json()
+    except ValueError:
+        raise HTTPException(status_code=502, detail="Invalid node response")
+
+
 @app.get("/api/messages/keys/{address}")
 async def get_messaging_keys(address: str):
-    """Look up a recipient's published messaging public keys (for sending)."""
+    """Look up a recipient's published messaging public keys (relay registry)."""
     doc = await db.message_keys.find_one({"_id": address})
     if not doc:
         raise HTTPException(status_code=404, detail="No published messaging keys for this address")

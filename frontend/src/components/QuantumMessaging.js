@@ -20,7 +20,7 @@ import { useWallet } from '../contexts/WalletContext';
  * messaging + spend keys for this session.
  */
 const QuantumMessaging = ({ onBack }) => {
-  const { wallet, publishMessagingKeys, sendMessage, fetchMessages } = useWallet();
+  const { wallet, publishMessagingKeys, registerMessagingKeysOnChain, sendMessage, fetchMessages } = useWallet();
   const currentAddress = wallet?.address;
 
   const [password, setPassword] = useState('');
@@ -59,6 +59,20 @@ const QuantumMessaging = ({ onBack }) => {
       await refresh(password);
     } catch (e) {
       setError(e.message || 'Failed to enable messaging');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleAnchorOnChain = async () => {
+    if (!password) { setError('Enter your wallet password'); return; }
+    setIsLoading(true);
+    setError('');
+    try {
+      await registerMessagingKeysOnChain(password);
+      setInfo('Messaging keys anchored on-chain — recipients can discover them trustlessly (no registry trust). Confirms in a block.');
+    } catch (e) {
+      setError(e.message || 'Failed to anchor keys on-chain');
     } finally {
       setIsLoading(false);
     }
@@ -170,7 +184,11 @@ const QuantumMessaging = ({ onBack }) => {
             Enable Messaging
           </button>
         </div>
-        <p className="text-xs text-gray-400">First time? Tap “Enable Messaging” once to publish your public keys so others can message you.</p>
+        <button onClick={handleAnchorOnChain} disabled={isLoading || !password}
+          className="w-full bg-gray-700 hover:bg-gray-600 text-purple-200 text-sm py-2 px-4 rounded-lg transition-colors disabled:opacity-50">
+          Anchor keys on-chain (trustless · costs a small fee)
+        </button>
+        <p className="text-xs text-gray-400">First time? Tap “Enable Messaging” to publish your keys to the relay (instant). Optionally “Anchor keys on-chain” so others can discover them without trusting the relay.</p>
       </div>
     );
   }
