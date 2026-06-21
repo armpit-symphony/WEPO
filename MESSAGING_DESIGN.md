@@ -52,14 +52,29 @@ key can recover the shared secret and decrypt.
   verification, wrong-recipient cannot decrypt, tamper detection, deterministic
   recovery, and confirmation that the envelope carries no plaintext.
 
-## 5. Next slices (not in this commit)
+## 5. Blind relay — IMPLEMENTED (2026-06-21)
 
-1. Blind-relay endpoints: `POST /api/messages` (store envelope),
-   `GET /api/messages/{address}` (fetch envelopes), `GET/POST /api/messages/keys`
-   (public-key registry; keys signed by the owner). All ciphertext-only.
-2. Wallet UI (`QuantumMessaging.js`) wired to the new module + relay.
-3. Retire `quantum_messaging.py` (RSA/server-key) once the relay is live.
-4. Optional: anchor messaging public keys on-chain for trustless key discovery.
+- `backend/messaging_relay.py` — verification core (pure, unit-tested):
+  `verify_key_binding` (bundle must be spend-key-signed AND address == H(spend
+  pubkey) → no key substitution / MITM) and `verify_fetch_auth` (fresh spend-key
+  signature → only the owner reads their inbox).
+- `backend/server.py` endpoints (Mongo-backed, ciphertext-only):
+  `POST /api/messages/keys`, `GET /api/messages/keys/{address}`,
+  `POST /api/messages` (store envelope; size-capped), `POST /api/messages/fetch`
+  (owner-authenticated), `POST /api/messages/ack` (owner-authenticated delete).
+- Client: `WalletContext.publishMessagingKeys / sendMessage / fetchMessages`
+  (derives spend + messaging keys from the mnemonic). UI: `QuantumMessaging.js`
+  rewired to the relay (unlock → enable → compose/send → inbox/threads).
+- Tests: `tests/test_messaging_relay.py` (key-binding + fetch-auth, accept/reject)
+  and `tests/run_messaging_test.sh` (E2E envelope round-trip). All pass.
+
+## 6. Next slices
+
+1. Retire the demo `quantum_messaging.py` (RSA/server-key) + its `/api/messaging/*`
+   routes once the new relay is the only path.
+2. Route relay calls over the Layer-1 Tor transport by default in the client.
+3. Anchor messaging public keys on-chain for fully trustless key discovery.
+4. Live browser e2e (two wallets, enable → send → receive → verify).
 
 ## 6. Non-negotiables
 

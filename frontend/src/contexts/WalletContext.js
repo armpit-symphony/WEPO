@@ -2,7 +2,14 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import CryptoJS from 'crypto-js';
 import * as bip39 from 'bip39';
 import { sessionManager, secureLog, secureStorage } from '../utils/securityUtils';
-import { deriveWepoKeypair, signTransaction } from '../utils/wepoSigner';
+import { deriveWepoKeypair, signTransaction, signDigest } from '../utils/wepoSigner';
+import {
+  deriveMessagingKeypair,
+  encryptMessage,
+  decryptMessage,
+  keyRegistryDigest,
+  fetchAuthDigest,
+} from '../utils/wepoMessaging';
 // import { generateWepoAddress, generateBitcoinAddress, validateAddress } from '../utils/addressUtils';
 // Temporarily comment out Bitcoin wallet import to prevent runtime errors
 // import * as bitcoin from 'bitcoinjs-lib';
@@ -805,6 +812,94 @@ export const WalletProvider = ({ children }) => {
     }
   };
 
+  // ===== Private messaging (PQ end-to-end, blind relay) =====
+  // Derives both the spend keypair (proves address ownership to the relay) and
+  // the messaging keypair (ML-KEM/ML-DSA for E2E) from the local mnemonic.
+  const _messagingIdentity = (password) => {
+    const mnemonic = loadMnemonic(password);
+    if (!mnemonic || !validateMnemonic(mnemonic)) {
+      throw new Error('Invalid wallet password, or no recovery phrase on this device.');
+    }
+    const spend = deriveWepoKeypair(mnemonic);
+    const msg = deriveMessagingKeypair(mnemonic);
+    return { spend, msg };
+  };
+
+  // Publish (or refresh) this wallet's messaging public keys, signed by the spend
+  // key and bound to the address so the relay can't substitute keys.
+  const publishMessagingKeys = async (password) => {
+    const { spend, msg } = _messagingIdentity(password);
+    const digest = keyRegistryDigest(spend.address, msg.publicBundle.kem, msg.publicBundle.sig);
+    const sig = signDigest(digest, spend.secretKey);
+    const resp = await fetch(`${getBackendUrl()}/api/messages/keys`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        address: spend.address,
+        kem_pub: msg.publicBundle.kem,
+        sig_pub: msg.publicBundle.sig,
+        spend_pub: spend.publicKeyHex,
+        sig,
+      }),
+    });
+    const payload = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(payload.detail || payload.error || 'Failed to publish messaging keys');
+    return payload;
+  };
+
+  // Encrypt + send a message to a recipient address (E2E; relay stays blind).
+  const sendMessage = async (toAddress, plaintext, password) => {
+    const { spend, msg } = _messagingIdentity(password);
+    const keysResp = await fetch(`${getBackendUrl()}/api/messages/keys/${encodeURIComponent(toAddress)}`);
+    const keys = await keysResp.json().catch(() => ({}));
+    if (!keysResp.ok) {
+      throw new Error(keys.detail || 'Recipient has not published messaging keys yet');
+    }
+    const envelope = encryptMessage({
+      plaintext,
+      fromAddress: spend.address,
+      toAddress,
+      recipientKemPublicKeyHex: keys.kem_pub,
+      senderSigSecretKey: msg.sigSecretKey,
+      senderSigPublicKey: msg.sigPublicKey,
+    });
+    const resp = await fetch(`${getBackendUrl()}/api/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ envelope }),
+    });
+    const payload = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(payload.detail || payload.error || 'Failed to send message');
+    return payload;
+  };
+
+  // Owner-authenticated inbox fetch; decrypts envelopes locally.
+  const fetchMessages = async (password) => {
+    const { spend, msg } = _messagingIdentity(password);
+    const ts = Math.floor(Date.now() / 1000);
+    const sig = signDigest(fetchAuthDigest(spend.address, ts), spend.secretKey);
+    const resp = await fetch(`${getBackendUrl()}/api/messages/fetch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ address: spend.address, spend_pub: spend.publicKeyHex, sig, ts }),
+    });
+    const payload = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(payload.detail || payload.error || 'Failed to fetch messages');
+
+    const out = [];
+    for (const m of payload.messages || []) {
+      try {
+        const dec = decryptMessage(m.envelope, msg.kemSecretKey);
+        out.push({ message_id: m.message_id, from: dec.from, plaintext: dec.plaintext,
+                   ts: dec.ts, verified: dec.verified, stored_at: m.stored_at });
+      } catch (e) {
+        // Undecryptable (not for us / tampered) — skip rather than fail the batch.
+      }
+    }
+    out.sort((a, b) => (a.stored_at || 0) - (b.stored_at || 0));
+    return out;
+  };
+
   const logout = async () => {
     secureLog.info('User logout initiated');
 
@@ -875,6 +970,9 @@ export const WalletProvider = ({ children }) => {
     logout,
     sendWepo,
     createRwaAsset,
+    publishMessagingKeys,
+    sendMessage,
+    fetchMessages,
     loadWalletData,
     changePassword,
     setWallet,

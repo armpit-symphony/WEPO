@@ -44,6 +44,16 @@ export function deriveMessagingKeypair(mnemonic, passphrase = '') {
   };
 }
 
+// Canonical digests the SPEND key signs to prove address ownership to the relay.
+// These must match backend/messaging_relay.py byte-for-byte.
+export function keyRegistryDigest(address, kemPubHex, sigPubHex) {
+  return sha256(utf8(`WEPO-MSGKEY-v1|${address}|${kemPubHex}|${sigPubHex}`));
+}
+
+export function fetchAuthDigest(address, ts) {
+  return sha256(utf8(`WEPO-MSGFETCH-v1|${address}|${ts}`));
+}
+
 // Deterministic bytes signed/verified for envelope authenticity.
 function envelopeDigest(env) {
   const parts = [

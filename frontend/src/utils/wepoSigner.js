@@ -129,6 +129,15 @@ export function signTransaction(unsignedTx, secretKey, publicKey, expectedSighas
   };
 }
 
+/**
+ * Sign an arbitrary 32-byte digest with the spend key (ML-DSA-44). Used for
+ * non-transaction proofs of address ownership (e.g. messaging key registry and
+ * inbox-fetch authorization), returned as a hex signature.
+ */
+export function signDigest(digestBytes, secretKey) {
+  return bytesToHex(ml_dsa44.sign(digestBytes, secretKey));
+}
+
 /** Optional client-side verification (the node enforces this regardless). */
 export function verifyTransactionInput(tx, inputIndex) {
   const inp = tx.inputs[inputIndex];

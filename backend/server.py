@@ -33,6 +33,7 @@ if str(CORE_DIR) not in sys.path:
 
 # Import security utilities
 from security_utils import SecurityManager, init_redis
+import messaging_relay
 try:
     from network_profile import (
         build_collateral_schedule,
@@ -132,6 +133,9 @@ class SecurityMiddleware(BaseHTTPMiddleware):
                 (method == "POST" and path.startswith("/api/wallet/login")) or
                 (method == "POST" and path.startswith("/api/transaction/send")) or
                 (method == "POST" and path.startswith("/api/transaction/build-unsigned")) or
+                # Messaging relay has its own per-endpoint limits; inbox polling
+                # must not be throttled by the global 60/min API limiter.
+                (path.startswith("/api/messages")) or
                 # Read-only sanity endpoints should never be globally throttled
                 (method == "GET" and (
                     path.startswith("/api/mining/status") or
@@ -1017,6 +1021,125 @@ async def rwa_get_assets_for_owner(owner_address: str):
         return response.json()
     except ValueError:
         raise HTTPException(status_code=502, detail="Invalid node response")
+
+
+# ===== Private messaging blind relay (MESSAGING_DESIGN.md) =====
+# The relay stores only opaque, end-to-end-encrypted envelopes and a registry of
+# public keys. It cannot read message content. See backend/messaging_relay.py for
+# the verification core (key-binding + owner-authenticated fetch).
+
+@app.post("/api/messages/keys")
+async def publish_messaging_keys(request: Request, data: dict):
+    """Publish a user's messaging public keys, bound to their WEPO address.
+
+    The bundle must be signed by the account's spend key and the address must
+    equal H(spend pubkey), so the relay cannot substitute keys for a MITM.
+    """
+    client_id = SecurityManager.get_client_identifier(request)
+    if SecurityManager.is_rate_limited(client_id, "messaging_keys"):
+        raise HTTPException(status_code=429, detail="Too many key publishes. Please try again later.")
+
+    address = SecurityManager.sanitize_input(data.get("address", ""))
+    kem_pub = SecurityManager.sanitize_input(data.get("kem_pub", ""))
+    sig_pub = SecurityManager.sanitize_input(data.get("sig_pub", ""))
+    spend_pub = SecurityManager.sanitize_input(data.get("spend_pub", ""))
+    sig = SecurityManager.sanitize_input(data.get("sig", ""))
+
+    if not messaging_relay.verify_key_binding(address, kem_pub, sig_pub, spend_pub, sig):
+        raise HTTPException(status_code=400, detail="Invalid or unauthorized messaging key bundle")
+
+    await db.message_keys.replace_one(
+        {"_id": address},
+        {"_id": address, "address": address, "kem_pub": kem_pub, "sig_pub": sig_pub,
+         "spend_pub": spend_pub, "updated_at": int(time.time())},
+        upsert=True,
+    )
+    return {"success": True, "address": address}
+
+
+@app.get("/api/messages/keys/{address}")
+async def get_messaging_keys(address: str):
+    """Look up a recipient's published messaging public keys (for sending)."""
+    doc = await db.message_keys.find_one({"_id": address})
+    if not doc:
+        raise HTTPException(status_code=404, detail="No published messaging keys for this address")
+    return {"success": True, "address": address, "kem_pub": doc["kem_pub"], "sig_pub": doc["sig_pub"]}
+
+
+@app.post("/api/messages")
+async def store_message(request: Request, data: dict):
+    """Store an opaque end-to-end-encrypted envelope for later retrieval.
+
+    The relay never decrypts; it only validates shape/size and the recipient
+    address, then stores the ciphertext envelope verbatim.
+    """
+    client_id = SecurityManager.get_client_identifier(request)
+    if SecurityManager.is_rate_limited(client_id, "messaging_send"):
+        raise HTTPException(status_code=429, detail="Too many messages. Please try again later.")
+
+    envelope = data.get("envelope")
+    if not isinstance(envelope, dict):
+        raise HTTPException(status_code=400, detail="envelope object is required")
+
+    required = ("to", "from", "kem_ct", "nonce", "ct", "sender_sig_pub", "sig")
+    if any(not envelope.get(k) for k in required):
+        raise HTTPException(status_code=400, detail="envelope is missing required fields")
+
+    to_address = SecurityManager.sanitize_input(str(envelope.get("to", "")))
+    if not SecurityManager.validate_wepo_address(to_address):
+        raise HTTPException(status_code=400, detail="Invalid recipient address")
+
+    if len(json.dumps(envelope).encode()) > messaging_relay.MAX_ENVELOPE_BYTES:
+        raise HTTPException(status_code=413, detail="Message envelope too large")
+
+    message_id = str(uuid.uuid4())
+    await db.messages.insert_one({
+        "_id": message_id,
+        "to": to_address,
+        "envelope": envelope,
+        "stored_at": int(time.time()),
+    })
+    return {"success": True, "message_id": message_id}
+
+
+@app.post("/api/messages/fetch")
+async def fetch_messages(request: Request, data: dict):
+    """Owner-authenticated inbox fetch: returns opaque envelopes for the address.
+
+    Requires a fresh spend-key signature proving ownership of the address, so the
+    relay does not hand an inbox listing to arbitrary callers.
+    """
+    address = SecurityManager.sanitize_input(data.get("address", ""))
+    spend_pub = SecurityManager.sanitize_input(data.get("spend_pub", ""))
+    sig = SecurityManager.sanitize_input(data.get("sig", ""))
+    ts = data.get("ts")
+
+    if not messaging_relay.verify_fetch_auth(address, spend_pub, sig, ts):
+        raise HTTPException(status_code=403, detail="Inbox fetch not authorized")
+
+    cursor = db.messages.find({"to": address}).sort("stored_at", 1).limit(500)
+    messages = []
+    async for doc in cursor:
+        messages.append({"message_id": doc["_id"], "envelope": doc["envelope"], "stored_at": doc["stored_at"]})
+    return {"success": True, "address": address, "count": len(messages), "messages": messages}
+
+
+@app.post("/api/messages/ack")
+async def ack_messages(request: Request, data: dict):
+    """Owner-authenticated delete of delivered envelopes (keeps relay storage bounded)."""
+    address = SecurityManager.sanitize_input(data.get("address", ""))
+    spend_pub = SecurityManager.sanitize_input(data.get("spend_pub", ""))
+    sig = SecurityManager.sanitize_input(data.get("sig", ""))
+    ts = data.get("ts")
+    message_ids = data.get("message_ids") or []
+
+    if not messaging_relay.verify_fetch_auth(address, spend_pub, sig, ts):
+        raise HTTPException(status_code=403, detail="Ack not authorized")
+    if not isinstance(message_ids, list):
+        raise HTTPException(status_code=400, detail="message_ids must be a list")
+
+    result = await db.messages.delete_many({"_id": {"$in": message_ids[:500]}, "to": address})
+    return {"success": True, "deleted": result.deleted_count}
 
 
 @api_router.post("/stake")
@@ -3984,6 +4107,7 @@ async def startup_event():
     await db.masternodes.create_index("wallet_address")
     await db.btc_swaps.create_index("wepo_address")
     await db.wallet_trade_state.create_index("address", unique=True)
+    await db.messages.create_index([("to", 1), ("stored_at", 1)])
     try:
         await db.rwa_trades.drop_index("user_address_1_idempotency_key_1")
     except Exception:
