@@ -12,7 +12,9 @@ const WalletLogin = ({ onWalletLoaded, onCreateNew }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [validationErrors, setValidationErrors] = useState([]);
-  const { loginWallet } = useWallet();
+  const [mode, setMode] = useState('login'); // 'login' | 'recover'
+  const [recoveryPhrase, setRecoveryPhrase] = useState('');
+  const { loginWallet, recoverWallet, validateMnemonic } = useWallet();
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
@@ -72,8 +74,34 @@ const WalletLogin = ({ onWalletLoaded, onCreateNew }) => {
     }
   };
 
+  const handleRecover = async () => {
+    const errors = [];
+    if (!formData.username || !formData.username.trim()) errors.push('Username is required');
+    const passwordValidation = validateTransactionPassword(formData.password);
+    if (!passwordValidation.isValid) errors.push(...passwordValidation.errors);
+    if (!validateMnemonic(recoveryPhrase)) errors.push('Recovery phrase is not a valid 12/24-word phrase');
+    if (errors.length) {
+      setValidationErrors(errors);
+      setError('Please fix the validation errors below');
+      return;
+    }
+    setIsLoading(true);
+    try {
+      secureLog.info('Wallet recovery initiated', { username: formData.username });
+      await recoverWallet(recoveryPhrase, formData.password, formData.username);
+      secureLog.info('Recovery successful');
+      setRecoveryPhrase('');
+      onWalletLoaded();
+    } catch (error) {
+      secureLog.error('Recovery error', error);
+      setError(error.message || 'Recovery failed');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleKeyPress = (e) => {
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' && mode === 'login') {
       handleLogin();
     }
   };
@@ -93,8 +121,25 @@ const WalletLogin = ({ onWalletLoaded, onCreateNew }) => {
 
           {/* Login Form */}
           <div className="space-y-6">
-            <h2 className="text-xl font-semibold text-white text-center">Access Your Wallet</h2>
-            
+            <h2 className="text-xl font-semibold text-white text-center">
+              {mode === 'recover' ? 'Restore From Recovery Phrase' : 'Access Your Wallet'}
+            </h2>
+
+            {mode === 'recover' && (
+              <div>
+                <label className="block text-sm font-medium text-purple-200 mb-2">Recovery Phrase</label>
+                <textarea
+                  name="recoveryPhrase"
+                  value={recoveryPhrase}
+                  onChange={(e) => { setRecoveryPhrase(e.target.value); setError(''); setValidationErrors([]); }}
+                  rows={3}
+                  className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 font-mono text-sm"
+                  placeholder="Enter your 12-word recovery phrase, separated by spaces"
+                />
+                <p className="text-xs text-gray-400 mt-1">Your phrase is encrypted on this device with your password and never sent to the server.</p>
+              </div>
+            )}
+
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-purple-200 mb-2">
@@ -162,18 +207,29 @@ const WalletLogin = ({ onWalletLoaded, onCreateNew }) => {
             )}
 
             <button
-              onClick={handleLogin}
+              onClick={mode === 'recover' ? handleRecover : handleLogin}
               disabled={isLoading}
               className="w-full bg-purple-600 hover:bg-purple-700 text-white font-semibold py-3 px-6 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               <LogIn size={20} />
-              {isLoading ? 'Logging in...' : 'Access Wallet'}
+              {isLoading
+                ? (mode === 'recover' ? 'Restoring...' : 'Logging in...')
+                : (mode === 'recover' ? 'Restore Wallet' : 'Access Wallet')}
             </button>
 
             <div className="text-center">
+              <button
+                onClick={() => { setMode(mode === 'recover' ? 'login' : 'recover'); setError(''); setValidationErrors([]); }}
+                className="text-sm text-purple-400 hover:text-purple-300 underline"
+              >
+                {mode === 'recover' ? 'Back to sign in' : 'Restore from recovery phrase'}
+              </button>
+            </div>
+
+            <div className="text-center">
               <p className="text-sm text-purple-300">
-                Don't have a wallet? 
-                <button 
+                Don't have a wallet?
+                <button
                   onClick={onCreateNew}
                   className="text-purple-400 hover:text-purple-300 ml-1 underline"
                 >
@@ -186,7 +242,7 @@ const WalletLogin = ({ onWalletLoaded, onCreateNew }) => {
           {/* Security Note */}
           <div className="mt-8 p-4 bg-gray-700/50 rounded-lg border border-purple-500/30">
             <p className="text-xs text-purple-200 text-center">
-              Public test mode: sign-in uses your WEPO test account on the live backend. Recovery phrase import/export is not available in this build.
+              Self-custody: your recovery phrase is encrypted on this device and authorizes spends locally. The server never holds your keys. On a new device, use "Restore from recovery phrase".
             </p>
           </div>
         </div>

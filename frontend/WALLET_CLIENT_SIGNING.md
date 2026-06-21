@@ -1,11 +1,36 @@
 # WEPO Wallet — Client-Side Signing Integration
 
-This describes how to make the web/desktop wallet sign transactions itself, as
-required by the consensus spend-authorization model (see
-`wepo-blockchain/core/blockchain.py`). The signing primitives are implemented and
-verified in `src/utils/wepoSigner.js`.
+This describes how the web wallet signs transactions itself, as required by the
+consensus spend-authorization model (see `wepo-blockchain/core/blockchain.py`).
 
-## What is already done (verified)
+## Status: IMPLEMENTED (2026-06-21)
+
+The self-custody migration is wired end to end:
+
+- **`src/contexts/WalletContext.js`** — `createWallet` now generates a BIP-39
+  mnemonic locally, derives the `wepo1q…` address via `deriveWepoKeypair`, and
+  registers only the address with the backend (no server-side key). `loginWallet`
+  decrypts the locally stored phrase; `recoverWallet` imports a phrase on a new
+  device; `sendWepo` runs build-unsigned → sign → submit `signed_tx`.
+- **`src/components/WalletSetup.js`** — shows the 12-word recovery phrase with a
+  mandatory backup-confirmation step before entering the wallet.
+- **`src/components/WalletLogin.js`** — adds a "Restore from recovery phrase" mode.
+- **`backend/server.py`** — added `POST /api/transaction/build-unsigned` (proxy to
+  node) and changed `POST /api/transaction/send` to accept `{signed_tx}` and proxy
+  it; `POST /api/wallet/create` accepts the client-derived `address`. The old
+  custodial `from_address`/session gate on send is removed — the Dilithium
+  signature is the spend authorization, enforced by consensus.
+
+> **Backend target:** the wallet must point at the **`server.py` gateway** (or the
+> node's API directly). The legacy `wepo-fast-test-bridge.py` does **not** expose
+> `/api/transaction/build-unsigned` and is custodial — do not point a self-custody
+> build at it. Set `REACT_APP_BACKEND_URL` accordingly before building.
+
+The mnemonic is stored only via `secureStorage` (AES, encrypted with the wallet
+password) and is cleared on logout. The recovery phrase is shown exactly once at
+creation and is never logged or sent to the server.
+
+## Signing primitives (verified)
 
 - **Algorithm:** ML-DSA-44 (FIPS 204), interoperable Python (node) ↔ JavaScript
   (wallet). Proven: a JS-signed transaction verifies on the Python node and is

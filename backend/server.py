@@ -131,6 +131,7 @@ class SecurityMiddleware(BaseHTTPMiddleware):
                 (method == "POST" and path.startswith("/api/wallet/create")) or
                 (method == "POST" and path.startswith("/api/wallet/login")) or
                 (method == "POST" and path.startswith("/api/transaction/send")) or
+                (method == "POST" and path.startswith("/api/transaction/build-unsigned")) or
                 # Read-only sanity endpoints should never be globally throttled
                 (method == "GET" and (
                     path.startswith("/api/mining/status") or
@@ -559,9 +560,20 @@ async def create_wallet(request: Request, data: dict):
         if existing:
             raise HTTPException(status_code=400, detail="Username already exists")
         
-        # Generate secure WEPO address
-        wepo_address = SecurityManager.generate_wepo_address(username)
-        
+        # Self-custody: the wallet derives its own address from a client-held
+        # mnemonic (address = H(Dilithium pubkey), "wepo1q..."). When the client
+        # supplies that address we register it as-is; the backend never holds keys
+        # and cannot spend. Fall back to a derived address only for legacy callers.
+        client_address = SecurityManager.sanitize_input(data.get("address", ""))
+        if client_address:
+            if not SecurityManager.validate_wepo_address(client_address):
+                raise HTTPException(status_code=400, detail="Invalid self-custody address format")
+            wepo_address = client_address
+            custody_mode = "self_custody"
+        else:
+            wepo_address = SecurityManager.generate_wepo_address(username)
+            custody_mode = "backend_account"
+
         # Hash password securely
         password_hash = SecurityManager.hash_password(password)
         
@@ -573,6 +585,7 @@ async def create_wallet(request: Request, data: dict):
             "created_at": int(time.time()),
             "version": "3.1",  # Updated version for security enhancements
             "bip39": True,
+            "custody_mode": custody_mode,
             "legacy_balance_cache": 0.0,
             "security_level": "enhanced",
             "last_login": None,
@@ -594,6 +607,7 @@ async def create_wallet(request: Request, data: dict):
             "username": username,
             "message": "Wallet created successfully with enhanced security",
             "bip39": True,
+            "custody_mode": custody_mode,
             "security_level": "enhanced",
             "session_token": auth_session["token"],
             "session_expires_at": auth_session["expires_at"],
@@ -808,82 +822,101 @@ async def get_wallet_transactions(address: str, limit: int = 50):
         ]
     }).sort("timestamp", -1).limit(limit).to_list(limit)
 
-@app.post("/api/transaction/send")
-async def send_transaction(request: Request, data: dict, authorization: Optional[str] = Header(None)):
-    """Send WEPO transaction through the live node while keeping backend validation."""
+@app.post("/api/transaction/build-unsigned")
+async def build_unsigned_transaction(request: Request, data: dict):
+    """Build an unsigned transaction skeleton + canonical sighash for client signing.
+
+    Self-custody: the wallet calls this, signs the returned sighash locally with its
+    Dilithium (ML-DSA-44) key, then submits the completed tx to
+    /api/transaction/send as {"signed_tx": {...}}. The backend holds no keys and
+    cannot authorize a spend — it only proxies to the live node.
+    """
     client_id = SecurityManager.get_client_identifier(request)
-    logger.info(f"Transaction attempt from {client_id}")
-    
-    # Implement manual rate limiting (10/minute for transactions)
+
+    # Same budget as sends: building is the first half of a send attempt.
+    if SecurityManager.is_rate_limited(client_id, "transaction_send"):
+        raise HTTPException(status_code=429, detail="Too many transaction attempts. Please try again later.")
+
+    from_address = SecurityManager.sanitize_input(data.get("from_address", ""))
+    to_address = SecurityManager.sanitize_input(data.get("to_address", ""))
+    amount = data.get("amount", 0)
+    fee = data.get("fee", 0.0001)
+
+    if not from_address or not to_address:
+        raise HTTPException(status_code=400, detail="From and to addresses are required")
+    if not SecurityManager.validate_wepo_address(from_address):
+        raise HTTPException(status_code=400, detail="Invalid from_address format")
+    if not SecurityManager.validate_wepo_address(to_address):
+        raise HTTPException(status_code=400, detail="Invalid to_address format")
+    if from_address == to_address:
+        raise HTTPException(status_code=400, detail="Cannot send to the same address")
+
+    amount_validation = SecurityManager.validate_transaction_amount(amount)
+    if not amount_validation["is_valid"]:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "Invalid transaction amount", "issues": amount_validation["issues"]},
+        )
+
+    try:
+        response = requests.post(
+            f"{WEPO_NODE_API_URL}/api/transaction/build-unsigned",
+            json={
+                "from_address": from_address,
+                "to_address": to_address,
+                "amount": amount_validation["sanitized_amount"],
+                "fee": fee,
+            },
+            timeout=5,
+        )
+    except requests.RequestException as e:
+        logger.error(f"Live node build-unsigned proxy error from {client_id}: {e}")
+        raise HTTPException(status_code=502, detail="Live transaction node is unavailable")
+
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {}
+
+    if not response.ok:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=payload.get("detail") or payload.get("error") or "Failed to build transaction",
+        )
+    return payload
+
+
+@app.post("/api/transaction/send")
+async def send_transaction(request: Request, data: dict):
+    """Submit a CLIENT-SIGNED transaction to the live node (self-custody).
+
+    The request must carry a fully signed transaction as {"signed_tx": {...}}
+    produced from /api/transaction/build-unsigned. Spend authorization is the
+    Dilithium signature bound to the spent UTXO's address, enforced by consensus
+    on the node — the backend no longer mints or authorizes spends, so the old
+    custodial from_address/session gate is gone.
+    """
+    client_id = SecurityManager.get_client_identifier(request)
+    logger.info(f"Signed transaction submission from {client_id}")
+
+    # Rate limit (10/minute for transactions)
     if SecurityManager.is_rate_limited(client_id, "transaction_send"):
         logger.warning(f"Rate limit exceeded for transaction from {client_id}")
         raise HTTPException(status_code=429, detail="Too many transaction attempts. Please try again later.")
-    
+
     try:
-        # Input validation and sanitization
-        from_address = SecurityManager.sanitize_input(data.get("from_address", ""))
-        to_address = SecurityManager.sanitize_input(data.get("to_address", ""))
-        amount = data.get("amount", 0)
-        
-        # Comprehensive input validation
-        if not from_address or not to_address:
-            raise HTTPException(status_code=400, detail="From and to addresses are required")
-        
-        # Validate addresses
-        if not SecurityManager.validate_wepo_address(from_address):
-            raise HTTPException(status_code=400, detail="Invalid from_address format")
-        
-        if not SecurityManager.validate_wepo_address(to_address):
-            raise HTTPException(status_code=400, detail="Invalid to_address format")
-
-        _, session = require_wallet_session(request, authorization)
-        session_address = session.get("address")
-        if session_address != from_address:
-            logger.warning(
-                f"Rejected transaction for session address {session_address} "
-                f"attempting to spend from {from_address} by {client_id}"
-            )
-            raise HTTPException(status_code=403, detail="Authenticated session does not match from_address")
-        
-        # Prevent self-transactions
-        if from_address == to_address:
-            raise HTTPException(status_code=400, detail="Cannot send to the same address")
-        
-        # Validate transaction amount
-        amount_validation = SecurityManager.validate_transaction_amount(amount)
-        if not amount_validation["is_valid"]:
+        signed_tx = data.get("signed_tx")
+        if not isinstance(signed_tx, dict):
             raise HTTPException(
-                status_code=400, 
-                detail={
-                    "message": "Invalid transaction amount",
-                    "issues": amount_validation["issues"]
-                }
-            )
-        
-        validated_amount = amount_validation["sanitized_amount"]
-        
-        # Transaction fee calculation
-        transaction_fee = 0.0001  # Standard WEPO fee
-        total_required = validated_amount + transaction_fee
-
-        live_balance = await get_live_node_wallet_balance(from_address)
-        if live_balance < total_required:
-            logger.warning(f"Insufficient balance transaction attempt from {from_address} by {client_id}")
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Insufficient balance. Required: {total_required} WEPO, Available: {live_balance} WEPO"
+                status_code=400,
+                detail="A client-signed transaction is required as {'signed_tx': {...}}. "
+                       "Build it via /api/transaction/build-unsigned and sign locally.",
             )
 
         try:
             response = requests.post(
                 f"{WEPO_NODE_API_URL}/api/transaction/send",
-                json={
-                    "from_address": from_address,
-                    "to_address": to_address,
-                    "amount": validated_amount,
-                    "fee": transaction_fee,
-                    "privacy_level": "standard",
-                },
+                json={"signed_tx": signed_tx},
                 timeout=5,
             )
         except requests.RequestException as e:
@@ -901,17 +934,11 @@ async def send_transaction(request: Request, data: dict, authorization: Optional
                 detail=payload.get("detail") or payload.get("error") or "Live transaction failed",
             )
 
-        logger.info(
-            f"Transaction proxied: {payload.get('tx_hash')} from {from_address} "
-            f"to {to_address} amount {validated_amount} by {client_id}"
-        )
-
+        logger.info(f"Signed transaction proxied: {payload.get('tx_hash')} by {client_id}")
         payload["success"] = True
-        payload["amount"] = validated_amount
-        payload["fee"] = transaction_fee
         payload["source"] = "node_proxy"
         return payload
-        
+
     except HTTPException:
         raise
     except Exception as e:

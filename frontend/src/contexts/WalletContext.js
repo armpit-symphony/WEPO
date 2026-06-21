@@ -1,6 +1,8 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import CryptoJS from 'crypto-js';
+import * as bip39 from 'bip39';
 import { sessionManager, secureLog, secureStorage } from '../utils/securityUtils';
+import { deriveWepoKeypair, signTransaction } from '../utils/wepoSigner';
 // import { generateWepoAddress, generateBitcoinAddress, validateAddress } from '../utils/addressUtils';
 // Temporarily comment out Bitcoin wallet import to prevent runtime errors
 // import * as bitcoin from 'bitcoinjs-lib';
@@ -122,57 +124,35 @@ export const WalletProvider = ({ children }) => {
 
   const getBackendUrl = () => process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
 
-  const generateMnemonic = () => {
-    throw new Error('Recovery phrases are not available in the current public test build');
-  };
+  // ===== SELF-CUSTODY KEY MANAGEMENT =====
+  // The wallet holds the spend secret (a BIP-39 mnemonic) client-side; the
+  // backend never sees keys. The WEPO address is derived from the mnemonic
+  // (ML-DSA-44 pubkey -> "wepo1q..." via wepoSigner) and registered with the
+  // backend only so balance/history reads and sessions are addressable.
 
-  const deriveSeedFromMnemonic = async (mnemonic, passphrase = '') => {
+  const generateMnemonic = () => bip39.generateMnemonic(128); // 12 words
+
+  const validateMnemonic = (mnemonic) => {
     try {
-      // Simplified seed derivation for testing
-      const seed = CryptoJS.SHA256(mnemonic + passphrase).toString();
-      return Buffer.from(seed, 'hex');
-    } catch (error) {
-      console.error('❌ Seed derivation failed:', error);
-      throw new Error('Failed to derive seed from mnemonic');
+      return bip39.validateMnemonic((mnemonic || '').trim());
+    } catch (e) {
+      return false;
     }
   };
 
-  const generateWalletFromSeed = async (seed) => {
-    try {
-      // Generate WEPO address from seed (simplified for demo)
-      // In production, this would use proper HD wallet derivation (BIP-32/BIP-44)
-      const seedHex = seed.toString('hex');
-      const wepoPrivateKey = CryptoJS.SHA256(seedHex + 'wepo_derivation').toString();
-      const wepoAddress = `wepo1${CryptoJS.SHA256(wepoPrivateKey).toString().substring(0, 32)}`;
-      
-      // Generate Bitcoin address from same seed (BIP-44 path m/44'/0'/0'/0/0)
-      const btcPrivateKey = CryptoJS.SHA256(seedHex + 'btc_derivation').toString();
-      const btcAddress = `1${CryptoJS.SHA256(btcPrivateKey).toString().substring(0, 32)}`;
-      
-      return {
-        wepo: {
-          address: wepoAddress,
-          privateKey: wepoPrivateKey
-        },
-        btc: {
-          address: btcAddress,
-          privateKey: btcPrivateKey,
-          publicKey: CryptoJS.SHA256(btcPrivateKey + 'public').toString(),
-          type: 'legacy'
-        }
-      };
-      
-    } catch (error) {
-      console.error('❌ Wallet generation from seed failed:', error);
-      throw new Error('Failed to generate wallet from seed');
+  // Encrypted local store for the recovery phrase (the only spend secret).
+  const MNEMONIC_KEY = 'wepo_mnemonic';
+  const storeMnemonic = (mnemonic, password) => {
+    if (!secureStorage.setSecureItem(MNEMONIC_KEY, mnemonic, password)) {
+      throw new Error('Failed to securely store the recovery phrase');
     }
   };
+  const loadMnemonic = (password) => secureStorage.getSecureItem(MNEMONIC_KEY, password);
 
-  const createWallet = async (username, password, confirmPassword) => {
+  const createWallet = async (username, password, confirmPassword, providedMnemonic = null) => {
     if (password !== confirmPassword) {
       throw new Error('Passwords do not match');
     }
-
     if (password.length < 8) {
       throw new Error('Password must be at least 8 characters long');
     }
@@ -180,31 +160,40 @@ export const WalletProvider = ({ children }) => {
     try {
       setIsLoading(true);
 
+      // New self-custody key material (or import an existing phrase).
+      const mnemonic = (providedMnemonic && validateMnemonic(providedMnemonic))
+        ? providedMnemonic.trim()
+        : generateMnemonic();
+      const { address } = deriveWepoKeypair(mnemonic);
+
+      // Register the client-derived address; backend mints nothing.
       const response = await fetch(`${getBackendUrl()}/api/wallet/create`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          username,
-          password,
-        }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password, address }),
       });
 
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(payload.detail || payload.error || 'Wallet creation failed');
       }
+      if (payload.address && payload.address !== address) {
+        throw new Error('Backend returned a different address than the self-custody key');
+      }
 
       const walletData = {
         username: payload.username || username,
-        address: payload.address,
+        address,
         createdAt: new Date().toISOString(),
-        version: payload.version || 'public-test',
-        securityLevel: payload.security_level || 'backend_account',
-        recoveryPhraseAvailable: false,
-        custodyMode: 'backend_account',
+        version: payload.version || 'self-custody-v1',
+        securityLevel: payload.security_level || 'self_custody',
+        recoveryPhraseAvailable: true,
+        custodyMode: 'self_custody',
       };
+
+      // Persist the phrase encrypted with the password BEFORE establishing the
+      // session, so a failure here never leaves a sessioned but key-less wallet.
+      storeMnemonic(mnemonic, password);
 
       localStorage.setItem('wepo_wallet_exists', 'true');
       localStorage.setItem('wepo_wallet_username', walletData.username);
@@ -222,14 +211,17 @@ export const WalletProvider = ({ children }) => {
       setBtcTransactions([]);
       setBtcUtxos([]);
 
-      secureLog.info('Backend wallet created successfully');
-      return { 
-        address: walletData.address,
+      secureLog.info('Self-custody wallet created successfully');
+      // Return the mnemonic ONCE so the UI can show the backup screen; it is not
+      // returned again and is never logged.
+      return {
+        address,
         username: walletData.username,
-        recoveryPhraseAvailable: false,
-        custodyMode: walletData.custodyMode,
+        mnemonic,
+        recoveryPhraseAvailable: true,
+        custodyMode: 'self_custody',
       };
-      
+
     } catch (error) {
       setIsLoading(false);
       secureLog.error('Wallet creation error', error);
@@ -243,33 +235,39 @@ export const WalletProvider = ({ children }) => {
 
       const response = await fetch(`${getBackendUrl()}/api/wallet/login`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          username,
-          password,
-        }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
       });
 
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(payload.detail || payload.error || 'Invalid username or password');
       }
+      if (!payload.address) {
+        throw new Error('Wallet is missing a WEPO address');
+      }
+
+      // The spend key lives only in the locally-stored mnemonic. Decrypt it with
+      // the password and confirm it derives this account's address; if it is
+      // missing (e.g. a fresh device) the wallet is read-only until the phrase is
+      // imported via recoverWallet().
+      const mnemonic = loadMnemonic(password);
+      let recoveryAvailable = false;
+      if (mnemonic && validateMnemonic(mnemonic)) {
+        const { address: derived } = deriveWepoKeypair(mnemonic);
+        recoveryAvailable = derived === payload.address;
+      }
 
       const walletData = {
         username: payload.username || username,
         address: payload.address,
         createdAt: payload.created_at ? new Date(payload.created_at * 1000).toISOString() : new Date().toISOString(),
-        version: payload.version || 'public-test',
-        securityLevel: payload.security_level || 'backend_account',
-        recoveryPhraseAvailable: false,
-        custodyMode: 'backend_account',
+        version: payload.version || 'self-custody-v1',
+        securityLevel: payload.security_level || 'self_custody',
+        recoveryPhraseAvailable: recoveryAvailable,
+        custodyMode: payload.custody_mode || 'self_custody',
+        needsRecoveryImport: !recoveryAvailable,
       };
-
-      if (!walletData.address) {
-        throw new Error('Wallet is missing a WEPO address');
-      }
 
       localStorage.setItem('wepo_wallet_exists', 'true');
       localStorage.setItem('wepo_wallet_username', walletData.username);
@@ -288,7 +286,7 @@ export const WalletProvider = ({ children }) => {
 
       await loadWalletData(walletData.address);
       return walletData;
-      
+
     } catch (error) {
       console.error('❌ Login error:', error);
       throw error;
@@ -297,24 +295,97 @@ export const WalletProvider = ({ children }) => {
     }
   };
 
-  const validateMnemonic = (mnemonic) => {
-    return false;
-  };
+  const recoverWallet = async (mnemonic, password, username) => {
+    const phrase = (mnemonic || '').trim();
+    if (!validateMnemonic(phrase)) {
+      throw new Error('Invalid recovery phrase');
+    }
+    if (!password || password.length < 8) {
+      throw new Error('Password must be at least 8 characters long');
+    }
+    if (!username) {
+      throw new Error('Username is required to recover your wallet');
+    }
 
-  const recoverWallet = async (mnemonic, password) => {
-    throw new Error('Recovery phrase import is not available in the current public test build');
+    try {
+      setIsLoading(true);
+      const { address } = deriveWepoKeypair(phrase);
+
+      // Store the phrase locally so this device can sign.
+      storeMnemonic(phrase, password);
+
+      // Register the address for a read session; if the username already exists,
+      // fall back to login. Spends are signature-authorized off this address
+      // regardless of the backend account state.
+      let payload = {};
+      const createResp = await fetch(`${getBackendUrl()}/api/wallet/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password, address }),
+      });
+      payload = await createResp.json().catch(() => ({}));
+      if (!createResp.ok) {
+        const loginResp = await fetch(`${getBackendUrl()}/api/wallet/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password }),
+        });
+        payload = await loginResp.json().catch(() => ({}));
+        if (!loginResp.ok) {
+          throw new Error(payload.detail || payload.error || 'Recovery failed');
+        }
+      }
+
+      const walletData = {
+        username: payload.username || username,
+        address,
+        createdAt: new Date().toISOString(),
+        version: payload.version || 'self-custody-v1',
+        securityLevel: 'self_custody',
+        recoveryPhraseAvailable: true,
+        custodyMode: 'self_custody',
+      };
+
+      localStorage.setItem('wepo_wallet_exists', 'true');
+      localStorage.setItem('wepo_wallet_username', walletData.username);
+      localStorage.setItem('wepo_wallet_version', walletData.version);
+
+      persistWalletSession(walletData, password, {
+        token: payload.session_token,
+        expiresAt: payload.session_expires_at
+      });
+      setWallet(walletData);
+      await loadWalletData(address);
+
+      secureLog.info('Self-custody wallet recovered successfully');
+      return walletData;
+    } catch (error) {
+      secureLog.error('Wallet recovery error', error);
+      throw new Error('Recovery failed: ' + error.message);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const changePassword = async (currentPassword, newPassword, confirmNewPassword) => {
     if (newPassword !== confirmNewPassword) {
       throw new Error('New passwords do not match');
     }
-
     if (!currentPassword) {
       throw new Error('Current password is required');
     }
+    if (!newPassword || newPassword.length < 8) {
+      throw new Error('New password must be at least 8 characters long');
+    }
 
-    throw new Error('Password changes are not available in the current public test build');
+    // Re-encrypt the local recovery phrase under the new password. Note: the
+    // backend login password is managed separately and unchanged here.
+    const mnemonic = loadMnemonic(currentPassword);
+    if (!mnemonic || !validateMnemonic(mnemonic)) {
+      throw new Error('Current password is incorrect, or no recovery phrase is stored on this device');
+    }
+    storeMnemonic(mnemonic, newPassword);
+    return { success: true, message: 'Local wallet password updated' };
   };
 
   // Remove old generateWepoAddress - now handled by addressUtils
@@ -613,37 +684,49 @@ export const WalletProvider = ({ children }) => {
   const sendWepo = async (toAddress, amount, password) => {
     setIsLoading(true);
     try {
-      const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
+      const backendUrl = getBackendUrl();
       const walletAddress = getWalletAddress(wallet);
       if (!walletAddress) {
         throw new Error('No active wallet loaded');
       }
 
-      const unlockedWallet = secureStorage.getSecureItem('wallet_data', password);
-      if (!unlockedWallet) {
-        throw new Error('Invalid wallet password');
+      // Re-derive the spend key from the locally-stored recovery phrase. It is
+      // decrypted with the password only for the duration of this signing and is
+      // never persisted in clear or sent to the backend.
+      const mnemonic = loadMnemonic(password);
+      if (!mnemonic || !validateMnemonic(mnemonic)) {
+        throw new Error('Invalid wallet password, or no recovery phrase on this device. Import your recovery phrase to send.');
+      }
+      const { address, publicKey, secretKey } = deriveWepoKeypair(mnemonic);
+      if (address !== walletAddress) {
+        throw new Error('Recovery phrase does not match the active wallet address');
       }
 
-      if (getWalletAddress(unlockedWallet) !== walletAddress) {
-        throw new Error('Unlocked wallet does not match the active session');
-      }
-
-      const authSession = sessionManager.getAuthSession();
-      if (!authSession?.token) {
-        throw new Error('Session expired. Please log in again.');
-      }
-
-      const response = await fetch(`${backendUrl}/api/transaction/send`, {
+      // 1) Ask the node (via backend) to build the unsigned skeleton + sighash.
+      const buildResp = await fetch(`${backendUrl}/api/transaction/build-unsigned`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${authSession.token}`,
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          from_address: walletAddress,
+          from_address: address,
           to_address: toAddress,
           amount: parseFloat(amount),
-        })
+        }),
+      });
+      const build = await buildResp.json().catch(() => ({}));
+      if (!buildResp.ok) {
+        throw new Error(build.detail || build.error || 'Failed to build transaction');
+      }
+
+      // 2) Sign locally; signTransaction refuses to sign if the node's sighash
+      //    does not match our independent recomputation (anti-tamper).
+      const signedTx = signTransaction(build.unsigned_tx, secretKey, publicKey, build.sighash);
+
+      // 3) Submit the client-signed transaction. Spend authorization is the
+      //    Dilithium signature, enforced by consensus — no session token needed.
+      const response = await fetch(`${backendUrl}/api/transaction/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ signed_tx: signedTx }),
       });
 
       const payload = await response.json().catch(() => ({}));
@@ -691,6 +774,7 @@ export const WalletProvider = ({ children }) => {
     
     // Clear secure session data
     secureStorage.removeSecureItem('wallet_data');
+    secureStorage.removeSecureItem(MNEMONIC_KEY);
     sessionManager.clearAuthSession();
     sessionManager.clearSecureSession();
     sessionManager.remove('wepo_current_wallet');
@@ -735,8 +819,6 @@ export const WalletProvider = ({ children }) => {
     setTransactions,
     validateMnemonic,
     recoverWallet,
-    deriveSeedFromMnemonic,
-    generateWalletFromSeed,
     
     // Bitcoin wallet actions
     sendBitcoin,
