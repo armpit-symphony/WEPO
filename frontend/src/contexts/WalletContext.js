@@ -131,6 +131,12 @@ export const WalletProvider = ({ children }) => {
 
   const getBackendUrl = () => process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
 
+  // Messaging relay endpoint, resolved independently of the wallet RPC backend so
+  // privacy-conscious deployments can point messaging at a Tor hidden service
+  // (.onion) — reached over Tor Browser or a local SOCKS proxy — without routing
+  // wallet RPC there too. Falls back to the main backend when unset.
+  const getRelayUrl = () => process.env.REACT_APP_MESSAGING_RELAY_URL || getBackendUrl();
+
   // ===== SELF-CUSTODY KEY MANAGEMENT =====
   // The wallet holds the spend secret (a BIP-39 mnemonic) client-side; the
   // backend never sees keys. The WEPO address is derived from the mnemonic
@@ -831,7 +837,7 @@ export const WalletProvider = ({ children }) => {
     const { spend, msg } = _messagingIdentity(password);
     const digest = keyRegistryDigest(spend.address, msg.publicBundle.kem, msg.publicBundle.sig);
     const sig = signDigest(digest, spend.secretKey);
-    const resp = await fetch(`${getBackendUrl()}/api/messages/keys`, {
+    const resp = await fetch(`${getRelayUrl()}/api/messages/keys`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -850,7 +856,7 @@ export const WalletProvider = ({ children }) => {
   // Encrypt + send a message to a recipient address (E2E; relay stays blind).
   const sendMessage = async (toAddress, plaintext, password) => {
     const { spend, msg } = _messagingIdentity(password);
-    const keysResp = await fetch(`${getBackendUrl()}/api/messages/keys/${encodeURIComponent(toAddress)}`);
+    const keysResp = await fetch(`${getRelayUrl()}/api/messages/keys/${encodeURIComponent(toAddress)}`);
     const keys = await keysResp.json().catch(() => ({}));
     if (!keysResp.ok) {
       throw new Error(keys.detail || 'Recipient has not published messaging keys yet');
@@ -863,7 +869,7 @@ export const WalletProvider = ({ children }) => {
       senderSigSecretKey: msg.sigSecretKey,
       senderSigPublicKey: msg.sigPublicKey,
     });
-    const resp = await fetch(`${getBackendUrl()}/api/messages`, {
+    const resp = await fetch(`${getRelayUrl()}/api/messages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ envelope }),
@@ -878,7 +884,7 @@ export const WalletProvider = ({ children }) => {
     const { spend, msg } = _messagingIdentity(password);
     const ts = Math.floor(Date.now() / 1000);
     const sig = signDigest(fetchAuthDigest(spend.address, ts), spend.secretKey);
-    const resp = await fetch(`${getBackendUrl()}/api/messages/fetch`, {
+    const resp = await fetch(`${getRelayUrl()}/api/messages/fetch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ address: spend.address, spend_pub: spend.publicKeyHex, sig, ts }),

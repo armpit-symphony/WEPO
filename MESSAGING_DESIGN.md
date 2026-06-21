@@ -25,9 +25,13 @@ wallet: self-custody keys, post-quantum crypto, server cannot read content.
   address and serves a **public-key registry** (public keys only). It cannot read
   or forge messages. (Relay endpoints are the next slice; the security-critical
   client crypto is implemented now.)
-- **Metadata privacy (AI-resistant):** route relay traffic over the Layer-1
-  transport (Tor / `WEPO_SOCKS5_PROXY`) so the relay never sees real IPs; envelope
-  carries no plaintext, subject, or length-revealing structure beyond ciphertext.
+- **Metadata privacy (AI-resistant):** the envelope carries no plaintext, subject,
+  or structure beyond ciphertext, so the relay only ever sees opaque blobs. To
+  also hide the client's IP from the relay, the client must reach it over Tor —
+  set `REACT_APP_MESSAGING_RELAY_URL` to a `.onion` hidden service and use Tor
+  Browser (or a desktop build with a local SOCKS proxy). NOTE: this is distinct
+  from the node's P2P Tor (`WEPO_SOCKS5_PROXY`); a browser cannot force Tor on its
+  own, so client→relay IP privacy is a deployment choice, not automatic.
 
 ## 3. Envelope (opaque to the server)
 
@@ -74,7 +78,10 @@ key can recover the shared secret and decrypt.
    `/api/messaging/*` routes.~~ **DONE 2026-06-21** — module deleted, bridge routes
    removed, and the prelaunch security suite repointed to verify the new relay's
    key-binding + owner-only-fetch guarantees.
-2. Route relay calls over the Layer-1 Tor transport by default in the client.
+2. ~~Route relay calls over Tor.~~ **DONE 2026-06-21** — messaging uses a
+   separately-configurable relay endpoint (`REACT_APP_MESSAGING_RELAY_URL`) that
+   can point at a `.onion` hidden service, reached over Tor Browser / a SOCKS
+   proxy (browsers can't self-route Tor, so this is a deployment choice).
 3. Anchor messaging public keys on-chain for fully trustless key discovery.
 4. Live browser e2e (two wallets, enable → send → receive → verify).
 
