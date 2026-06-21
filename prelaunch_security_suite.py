@@ -409,31 +409,40 @@ def test_blockchain_sanity(api_base: str, results: Dict[str, Any]):
 # ----------------------------- Messaging E2E -----------------------------
 
 def test_messaging_e2e(results: Dict[str, Any]):
-    # 5% weight: TRUE E2E local module verification
+    # 5% weight: PQ blind-relay security. Content E2E is verified client-side
+    # (tests/run_messaging_test.sh); here we verify the server-side guarantees the
+    # relay enforces: messaging keys are bound to the address (no MITM key
+    # substitution) and only the address owner can fetch their inbox.
     try:
-        import sys
+        import sys, time as _time
         sys.path.append(str(ROOT / "wepo-blockchain" / "core"))
-        from quantum_messaging import messaging_system
-        alice = "wepo1alice000000000000000000000000000"
-        bob = "wepo1bob00000000000000000000000000000"
-        secret = "This is a SECRET message that only Bob should read!"
-        msg = messaging_system.send_message(from_address=alice, to_address=bob, content=secret, subject="Sec Test")
-        # Sender trying to decrypt (should fail)
-        failed_sender = False
-        try:
-            messaging_system.decrypt_message_for_user(msg, alice)
-        except Exception:
-            failed_sender = True
-        # Recipient decrypts
-        try:
-            plaintext = messaging_system.decrypt_message_for_user(msg, bob)
-            ok = failed_sender and (plaintext == secret)
-            log("messaging_e2e", "TRUE E2E Messaging", ok, 5.0 if ok else 0.0,
-                "Recipient-only decryption; server cannot decrypt (local)" if ok else "E2E check failed", results, severity=("high" if not ok else "medium"))
-        except Exception as e:
-            log("messaging_e2e", "TRUE E2E Messaging", False, 0.0, f"Recipient decrypt error: {e}", results, severity="high")
+        sys.path.append(str(ROOT / "backend"))
+        from dilithium import generate_dilithium_keypair, sign_with_dilithium
+        from address_utils import generate_wepo_address
+        import messaging_relay as relay
+
+        spend = generate_dilithium_keypair()
+        attacker = generate_dilithium_keypair()
+        addr = generate_wepo_address(spend.public_key, address_type="quantum")
+        kem_pub, sig_pub = "aa" * 1184, "bb" * 1312
+
+        good = sign_with_dilithium(relay.key_registry_digest(addr, kem_pub, sig_pub), spend.private_key).hex()
+        accept = relay.verify_key_binding(addr, kem_pub, sig_pub, spend.public_key.hex(), good)
+        bad = sign_with_dilithium(relay.key_registry_digest(addr, kem_pub, sig_pub), attacker.private_key).hex()
+        reject = not relay.verify_key_binding(addr, kem_pub, sig_pub, attacker.public_key.hex(), bad)
+
+        now = int(_time.time())
+        fa = sign_with_dilithium(relay.fetch_auth_digest(addr, now), spend.private_key).hex()
+        fetch_ok = relay.verify_fetch_auth(addr, spend.public_key.hex(), fa, now, now=now)
+        ofa = sign_with_dilithium(relay.fetch_auth_digest(addr, now), attacker.private_key).hex()
+        fetch_reject = not relay.verify_fetch_auth(addr, attacker.public_key.hex(), ofa, now, now=now)
+
+        ok = accept and reject and fetch_ok and fetch_reject
+        log("messaging_e2e", "PQ blind-relay messaging", ok, 5.0 if ok else 0.0,
+            "Key binding + owner-only fetch enforced (no MITM)" if ok else "Relay security check failed",
+            results, severity=("high" if not ok else "medium"))
     except Exception as e:
-        log("messaging_e2e", "TRUE E2E Messaging", False, 0.0, f"Module error: {e}", results, severity="high")
+        log("messaging_e2e", "PQ blind-relay messaging", False, 0.0, f"Module error: {e}", results, severity="high")
 
 # ----------------------------- Runner -----------------------------
 

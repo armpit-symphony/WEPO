@@ -70,8 +70,10 @@ key can recover the shared secret and decrypt.
 
 ## 6. Next slices
 
-1. Retire the demo `quantum_messaging.py` (RSA/server-key) + its `/api/messaging/*`
-   routes once the new relay is the only path.
+1. ~~Retire the demo `quantum_messaging.py` (RSA/server-key) + its
+   `/api/messaging/*` routes.~~ **DONE 2026-06-21** — module deleted, bridge routes
+   removed, and the prelaunch security suite repointed to verify the new relay's
+   key-binding + owner-only-fetch guarantees.
 2. Route relay calls over the Layer-1 Tor transport by default in the client.
 3. Anchor messaging public keys on-chain for fully trustless key discovery.
 4. Live browser e2e (two wallets, enable → send → receive → verify).
