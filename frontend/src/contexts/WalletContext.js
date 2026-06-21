@@ -743,6 +743,68 @@ export const WalletProvider = ({ children }) => {
     }
   };
 
+  // Create a real on-chain RWA asset (self-custody, client-signed). The caller
+  // supplies the asset_hash (sha256 commitment of the off-chain asset
+  // definition); this builds -> signs -> submits exactly like sendWepo, so
+  // ownership is bound to the user's key and the asset is anchored on-chain.
+  const createRwaAsset = async ({ assetHash, name, assetType, metadata }, password) => {
+    setIsLoading(true);
+    try {
+      const backendUrl = getBackendUrl();
+      const walletAddress = getWalletAddress(wallet);
+      if (!walletAddress) {
+        throw new Error('No active wallet loaded');
+      }
+
+      const mnemonic = loadMnemonic(password);
+      if (!mnemonic || !validateMnemonic(mnemonic)) {
+        throw new Error('Invalid wallet password, or no recovery phrase on this device.');
+      }
+      const { address, publicKey, secretKey } = deriveWepoKeypair(mnemonic);
+      if (address !== walletAddress) {
+        throw new Error('Recovery phrase does not match the active wallet address');
+      }
+
+      // 1) Build the unsigned on-chain RWA creation + sighash.
+      const buildResp = await fetch(`${backendUrl}/api/rwa/build-unsigned-create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          owner_address: address,
+          asset_hash: assetHash,
+          name,
+          asset_type: assetType,
+          metadata,
+        }),
+      });
+      const build = await buildResp.json().catch(() => ({}));
+      if (!buildResp.ok) {
+        throw new Error(build.detail || build.error || 'Failed to build RWA creation');
+      }
+
+      // 2) Sign locally (anti-tamper sighash check).
+      const signedTx = signTransaction(build.unsigned_tx, secretKey, publicKey, build.sighash);
+
+      // 3) Submit the signed transaction.
+      const response = await fetch(`${backendUrl}/api/transaction/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ signed_tx: signedTx }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.detail || payload.error || 'RWA creation failed');
+      }
+
+      await loadWalletData(walletAddress);
+      return { ...payload, asset_id: build.asset_id };
+    } catch (error) {
+      throw new Error('RWA creation failed: ' + error.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const logout = async () => {
     secureLog.info('User logout initiated');
 
@@ -812,6 +874,7 @@ export const WalletProvider = ({ children }) => {
     loginWallet,
     logout,
     sendWepo,
+    createRwaAsset,
     loadWalletData,
     changePassword,
     setWallet,

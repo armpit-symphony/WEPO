@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Upload, 
-  FileText, 
-  Image, 
-  Home, 
-  Car, 
-  Palette, 
-  Package, 
+import {
+  Upload,
+  FileText,
+  Image,
+  Home,
+  Car,
+  Palette,
+  Package,
   ArrowLeft,
   AlertCircle,
   CheckCircle,
@@ -14,9 +14,34 @@ import {
   Coins,
   X
 } from 'lucide-react';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { useWallet } from '../contexts/WalletContext';
+import { bytesToHex } from '../utils/wepoSigner';
+
+// Commit the off-chain asset definition (incl. the file's own hash) to a single
+// sha256 digest. Only this 64-hex commitment is anchored on-chain; the document
+// itself stays off-chain.
+const computeAssetHash = (form, file) => {
+  let fileHashHex = '';
+  if (file?.data) {
+    const bin = atob(file.data);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    fileHashHex = bytesToHex(sha256(bytes));
+  }
+  const definition = JSON.stringify({
+    name: form.name,
+    description: form.description,
+    asset_type: form.asset_type,
+    valuation: form.valuation || '',
+    file_hash: fileHashHex,
+  });
+  return bytesToHex(sha256(new TextEncoder().encode(definition)));
+};
 
 const RWACreateAsset = ({ onBack, userAddress, onAssetCreated }) => {
   const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
+  const { createRwaAsset } = useWallet();
   const [step, setStep] = useState(1);
   const [formData, setFormData] = useState({
     name: '',
@@ -25,12 +50,15 @@ const RWACreateAsset = ({ onBack, userAddress, onAssetCreated }) => {
     valuation: '',
     metadata: {}
   });
+  const [password, setPassword] = useState('');
   const [file, setFile] = useState(null);
   const [filePreview, setFilePreview] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [assetId, setAssetId] = useState('');
+  const [txHash, setTxHash] = useState('');
+  const [assetHash, setAssetHash] = useState('');
   const [feeInfo, setFeeInfo] = useState(null);
   const [userBalance, setUserBalance] = useState(0);
 
@@ -132,99 +160,43 @@ const RWACreateAsset = ({ onBack, userAddress, onAssetCreated }) => {
         setError('Please fill in all required fields');
         return;
       }
-
-      // Prepare request data
-      const requestData = {
-        name: formData.name,
-        description: formData.description,
-        asset_type: formData.asset_type,
-        owner_address: userAddress,
-        metadata: {
-          ...formData.metadata,
-          created_via: 'WEPO_RWA_Dashboard'
-        }
-      };
-
-      // Add file data if present
-      if (file) {
-        requestData.file_data = file.data;
-        requestData.file_name = file.name;
-        requestData.file_type = file.type;
+      if (!password) {
+        setError('Enter your wallet password to sign the on-chain creation');
+        return;
       }
 
-      // Add valuation if provided
-      if (formData.valuation) {
-        requestData.valuation = parseFloat(formData.valuation);
-      }
+      // Commit the asset definition (+ file) to an on-chain hash.
+      const computedHash = computeAssetHash(formData, file);
 
-      // Create asset
-      const response = await fetch(`${backendUrl}/api/rwa/create-asset`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
+      // Build -> sign -> submit a real on-chain rwa_create transaction. The
+      // off-chain file/metadata never leave the client; only the hash is anchored.
+      const result = await createRwaAsset(
+        {
+          assetHash: computedHash,
+          name: formData.name,
+          assetType: formData.asset_type,
+          metadata: {
+            description: formData.description,
+            valuation: formData.valuation || '',
+            file_name: file ? file.name : '',
+            created_via: 'WEPO_RWA_Dashboard',
+          },
         },
-        body: JSON.stringify(requestData),
-      });
+        password,
+      );
 
-      const data = await response.json();
+      setAssetId(result.asset_id || '');
+      setTxHash(result.tx_hash || result.txid || result.transaction_id || '');
+      setAssetHash(computedHash);
+      setSuccess('Asset created on-chain. Ownership is bound to your wallet key; the asset hash is anchored on the WEPO chain.');
+      setPassword('');
+      setStep(2);
 
-      if (response.ok && data.success) {
-        setAssetId(data.asset_id);
-        setSuccess(`Asset created successfully! Fee of ${data.fee_paid} WEPO distributed to network participants (60% masternodes, 25% miners, 15% stakers). Remaining balance: ${data.remaining_balance.toFixed(8)} WEPO`);
-        setStep(2);
-        
-        // Update user balance
-        setUserBalance(data.remaining_balance);
-        
-        // Call parent callback
-        if (onAssetCreated) {
-          onAssetCreated();
-        }
-      } else {
-        setError(data.detail || 'Failed to create asset');
+      if (onAssetCreated) {
+        onAssetCreated();
       }
     } catch (err) {
-      setError('Error creating asset: ' + err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleTokenizeAsset = async () => {
-    try {
-      setLoading(true);
-      setError('');
-
-      const requestData = {
-        asset_id: assetId,
-        token_name: `${formData.name} Token`,
-        token_symbol: `RWA${assetId.slice(0, 6).toUpperCase()}`,
-        total_supply: 1000000000000 // 10,000 tokens with 8 decimals
-      };
-
-      const response = await fetch(`${backendUrl}/api/rwa/tokenize`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(requestData),
-      });
-
-      const data = await response.json();
-
-      if (response.ok && data.success) {
-        setSuccess('Asset tokenized successfully!');
-        setStep(3);
-        
-        // Call parent callback
-        if (onAssetCreated) {
-          onAssetCreated();
-        }
-      } else {
-        setError(data.detail || 'Failed to tokenize asset');
-      }
-    } catch (err) {
-      setError('Error tokenizing asset: ' + err.message);
+      setError(err.message || 'Failed to create asset');
     } finally {
       setLoading(false);
     }
@@ -423,6 +395,24 @@ const RWACreateAsset = ({ onBack, userAddress, onAssetCreated }) => {
         </div>
       </div>
 
+      {/* Wallet password (required to sign the on-chain creation) */}
+      <div>
+        <label className="block text-sm font-medium text-purple-200 mb-2">
+          Wallet Password *
+        </label>
+        <input
+          type="password"
+          name="rwa_password"
+          value={password}
+          onChange={(e) => { setPassword(e.target.value); setError(''); }}
+          className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500"
+          placeholder="Enter your wallet password to sign"
+        />
+        <p className="text-xs text-gray-400 mt-1">
+          Creation is signed locally with your key and recorded on-chain. The file/metadata stay on your device — only their hash is anchored.
+        </p>
+      </div>
+
       {error && (
         <div className="bg-red-900/50 border border-red-500 rounded-lg p-3 text-red-200 text-sm">
           {error}
@@ -439,7 +429,7 @@ const RWACreateAsset = ({ onBack, userAddress, onAssetCreated }) => {
         </button>
         <button
           onClick={handleCreateAsset}
-          disabled={loading || !formData.name || !formData.description || (feeInfo && userBalance < feeInfo.rwa_creation_fee)}
+          disabled={loading || !formData.name || !formData.description || !password || (feeInfo && userBalance < feeInfo.rwa_creation_fee)}
           className="bg-purple-600 hover:bg-purple-700 text-white font-semibold py-3 px-6 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
         >
           {loading ? (
@@ -466,21 +456,29 @@ const RWACreateAsset = ({ onBack, userAddress, onAssetCreated }) => {
       <div className="bg-green-900/30 rounded-lg p-4 border border-green-500/30">
         <div className="flex items-center gap-2 mb-2">
           <CheckCircle className="h-4 w-4 text-green-400" />
-          <span className="text-sm font-medium text-green-200">Asset Created Successfully!</span>
+          <span className="text-sm font-medium text-green-200">Asset Created On-Chain 🎉</span>
         </div>
         <p className="text-sm text-gray-300">
-          Your asset has been created with ID: <span className="font-mono text-green-300">{assetId}</span>
+          {success || 'Your asset is now anchored on the WEPO blockchain and owned by your wallet key.'}
         </p>
       </div>
 
-      <div className="bg-purple-900/30 rounded-lg p-4 border border-purple-500/30">
-        <div className="flex items-center gap-2 mb-2">
-          <Coins className="h-4 w-4 text-purple-400" />
-          <span className="text-sm font-medium text-purple-200">Step 2: Tokenize Asset</span>
+      <div className="bg-gray-800 rounded-lg p-6 border border-gray-600">
+        <h3 className="text-white font-semibold mb-4">On-Chain Record</h3>
+        <div className="space-y-3 text-sm">
+          <div>
+            <span className="text-gray-400">Asset ID:</span>
+            <div className="text-green-300 font-mono break-all">{assetId || '—'}</div>
+          </div>
+          <div>
+            <span className="text-gray-400">Transaction:</span>
+            <div className="text-green-300 font-mono break-all">{txHash || 'pending'}</div>
+          </div>
+          <div>
+            <span className="text-gray-400">Asset Hash (anchored commitment):</span>
+            <div className="text-purple-300 font-mono break-all">{assetHash || '—'}</div>
+          </div>
         </div>
-        <p className="text-sm text-gray-300">
-          Create tradeable tokens representing ownership shares of your asset.
-        </p>
       </div>
 
       <div className="bg-gray-800 rounded-lg p-6 border border-gray-600">
@@ -509,116 +507,20 @@ const RWACreateAsset = ({ onBack, userAddress, onAssetCreated }) => {
         </div>
       </div>
 
-      <div className="bg-gray-800 rounded-lg p-6 border border-gray-600">
-        <h3 className="text-white font-semibold mb-4">Token Details</h3>
-        <div className="grid grid-cols-2 gap-4 text-sm">
-          <div>
-            <span className="text-gray-400">Token Name:</span>
-            <div className="text-white font-medium">{formData.name} Token</div>
-          </div>
-          <div>
-            <span className="text-gray-400">Symbol:</span>
-            <div className="text-white font-medium">RWA{assetId.slice(0, 6).toUpperCase()}</div>
-          </div>
-          <div>
-            <span className="text-gray-400">Total Supply:</span>
-            <div className="text-white font-medium">10,000 tokens</div>
-          </div>
-          <div>
-            <span className="text-gray-400">Decimals:</span>
-            <div className="text-white font-medium">8</div>
-          </div>
-        </div>
-      </div>
-
-      {error && (
-        <div className="bg-red-900/50 border border-red-500 rounded-lg p-3 text-red-200 text-sm">
-          {error}
-        </div>
-      )}
-
-      <div className="flex justify-between">
-        <button
-          onClick={() => setStep(1)}
-          className="flex items-center gap-2 text-gray-400 hover:text-white transition-colors"
-        >
-          <ArrowLeft size={20} />
-          Back
-        </button>
-        <button
-          onClick={handleTokenizeAsset}
-          disabled={loading}
-          className="bg-purple-600 hover:bg-purple-700 text-white font-semibold py-3 px-6 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-        >
-          {loading ? (
-            <>
-              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-              Tokenizing...
-            </>
-          ) : (
-            <>
-              <Coins size={20} />
-              Tokenize Asset
-            </>
-          )}
-        </button>
-      </div>
-    </div>
-  );
-
-  const renderStep3 = () => (
-    <div className="space-y-6">
-      <div className="bg-green-900/30 rounded-lg p-4 border border-green-500/30">
-        <div className="flex items-center gap-2 mb-2">
-          <CheckCircle className="h-4 w-4 text-green-400" />
-          <span className="text-sm font-medium text-green-200">Asset Tokenized Successfully!</span>
-        </div>
-        <p className="text-sm text-gray-300">
-          Your asset has been tokenized and is now available for trading on the WEPO DEX.
-        </p>
-      </div>
-
-      <div className="bg-gray-800 rounded-lg p-6 border border-gray-600">
-        <h3 className="text-white font-semibold mb-4">Congratulations! 🎉</h3>
-        <div className="space-y-4">
-          <p className="text-gray-300">
-            You have successfully created and tokenized your real world asset. Here's what you can do next:
-          </p>
-          <ul className="space-y-2 text-sm text-gray-300">
-            <li className="flex items-center gap-2">
-              <CheckCircle className="h-4 w-4 text-green-400" />
-              View your asset in the portfolio
-            </li>
-            <li className="flex items-center gap-2">
-              <CheckCircle className="h-4 w-4 text-green-400" />
-              Transfer tokens to other users
-            </li>
-            <li className="flex items-center gap-2">
-              <CheckCircle className="h-4 w-4 text-green-400" />
-              Trade tokens on the WEPO DEX
-            </li>
-            <li className="flex items-center gap-2">
-              <CheckCircle className="h-4 w-4 text-green-400" />
-              Monitor token performance
-            </li>
-          </ul>
-        </div>
+      <div className="bg-blue-900/30 border border-blue-500/30 rounded-lg p-3 text-blue-200 text-xs">
+        Tradeable tokenization of RWA assets is a separate, post-launch feature and is not enabled yet.
       </div>
 
       <div className="flex justify-center gap-4">
         <button
           onClick={() => {
             setStep(1);
-            setFormData({
-              name: '',
-              description: '',
-              asset_type: 'document',
-              valuation: '',
-              metadata: {}
-            });
+            setFormData({ name: '', description: '', asset_type: 'document', valuation: '', metadata: {} });
             setFile(null);
             setFilePreview('');
             setAssetId('');
+            setTxHash('');
+            setAssetHash('');
             setError('');
             setSuccess('');
           }}
@@ -651,18 +553,11 @@ const RWACreateAsset = ({ onBack, userAddress, onAssetCreated }) => {
         }`}>
           2
         </div>
-        <div className={`h-0.5 w-8 ${step >= 3 ? 'bg-purple-600' : 'bg-gray-600'}`}></div>
-        <div className={`flex items-center justify-center w-8 h-8 rounded-full ${
-          step >= 3 ? 'bg-purple-600 text-white' : 'bg-gray-600 text-gray-400'
-        }`}>
-          3
-        </div>
       </div>
 
       {/* Step Content */}
       {step === 1 && renderStep1()}
       {step === 2 && renderStep2()}
-      {step === 3 && renderStep3()}
     </div>
   );
 };
