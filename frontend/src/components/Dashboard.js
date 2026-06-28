@@ -78,22 +78,36 @@ const Dashboard = ({ onLogout }) => {
 
   useEffect(() => {
     let isMounted = true;
+    // Genesis/mining status changes on the order of minutes, not seconds, so we
+    // poll lazily and only while the tab is visible. Aggressive polling on a
+    // hidden tab needlessly holds browser sockets and competes with the active
+    // wallet's requests (logins, messaging) under the ~6-connection per-host cap.
+    const POLL_INTERVAL_MS = 30000;
 
     const syncMiningStatus = async () => {
-      if (!isMounted) {
+      if (!isMounted || document.hidden) {
         return;
       }
       await refreshMiningStatus();
     };
 
+    const onVisibilityChange = () => {
+      // Refresh immediately when the tab comes back into view.
+      if (!document.hidden) {
+        syncMiningStatus();
+      }
+    };
+
     syncMiningStatus();
-    const intervalId = window.setInterval(syncMiningStatus, 5000);
+    const intervalId = window.setInterval(syncMiningStatus, POLL_INTERVAL_MS);
     window.addEventListener('focus', syncMiningStatus);
+    document.addEventListener('visibilitychange', onVisibilityChange);
 
     return () => {
       isMounted = false;
       window.clearInterval(intervalId);
       window.removeEventListener('focus', syncMiningStatus);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, []);
 
