@@ -79,24 +79,27 @@ browser). Both open `http://localhost:3000`.
 Same as above; copy **ADDR_B**.
 
 ### B3. Open messaging on BOTH wallets
-In each window: open **Messages**.
-- There is **no password prompt and no “Enable” step** — messaging is live the
-  moment the wallet is open. Each wallet automatically publishes its public keys to
-  the relay registry so the other can encrypt to it.
+In each window: open **Private Messages**.
+- If the wallet was created/opened on this build, messaging is already on — no
+  password, no "enable" step. Each wallet auto-publishes its public keys so the
+  other can encrypt to it.
+- If the wallet predates this build you'll see a **one-time** "Activate messaging"
+  screen: enter the wallet password once. After that messaging never asks again.
+  (Logging out and back in activates it the same way.)
 
 ### B4. Send A → B (Window 1)
-1. In wallet A's Messages: **New** → recipient = **ADDR_B** → **Start chat**.
-2. Type a message and press **Enter** (or tap the send button).
-3. The message appears immediately as a purple bubble (end-to-end encrypted, free).
+1. In wallet A's Private Messages: paste **ADDR_B** into **Recipient Address**.
+2. Type a message → **Send Message**.
+3. Expect: “✅ Message sent (end-to-end encrypted).”
 
 ### B5. Receive on B (Window 2)
-1. In wallet B's Messages the new conversation from **ADDR_A** appears within ~10s
-   (the inbox auto-polls — no refresh button needed).
-2. Open it: your plaintext shows with a green check (sender signature verified).
+1. In wallet B's Private Messages, tap **Get Messages** (the Inbox button).
+2. Expect: a message from **ADDR_A** with your plaintext and a green check (sender
+   signature verified).
 
 ### B6. Reply B → A
-Type a reply in the same thread and press Enter; it shows up in A's thread within
-~10s. ✅ Round trip done.
+On B, tap **Reply** under A's message (fills the recipient), type a reply →
+**Send Message**. On A, tap **Get Messages** → it appears. ✅ Round trip done.
 
 ### B7. Confirm the relay is blind (optional, convincing)
 With the backend running, inspect what the server stored:

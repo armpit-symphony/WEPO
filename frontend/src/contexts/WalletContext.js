@@ -117,8 +117,6 @@ export const WalletProvider = ({ children }) => {
         if (inactive && !minerConnected) {
           // Lock: clear only sensitive-capability session pieces
           sessionManager.set('wepo_locked', true);
-          // Locked == not open: wipe the in-tab messaging identity too.
-          disarmMessagingSession();
         }
         monitor();
       }, 60 * 1000);
@@ -170,47 +168,75 @@ export const WalletProvider = ({ children }) => {
   };
   const loadMnemonic = (password) => secureStorage.getSecureItem(MNEMONIC_KEY, password);
 
-  // ===== MESSAGING SESSION =====
-  // Messaging must "just work" whenever the wallet is open: no password prompt, no
-  // enable step, always reachable. We derive the messaging + spend keypairs once
-  // (at create/login/recover, when the password is already in hand) and keep them
-  // in memory. To survive a page reload within the same open session we also stash
-  // the mnemonic in sessionStorage (tab-scoped; cleared on logout and tab close),
-  // so the identity can be rebuilt without re-prompting. Trade-off documented in
-  // MESSAGING_DESIGN.md: this is the cost of "always-on" messaging for a wallet
-  // that is already unlocked. fetch/send of WEPO funds still requires the password.
-  const SESSION_MNEMONIC_KEY = 'wepo_session_mnemonic';
+  // ===== MESSAGING IDENTITY =====
+  // Messaging is wired to the wallet address and must work with zero friction: no
+  // password prompt and no "enable" step once activated. The messaging + spend
+  // keypairs are derived from the mnemonic; to keep messaging password-free across
+  // reloads and restarts we persist the seed locally for messaging only. It is
+  // armed automatically at create/login/recover (when the password is in hand), or
+  // via a one-time activateMessaging() for wallets that predate this feature.
+  //
+  // SECURITY TRADE-OFF (lab/test; messaging is gated pre-mainnet): this stores the
+  // spend seed unencrypted on the device until logout. Spending WEPO still requires
+  // the password every time. Revisit before enabling messaging on mainnet.
+  const MESSAGING_SEED_KEY = 'wepo_messaging_seed';
 
   const _deriveMessagingIdentity = (mnemonic) => ({
     spend: deriveWepoKeypair(mnemonic),
     msg: deriveMessagingKeypair(mnemonic),
   });
 
-  // Arm messaging for the open session from a known-good mnemonic.
+  // Arm + persist messaging from a known-good mnemonic (password-free thereafter).
   const armMessagingSession = (mnemonic) => {
     if (!mnemonic || !validateMnemonic(mnemonic)) return;
-    try { sessionStorage.setItem(SESSION_MNEMONIC_KEY, mnemonic); } catch (e) { /* non-fatal */ }
+    try { localStorage.setItem(MESSAGING_SEED_KEY, mnemonic); } catch (e) { /* non-fatal */ }
     messagingIdentityRef.current = _deriveMessagingIdentity(mnemonic);
-    messagingReadyRef.current = false; // re-publish on next open
+    messagingReadyRef.current = false; // re-publish keys on next open
   };
 
-  // Return the cached identity, rebuilding it from the session mnemonic after a
-  // reload. Throws only if the wallet isn't actually open on this device.
+  // True if messaging can run without asking for anything (in memory or persisted).
+  const isMessagingActivated = () => {
+    if (messagingIdentityRef.current) return true;
+    try {
+      const m = localStorage.getItem(MESSAGING_SEED_KEY);
+      return !!(m && validateMnemonic(m));
+    } catch (e) { return false; }
+  };
+
+  // Return the cached identity, rebuilding it from the persisted seed if needed.
+  // Throws a tagged error if messaging hasn't been activated on this device yet.
   const getMessagingIdentity = () => {
     if (messagingIdentityRef.current) return messagingIdentityRef.current;
     let mnemonic = null;
-    try { mnemonic = sessionStorage.getItem(SESSION_MNEMONIC_KEY); } catch (e) { /* non-fatal */ }
+    try { mnemonic = localStorage.getItem(MESSAGING_SEED_KEY); } catch (e) { /* non-fatal */ }
     if (!mnemonic || !validateMnemonic(mnemonic)) {
-      throw new Error('Messaging is locked — reopen your wallet to continue.');
+      const err = new Error('Messaging is not activated on this device yet.');
+      err.code = 'MESSAGING_NOT_ACTIVATED';
+      throw err;
     }
     messagingIdentityRef.current = _deriveMessagingIdentity(mnemonic);
     return messagingIdentityRef.current;
   };
 
+  // One-time activation for a wallet opened before messaging existed: derive from
+  // the password ONCE; afterwards messaging is password-free on this device.
+  const activateMessaging = (password) => {
+    const mnemonic = loadMnemonic(password);
+    if (!mnemonic || !validateMnemonic(mnemonic)) {
+      throw new Error('Incorrect wallet password, or no recovery phrase on this device.');
+    }
+    const { address } = deriveWepoKeypair(mnemonic);
+    if (wallet?.address && address !== wallet.address) {
+      throw new Error('Recovery phrase does not match this wallet.');
+    }
+    armMessagingSession(mnemonic);
+    return true;
+  };
+
   const disarmMessagingSession = () => {
     messagingIdentityRef.current = null;
     messagingReadyRef.current = false;
-    try { sessionStorage.removeItem(SESSION_MNEMONIC_KEY); } catch (e) { /* non-fatal */ }
+    try { localStorage.removeItem(MESSAGING_SEED_KEY); } catch (e) { /* non-fatal */ }
   };
 
   // fetch() with a hard timeout so a slow/half-open relay can never hang the UI
@@ -1081,6 +1107,8 @@ export const WalletProvider = ({ children }) => {
     createRwaAsset,
     publishMessagingKeys,
     ensureMessagingReady,
+    isMessagingActivated,
+    activateMessaging,
     sendMessage,
     fetchMessages,
     loadWalletData,

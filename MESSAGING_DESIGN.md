@@ -68,26 +68,29 @@ key can recover the shared secret and decrypt.
   (owner-authenticated), `POST /api/messages/ack` (owner-authenticated delete).
 - Client: `WalletContext.publishMessagingKeys / sendMessage / fetchMessages`
   (derives spend + messaging keys from the mnemonic). UI: `QuantumMessaging.js`
-  is a texting-style chat (conversation list + bubble threads + bottom composer,
-  auto-polled inbox).
+  is a simple **send form** (recipient address + message + Send) plus an **Inbox**
+  button that retrieves all messages — modeled on the WEPO send screen.
 - Tests: `tests/test_messaging_relay.py` (key-binding + fetch-auth, accept/reject)
   and `tests/run_messaging_test.sh` (E2E envelope round-trip). All pass.
 
-### Always-on session model (UX)
+### Identity model (UX): wired to the address, password-free
 
-Messaging is live whenever the wallet is open — no password prompt, no "enable"
-button, and sending is free (relay store; no on-chain tx). To achieve this without
-re-prompting, `WalletContext` derives the messaging + spend keypairs **once** at
-create/login/recover (when the password is already in hand) and keeps them in an
-in-memory ref; an effect auto-publishes the keys to the relay registry when the
-wallet opens, so the address is always reachable.
+Messaging is wired to the wallet address and runs with no password and no "enable"
+step once activated; sending is free (relay store, no on-chain tx). `WalletContext`
+derives the messaging + spend keypairs from the mnemonic and **persists the seed
+locally for messaging** (`localStorage` `wepo_messaging_seed`) so messaging stays
+on across reloads and restarts without re-prompting:
 
-To survive a page reload within the same open session, the mnemonic is stashed in
-`sessionStorage` (`wepo_session_mnemonic`), which is tab-scoped and cleared on
-logout and tab close. **Trade-off:** for an already-unlocked wallet this keeps the
-spend secret recoverable in tab memory for the session's lifetime — the cost of
-"always-on" messaging. Spending WEPO still requires the password. The auto-lock and
-`logout` both call `disarmMessagingSession()` to wipe it.
+- Armed automatically at create/login/recover (when the password is in hand).
+- For wallets opened before this feature existed, a **one-time** `activateMessaging`
+  (password entered once) bootstraps it; afterwards messaging never asks again.
+- An effect auto-publishes the keys to the relay registry when the wallet opens, so
+  the address is always reachable. `logout` calls `disarmMessagingSession()`.
+
+**Trade-off (lab/test; messaging is gated pre-mainnet):** persisting the seed for
+messaging stores the spend secret unencrypted on the device until logout. Spending
+WEPO still requires the password every time. This must be revisited (e.g. a
+messaging-only subkey, or OS keystore) before enabling messaging on mainnet.
 
 ## 6. Next slices
 
