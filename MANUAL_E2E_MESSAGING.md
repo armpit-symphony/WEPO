@@ -78,24 +78,25 @@ browser). Both open `http://localhost:3000`.
 ### B2. Create wallet B (Window 2, incognito)
 Same as above; copy **ADDR_B**.
 
-### B3. Enable messaging on BOTH wallets
-In each window: open **Quantum Messaging** → enter the wallet password →
-**Enable Messaging**.
-- Expect: “Messaging keys published…”. (This publishes each wallet's public keys
-  to the relay registry so the other can encrypt to them.)
+### B3. Open messaging on BOTH wallets
+In each window: open **Messages**.
+- There is **no password prompt and no “Enable” step** — messaging is live the
+  moment the wallet is open. Each wallet automatically publishes its public keys to
+  the relay registry so the other can encrypt to it.
 
 ### B4. Send A → B (Window 1)
-1. In wallet A's messaging: **New** → recipient = **ADDR_B** → type a message →
-   **Send**.
-2. Expect: “Message sent (end-to-end encrypted).”
+1. In wallet A's Messages: **New** → recipient = **ADDR_B** → **Start chat**.
+2. Type a message and press **Enter** (or tap the send button).
+3. The message appears immediately as a purple bubble (end-to-end encrypted, free).
 
 ### B5. Receive on B (Window 2)
-1. In wallet B's messaging: tap **Refresh** (enter password if prompted).
-2. Expect: a conversation from **ADDR_A**; open it and see your plaintext, with a
-   green check (sender signature verified).
+1. In wallet B's Messages the new conversation from **ADDR_A** appears within ~10s
+   (the inbox auto-polls — no refresh button needed).
+2. Open it: your plaintext shows with a green check (sender signature verified).
 
 ### B6. Reply B → A
-Send a reply from B to **ADDR_A**; refresh A → it appears. ✅ Round trip done.
+Type a reply in the same thread and press Enter; it shows up in A's thread within
+~10s. ✅ Round trip done.
 
 ### B7. Confirm the relay is blind (optional, convincing)
 With the backend running, inspect what the server stored:
@@ -108,9 +109,13 @@ plaintext**. The server cannot read the message.
 
 ---
 
-## Part C — Trustless on-chain key discovery (optional; needs the node + coins)
+## Part C — Trustless on-chain key discovery (advanced; needs the node + coins)
 
-This proves recipients can find your keys **without trusting the relay**.
+This proves recipients can find your keys **without trusting the relay**. On-chain
+anchoring costs a small fee, so it is **no longer surfaced as a button** in the
+always-on/free messaging UI — it's an optional advanced step done via the API. The
+client still *resolves* recipient keys on-chain first (registry only as fallback),
+so anchoring via the API below is enough to exercise the trustless path.
 
 ### C1. Fund wallet A
 Restart the node so it mines to ADDR_A:
@@ -121,14 +126,16 @@ python3 wepo_node.py --api-port 18212 --network-profile test \
 ```
 Wait ~1 minute; refresh wallet A — it should show a balance.
 
-### C2. Anchor A's keys on-chain
-In wallet A's messaging unlock screen → **Anchor keys on-chain**.
-- Expect: “Messaging keys anchored on-chain… Confirms in a block.”
-- Verify it landed:
-  ```bash
-  curl http://127.0.0.1:18212/api/messages/keys/onchain/ADDR_A
-  ```
-  Expect a JSON record with `kem_pub`, `sig_pub`, `register_height`.
+### C2. Anchor A's keys on-chain (via API)
+The on-chain anchor is built → signed → submitted like any tx. The signing happens
+client-side, so the simplest way to exercise it manually is to build the unsigned
+tx and submit it with a signer (mirror `scripts/wepo_accelerated_simulation.py`),
+or temporarily call `registerMessagingKeysOnChain` from the wallet console. Then
+verify it landed:
+```bash
+curl http://127.0.0.1:18212/api/messages/keys/onchain/ADDR_A
+```
+Expect a JSON record with `kem_pub`, `sig_pub`, `register_height`.
 
 ### C3. Send B → A and confirm on-chain resolution
 Send a message from B to **ADDR_A**. The client resolves A's keys from the chain
@@ -159,8 +166,9 @@ bash    tests/run_messaging_test.sh
 
 - **CORS errors in the browser:** add your frontend origin to
   `WEPO_ALLOWED_ORIGINS` in `backend/.env`, restart the backend.
-- **“Recipient has not published messaging keys yet”:** the recipient must do B3
-  (Enable Messaging) first.
+- **“This address has not used messaging yet…”:** the recipient must have opened
+  their wallet at least once on this relay so its keys auto-published (B3). Have
+  them open **Messages** and try again.
 - **Balance shows 0 / can't anchor on-chain:** the node isn't running or wallet A
   isn't funded (Part C1).
 - **Two wallets share state:** use separate browser profiles/incognito — wallet

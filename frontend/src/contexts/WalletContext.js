@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import CryptoJS from 'crypto-js';
 import * as bip39 from 'bip39';
 import { sessionManager, secureLog, secureStorage } from '../utils/securityUtils';
@@ -44,6 +44,12 @@ export const WalletProvider = ({ children }) => {
   const [btcUtxos, setBtcUtxos] = useState([]);
   const [btcWalletFingerprint, setBtcWalletFingerprint] = useState(null);
   const [isBtcLoading, setIsBtcLoading] = useState(false);
+
+  // In-memory messaging identity (spend + messaging keypairs), derived once when
+  // the wallet is opened so messaging never needs the password again while the
+  // wallet stays open. See armMessagingSession / getMessagingIdentity below.
+  const messagingIdentityRef = useRef(null);
+  const messagingReadyRef = useRef(false); // becomes true once keys are published
 
   const getWalletAddress = (walletData) => walletData?.address || walletData?.wepo?.address || '';
 
@@ -111,6 +117,8 @@ export const WalletProvider = ({ children }) => {
         if (inactive && !minerConnected) {
           // Lock: clear only sensitive-capability session pieces
           sessionManager.set('wepo_locked', true);
+          // Locked == not open: wipe the in-tab messaging identity too.
+          disarmMessagingSession();
         }
         monitor();
       }, 60 * 1000);
@@ -162,6 +170,61 @@ export const WalletProvider = ({ children }) => {
   };
   const loadMnemonic = (password) => secureStorage.getSecureItem(MNEMONIC_KEY, password);
 
+  // ===== MESSAGING SESSION =====
+  // Messaging must "just work" whenever the wallet is open: no password prompt, no
+  // enable step, always reachable. We derive the messaging + spend keypairs once
+  // (at create/login/recover, when the password is already in hand) and keep them
+  // in memory. To survive a page reload within the same open session we also stash
+  // the mnemonic in sessionStorage (tab-scoped; cleared on logout and tab close),
+  // so the identity can be rebuilt without re-prompting. Trade-off documented in
+  // MESSAGING_DESIGN.md: this is the cost of "always-on" messaging for a wallet
+  // that is already unlocked. fetch/send of WEPO funds still requires the password.
+  const SESSION_MNEMONIC_KEY = 'wepo_session_mnemonic';
+
+  const _deriveMessagingIdentity = (mnemonic) => ({
+    spend: deriveWepoKeypair(mnemonic),
+    msg: deriveMessagingKeypair(mnemonic),
+  });
+
+  // Arm messaging for the open session from a known-good mnemonic.
+  const armMessagingSession = (mnemonic) => {
+    if (!mnemonic || !validateMnemonic(mnemonic)) return;
+    try { sessionStorage.setItem(SESSION_MNEMONIC_KEY, mnemonic); } catch (e) { /* non-fatal */ }
+    messagingIdentityRef.current = _deriveMessagingIdentity(mnemonic);
+    messagingReadyRef.current = false; // re-publish on next open
+  };
+
+  // Return the cached identity, rebuilding it from the session mnemonic after a
+  // reload. Throws only if the wallet isn't actually open on this device.
+  const getMessagingIdentity = () => {
+    if (messagingIdentityRef.current) return messagingIdentityRef.current;
+    let mnemonic = null;
+    try { mnemonic = sessionStorage.getItem(SESSION_MNEMONIC_KEY); } catch (e) { /* non-fatal */ }
+    if (!mnemonic || !validateMnemonic(mnemonic)) {
+      throw new Error('Messaging is locked — reopen your wallet to continue.');
+    }
+    messagingIdentityRef.current = _deriveMessagingIdentity(mnemonic);
+    return messagingIdentityRef.current;
+  };
+
+  const disarmMessagingSession = () => {
+    messagingIdentityRef.current = null;
+    messagingReadyRef.current = false;
+    try { sessionStorage.removeItem(SESSION_MNEMONIC_KEY); } catch (e) { /* non-fatal */ }
+  };
+
+  // fetch() with a hard timeout so a slow/half-open relay can never hang the UI
+  // (the messaging "send" spinner used to spin forever on a stuck request).
+  const fetchWithTimeout = async (url, options = {}, ms = 8000) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
   const createWallet = async (username, password, confirmPassword, providedMnemonic = null) => {
     if (password !== confirmPassword) {
       throw new Error('Passwords do not match');
@@ -207,6 +270,9 @@ export const WalletProvider = ({ children }) => {
       // Persist the phrase encrypted with the password BEFORE establishing the
       // session, so a failure here never leaves a sessioned but key-less wallet.
       storeMnemonic(mnemonic, password);
+
+      // Arm always-on messaging for this open session (no password prompt later).
+      armMessagingSession(mnemonic);
 
       localStorage.setItem('wepo_wallet_exists', 'true');
       localStorage.setItem('wepo_wallet_username', walletData.username);
@@ -269,6 +335,8 @@ export const WalletProvider = ({ children }) => {
       if (mnemonic && validateMnemonic(mnemonic)) {
         const { address: derived } = deriveWepoKeypair(mnemonic);
         recoveryAvailable = derived === payload.address;
+        // Arm always-on messaging for this open session (no password prompt later).
+        if (recoveryAvailable) armMessagingSession(mnemonic);
       }
 
       const walletData = {
@@ -326,6 +394,9 @@ export const WalletProvider = ({ children }) => {
 
       // Store the phrase locally so this device can sign.
       storeMnemonic(phrase, password);
+
+      // Arm always-on messaging for this open session (no password prompt later).
+      armMessagingSession(phrase);
 
       // Register the address for a read session; if the username already exists,
       // fall back to login. Spends are signature-authorized off this address
@@ -819,25 +890,19 @@ export const WalletProvider = ({ children }) => {
   };
 
   // ===== Private messaging (PQ end-to-end, blind relay) =====
-  // Derives both the spend keypair (proves address ownership to the relay) and
-  // the messaging keypair (ML-KEM/ML-DSA for E2E) from the local mnemonic.
-  const _messagingIdentity = (password) => {
-    const mnemonic = loadMnemonic(password);
-    if (!mnemonic || !validateMnemonic(mnemonic)) {
-      throw new Error('Invalid wallet password, or no recovery phrase on this device.');
-    }
-    const spend = deriveWepoKeypair(mnemonic);
-    const msg = deriveMessagingKeypair(mnemonic);
-    return { spend, msg };
-  };
+  // Messaging is always on while the wallet is open: it uses the in-memory identity
+  // (getMessagingIdentity) — never the password. Encryption is post-quantum E2E
+  // (ML-KEM-768 + AES-256-GCM + ML-DSA-44); the relay only ever sees ciphertext.
+  // Sending is free (relay store, no on-chain tx, no fee).
 
-  // Publish (or refresh) this wallet's messaging public keys, signed by the spend
-  // key and bound to the address so the relay can't substitute keys.
-  const publishMessagingKeys = async (password) => {
-    const { spend, msg } = _messagingIdentity(password);
+  // Publish (or refresh) this wallet's messaging public keys to the relay registry,
+  // signed by the spend key and bound to the address so the relay can't substitute
+  // keys. Free. Called automatically when the wallet opens.
+  const publishMessagingKeys = async () => {
+    const { spend, msg } = getMessagingIdentity();
     const digest = keyRegistryDigest(spend.address, msg.publicBundle.kem, msg.publicBundle.sig);
     const sig = signDigest(digest, spend.secretKey);
-    const resp = await fetch(`${getRelayUrl()}/api/messages/keys`, {
+    const resp = await fetchWithTimeout(`${getRelayUrl()}/api/messages/keys`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -853,48 +918,41 @@ export const WalletProvider = ({ children }) => {
     return payload;
   };
 
-  // Anchor this wallet's messaging public keys ON-CHAIN (trustless discovery).
-  // Build -> sign -> submit, mirroring the wallet send/RWA flow.
-  const registerMessagingKeysOnChain = async (password) => {
-    const { spend, msg } = _messagingIdentity(password);
-    const backendUrl = getBackendUrl();
-    const buildResp = await fetch(`${backendUrl}/api/messages/keys/build-unsigned-register`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ owner_address: spend.address, kem_pub: msg.publicBundle.kem, sig_pub: msg.publicBundle.sig }),
-    });
-    const build = await buildResp.json().catch(() => ({}));
-    if (!buildResp.ok) throw new Error(build.detail || build.error || 'Failed to build key registration');
-    const signedTx = signTransaction(build.unsigned_tx, spend.secretKey, spend.publicKey, build.sighash);
-    const resp = await fetch(`${backendUrl}/api/transaction/send`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ signed_tx: signedTx }),
-    });
-    const payload = await resp.json().catch(() => ({}));
-    if (!resp.ok) throw new Error(payload.detail || payload.error || 'Failed to anchor messaging keys');
-    return payload;
+  // Idempotently make sure our keys are published for this open session, so others
+  // can always reach us. Best-effort: failures don't block opening the inbox.
+  const ensureMessagingReady = async () => {
+    if (messagingReadyRef.current) return true;
+    try {
+      await publishMessagingKeys();
+      messagingReadyRef.current = true;
+      return true;
+    } catch (e) {
+      secureLog.warn('Messaging key publish deferred', e?.message);
+      return false;
+    }
   };
 
-  // Resolve a recipient's messaging keys, preferring the trustless on-chain
-  // anchor and falling back to the relay registry.
+  // Resolve a recipient's messaging keys, preferring the trustless on-chain anchor
+  // and falling back to the relay registry. The on-chain lookup is time-boxed so a
+  // down/slow node can never hang a send — the registry fallback always runs.
   const _resolveRecipientKeys = async (toAddress) => {
     try {
-      const onchain = await fetch(`${getBackendUrl()}/api/messages/keys/onchain/${encodeURIComponent(toAddress)}`);
+      const onchain = await fetchWithTimeout(
+        `${getBackendUrl()}/api/messages/keys/onchain/${encodeURIComponent(toAddress)}`, {}, 4000);
       if (onchain.ok) {
         const k = await onchain.json();
         if (k.kem_pub && k.sig_pub) return { kem_pub: k.kem_pub, sig_pub: k.sig_pub, source: 'on-chain' };
       }
     } catch (e) { /* fall through to relay registry */ }
-    const reg = await fetch(`${getRelayUrl()}/api/messages/keys/${encodeURIComponent(toAddress)}`);
+    const reg = await fetchWithTimeout(`${getRelayUrl()}/api/messages/keys/${encodeURIComponent(toAddress)}`);
     const k = await reg.json().catch(() => ({}));
-    if (!reg.ok) throw new Error(k.detail || 'Recipient has not published messaging keys yet');
+    if (!reg.ok) throw new Error(k.detail || 'This address has not used messaging yet, so it can\'t receive messages.');
     return { kem_pub: k.kem_pub, sig_pub: k.sig_pub, source: 'registry' };
   };
 
-  // Encrypt + send a message to a recipient address (E2E; relay stays blind).
-  const sendMessage = async (toAddress, plaintext, password) => {
-    const { spend, msg } = _messagingIdentity(password);
+  // Encrypt + send a message to a recipient address (E2E; relay stays blind). Free.
+  const sendMessage = async (toAddress, plaintext) => {
+    const { spend, msg } = getMessagingIdentity();
     const keys = await _resolveRecipientKeys(toAddress);
     const envelope = encryptMessage({
       plaintext,
@@ -904,7 +962,7 @@ export const WalletProvider = ({ children }) => {
       senderSigSecretKey: msg.sigSecretKey,
       senderSigPublicKey: msg.sigPublicKey,
     });
-    const resp = await fetch(`${getRelayUrl()}/api/messages`, {
+    const resp = await fetchWithTimeout(`${getRelayUrl()}/api/messages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ envelope }),
@@ -915,11 +973,11 @@ export const WalletProvider = ({ children }) => {
   };
 
   // Owner-authenticated inbox fetch; decrypts envelopes locally.
-  const fetchMessages = async (password) => {
-    const { spend, msg } = _messagingIdentity(password);
+  const fetchMessages = async () => {
+    const { spend, msg } = getMessagingIdentity();
     const ts = Math.floor(Date.now() / 1000);
     const sig = signDigest(fetchAuthDigest(spend.address, ts), spend.secretKey);
-    const resp = await fetch(`${getRelayUrl()}/api/messages/fetch`, {
+    const resp = await fetchWithTimeout(`${getRelayUrl()}/api/messages/fetch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ address: spend.address, spend_pub: spend.publicKeyHex, sig, ts }),
@@ -940,6 +998,15 @@ export const WalletProvider = ({ children }) => {
     out.sort((a, b) => (a.stored_at || 0) - (b.stored_at || 0));
     return out;
   };
+
+  // Auto-publish messaging keys whenever a wallet with a local identity is open, so
+  // it's always reachable — no "enable" step. Best-effort; safe to re-run.
+  useEffect(() => {
+    if (!wallet?.address) return;
+    let cancelled = false;
+    (async () => { if (!cancelled) await ensureMessagingReady(); })();
+    return () => { cancelled = true; };
+  }, [wallet?.address]);
 
   const logout = async () => {
     secureLog.info('User logout initiated');
@@ -973,6 +1040,7 @@ export const WalletProvider = ({ children }) => {
     // Clear secure session data
     secureStorage.removeSecureItem('wallet_data');
     secureStorage.removeSecureItem(MNEMONIC_KEY);
+    disarmMessagingSession();
     sessionManager.clearAuthSession();
     sessionManager.clearSecureSession();
     sessionManager.remove('wepo_current_wallet');
@@ -1012,7 +1080,7 @@ export const WalletProvider = ({ children }) => {
     sendWepo,
     createRwaAsset,
     publishMessagingKeys,
-    registerMessagingKeysOnChain,
+    ensureMessagingReady,
     sendMessage,
     fetchMessages,
     loadWalletData,

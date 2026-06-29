@@ -7,6 +7,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 import os
+import asyncio
 import logging
 import math
 from pathlib import Path
@@ -1091,8 +1092,14 @@ async def messaging_keys_build_register(request: Request, data: dict):
 @app.get("/api/messages/keys/onchain/{address}")
 async def get_onchain_messaging_keys(address: str):
     """Read an address's on-chain-anchored messaging keys (trustless, via the node)."""
+    # Run the blocking node call off the event loop: this is an async route, so a
+    # slow or half-open node would otherwise freeze the whole gateway (and every
+    # other in-flight messaging request) for the full timeout. Keep the timeout
+    # tight — the client always has the relay-registry fallback if the node is down.
     try:
-        response = requests.get(f"{WEPO_NODE_API_URL}/api/messages/keys/onchain/{address}", timeout=5)
+        response = await asyncio.to_thread(
+            requests.get, f"{WEPO_NODE_API_URL}/api/messages/keys/onchain/{address}", timeout=3
+        )
     except requests.RequestException:
         raise HTTPException(status_code=502, detail="Live node is unavailable")
     if response.status_code == 404:

@@ -68,9 +68,26 @@ key can recover the shared secret and decrypt.
   (owner-authenticated), `POST /api/messages/ack` (owner-authenticated delete).
 - Client: `WalletContext.publishMessagingKeys / sendMessage / fetchMessages`
   (derives spend + messaging keys from the mnemonic). UI: `QuantumMessaging.js`
-  rewired to the relay (unlock → enable → compose/send → inbox/threads).
+  is a texting-style chat (conversation list + bubble threads + bottom composer,
+  auto-polled inbox).
 - Tests: `tests/test_messaging_relay.py` (key-binding + fetch-auth, accept/reject)
   and `tests/run_messaging_test.sh` (E2E envelope round-trip). All pass.
+
+### Always-on session model (UX)
+
+Messaging is live whenever the wallet is open — no password prompt, no "enable"
+button, and sending is free (relay store; no on-chain tx). To achieve this without
+re-prompting, `WalletContext` derives the messaging + spend keypairs **once** at
+create/login/recover (when the password is already in hand) and keeps them in an
+in-memory ref; an effect auto-publishes the keys to the relay registry when the
+wallet opens, so the address is always reachable.
+
+To survive a page reload within the same open session, the mnemonic is stashed in
+`sessionStorage` (`wepo_session_mnemonic`), which is tab-scoped and cleared on
+logout and tab close. **Trade-off:** for an already-unlocked wallet this keeps the
+spend secret recoverable in tab memory for the session's lifetime — the cost of
+"always-on" messaging. Spending WEPO still requires the password. The auto-lock and
+`logout` both call `disarmMessagingSession()` to wipe it.
 
 ## 6. Next slices
 
