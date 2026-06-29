@@ -79,13 +79,10 @@ browser). Both open `http://localhost:3000`.
 Same as above; copy **ADDR_B**.
 
 ### B3. Open messaging on BOTH wallets
-In each window: open **Private Messages**.
-- If the wallet was created/opened on this build, messaging is already on — no
-  password, no "enable" step. Each wallet auto-publishes its public keys so the
-  other can encrypt to it.
-- If the wallet predates this build you'll see a **one-time** "Activate messaging"
-  screen: enter the wallet password once. After that messaging never asks again.
-  (Logging out and back in activates it the same way.)
+In each window: open **Private Messages**. That's it — no password, no recovery
+phrase, no "enable" step. The first time you open it, the wallet generates a
+device-local messaging key and auto-publishes its public keys so the other wallet
+can encrypt to it.
 
 ### B4. Send A → B (Window 1)
 1. In wallet A's Private Messages: paste **ADDR_B** into **Recipient Address**.

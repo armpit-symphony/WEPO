@@ -44,7 +44,23 @@ export function deriveMessagingKeypair(mnemonic, passphrase = '') {
   };
 }
 
-// Canonical digests the SPEND key signs to prove address ownership to the relay.
+/**
+ * A device-local messaging keypair: generated once per wallet address and kept on
+ * the device, independent of the recovery phrase and the spend/funds key. This is
+ * what makes messaging click-and-use (no password, works for any wallet). The seed
+ * is a random 32-byte hex string persisted by the caller; deriving from it is
+ * deterministic so the same device always rebuilds the same messaging identity.
+ */
+export function randomMessagingSeed() {
+  return bytesToHex(randomBytes(32));
+}
+
+/** Sign a digest with the messaging ML-DSA key (used for relay self-auth). */
+export function signMessagingDigest(digest, sigSecretKey) {
+  return bytesToHex(ml_dsa44.sign(digest, sigSecretKey));
+}
+
+// Canonical digests signed (with the messaging key) to authenticate to the relay.
 // These must match backend/messaging_relay.py byte-for-byte.
 export function keyRegistryDigest(address, kemPubHex, sigPubHex) {
   return sha256(utf8(`WEPO-MSGKEY-v1|${address}|${kemPubHex}|${sigPubHex}`));

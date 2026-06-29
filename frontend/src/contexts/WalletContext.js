@@ -2,13 +2,15 @@ import React, { createContext, useContext, useState, useEffect, useRef } from 'r
 import CryptoJS from 'crypto-js';
 import * as bip39 from 'bip39';
 import { sessionManager, secureLog, secureStorage } from '../utils/securityUtils';
-import { deriveWepoKeypair, signTransaction, signDigest } from '../utils/wepoSigner';
+import { deriveWepoKeypair, signTransaction } from '../utils/wepoSigner';
 import {
   deriveMessagingKeypair,
   encryptMessage,
   decryptMessage,
   keyRegistryDigest,
   fetchAuthDigest,
+  randomMessagingSeed,
+  signMessagingDigest,
 } from '../utils/wepoMessaging';
 // import { generateWepoAddress, generateBitcoinAddress, validateAddress } from '../utils/addressUtils';
 // Temporarily comment out Bitcoin wallet import to prevent runtime errors
@@ -45,9 +47,8 @@ export const WalletProvider = ({ children }) => {
   const [btcWalletFingerprint, setBtcWalletFingerprint] = useState(null);
   const [isBtcLoading, setIsBtcLoading] = useState(false);
 
-  // In-memory messaging identity (spend + messaging keypairs), derived once when
-  // the wallet is opened so messaging never needs the password again while the
-  // wallet stays open. See armMessagingSession / getMessagingIdentity below.
+  // In-memory cache of the device-local messaging identity ({ address, msg }),
+  // (re)built by getMessagingIdentity below. No password / phrase involved.
   const messagingIdentityRef = useRef(null);
   const messagingReadyRef = useRef(false); // becomes true once keys are published
 
@@ -168,75 +169,49 @@ export const WalletProvider = ({ children }) => {
   };
   const loadMnemonic = (password) => secureStorage.getSecureItem(MNEMONIC_KEY, password);
 
-  // ===== MESSAGING IDENTITY =====
-  // Messaging is wired to the wallet address and must work with zero friction: no
-  // password prompt and no "enable" step once activated. The messaging + spend
-  // keypairs are derived from the mnemonic; to keep messaging password-free across
-  // reloads and restarts we persist the seed locally for messaging only. It is
-  // armed automatically at create/login/recover (when the password is in hand), or
-  // via a one-time activateMessaging() for wallets that predate this feature.
+  // ===== MESSAGING IDENTITY (device-local, click-and-use) =====
+  // Messaging uses a DEVICE-LOCAL messaging keypair (ML-KEM + ML-DSA), generated
+  // automatically the first time you open messaging for a wallet address and then
+  // kept on the device. It is INDEPENDENT of the recovery phrase and the spend/
+  // funds key — so messaging needs no password, works for any wallet (even ones
+  // with no phrase stored here), and never exposes funds keys. The relay
+  // authenticates this messaging key directly (self-signed registration + fetch).
   //
-  // SECURITY TRADE-OFF (lab/test; messaging is gated pre-mainnet): this stores the
-  // spend seed unencrypted on the device until logout. Spending WEPO still requires
-  // the password every time. Revisit before enabling messaging on mainnet.
-  const MESSAGING_SEED_KEY = 'wepo_messaging_seed';
+  // Trade-off: the relay can't prove these keys belong to the address's spend
+  // owner (claim-based; possible registry MITM). The trustless path is the on-chain
+  // key anchor, resolved first. Messaging is gated pre-mainnet. See MESSAGING_DESIGN.md.
+  const MESSAGING_SEED_PREFIX = 'wepo_msgseed_';
 
-  const _deriveMessagingIdentity = (mnemonic) => ({
-    spend: deriveWepoKeypair(mnemonic),
-    msg: deriveMessagingKeypair(mnemonic),
-  });
-
-  // Arm + persist messaging from a known-good mnemonic (password-free thereafter).
-  const armMessagingSession = (mnemonic) => {
-    if (!mnemonic || !validateMnemonic(mnemonic)) return;
-    try { localStorage.setItem(MESSAGING_SEED_KEY, mnemonic); } catch (e) { /* non-fatal */ }
-    messagingIdentityRef.current = _deriveMessagingIdentity(mnemonic);
-    messagingReadyRef.current = false; // re-publish keys on next open
-  };
-
-  // True if messaging can run without asking for anything (in memory or persisted).
-  const isMessagingActivated = () => {
-    if (messagingIdentityRef.current) return true;
-    try {
-      const m = localStorage.getItem(MESSAGING_SEED_KEY);
-      return !!(m && validateMnemonic(m));
-    } catch (e) { return false; }
-  };
-
-  // Return the cached identity, rebuilding it from the persisted seed if needed.
-  // Throws a tagged error if messaging hasn't been activated on this device yet.
+  // Load (or create + persist) the device messaging seed for an address, then
+  // derive its keypair. Cached in memory and rebuilt automatically — never throws
+  // for "not activated", so messaging is always ready when a wallet is open.
   const getMessagingIdentity = () => {
-    if (messagingIdentityRef.current) return messagingIdentityRef.current;
-    let mnemonic = null;
-    try { mnemonic = localStorage.getItem(MESSAGING_SEED_KEY); } catch (e) { /* non-fatal */ }
-    if (!mnemonic || !validateMnemonic(mnemonic)) {
-      const err = new Error('Messaging is not activated on this device yet.');
-      err.code = 'MESSAGING_NOT_ACTIVATED';
-      throw err;
+    const address = wallet?.address;
+    if (!address) throw new Error('Open your wallet to use messaging.');
+    const cached = messagingIdentityRef.current;
+    if (cached && cached.address === address) return cached;
+
+    const key = `${MESSAGING_SEED_PREFIX}${address}`;
+    let seed = null;
+    try { seed = localStorage.getItem(key); } catch (e) { /* non-fatal */ }
+    if (!seed) {
+      seed = randomMessagingSeed();
+      try { localStorage.setItem(key, seed); } catch (e) { /* non-fatal */ }
+      messagingReadyRef.current = false; // brand-new key → (re)publish
     }
-    messagingIdentityRef.current = _deriveMessagingIdentity(mnemonic);
-    return messagingIdentityRef.current;
+    const identity = { address, msg: deriveMessagingKeypair(seed) };
+    messagingIdentityRef.current = identity;
+    return identity;
   };
 
-  // One-time activation for a wallet opened before messaging existed: derive from
-  // the password ONCE; afterwards messaging is password-free on this device.
-  const activateMessaging = (password) => {
-    const mnemonic = loadMnemonic(password);
-    if (!mnemonic || !validateMnemonic(mnemonic)) {
-      throw new Error('Incorrect wallet password, or no recovery phrase on this device.');
-    }
-    const { address } = deriveWepoKeypair(mnemonic);
-    if (wallet?.address && address !== wallet.address) {
-      throw new Error('Recovery phrase does not match this wallet.');
-    }
-    armMessagingSession(mnemonic);
-    return true;
-  };
+  // Messaging is always usable whenever a wallet is open.
+  const isMessagingActivated = () => !!wallet?.address;
 
   const disarmMessagingSession = () => {
+    // Drop the in-memory identity only. The per-address device seed stays in
+    // localStorage so the same device keeps the same inbox across logout/login.
     messagingIdentityRef.current = null;
     messagingReadyRef.current = false;
-    try { localStorage.removeItem(MESSAGING_SEED_KEY); } catch (e) { /* non-fatal */ }
   };
 
   // fetch() with a hard timeout so a slow/half-open relay can never hang the UI
@@ -296,9 +271,6 @@ export const WalletProvider = ({ children }) => {
       // Persist the phrase encrypted with the password BEFORE establishing the
       // session, so a failure here never leaves a sessioned but key-less wallet.
       storeMnemonic(mnemonic, password);
-
-      // Arm always-on messaging for this open session (no password prompt later).
-      armMessagingSession(mnemonic);
 
       localStorage.setItem('wepo_wallet_exists', 'true');
       localStorage.setItem('wepo_wallet_username', walletData.username);
@@ -361,8 +333,6 @@ export const WalletProvider = ({ children }) => {
       if (mnemonic && validateMnemonic(mnemonic)) {
         const { address: derived } = deriveWepoKeypair(mnemonic);
         recoveryAvailable = derived === payload.address;
-        // Arm always-on messaging for this open session (no password prompt later).
-        if (recoveryAvailable) armMessagingSession(mnemonic);
       }
 
       const walletData = {
@@ -420,9 +390,6 @@ export const WalletProvider = ({ children }) => {
 
       // Store the phrase locally so this device can sign.
       storeMnemonic(phrase, password);
-
-      // Arm always-on messaging for this open session (no password prompt later).
-      armMessagingSession(phrase);
 
       // Register the address for a read session; if the username already exists,
       // fall back to login. Spends are signature-authorized off this address
@@ -916,26 +883,24 @@ export const WalletProvider = ({ children }) => {
   };
 
   // ===== Private messaging (PQ end-to-end, blind relay) =====
-  // Messaging is always on while the wallet is open: it uses the in-memory identity
-  // (getMessagingIdentity) — never the password. Encryption is post-quantum E2E
-  // (ML-KEM-768 + AES-256-GCM + ML-DSA-44); the relay only ever sees ciphertext.
-  // Sending is free (relay store, no on-chain tx, no fee).
+  // Click-and-use: messaging uses the device-local messaging identity
+  // (getMessagingIdentity) — never the password or the recovery phrase. Encryption
+  // is post-quantum E2E (ML-KEM-768 + AES-256-GCM + ML-DSA-44); the relay only ever
+  // sees ciphertext. Sending is free (relay store, no on-chain tx, no fee).
 
-  // Publish (or refresh) this wallet's messaging public keys to the relay registry,
-  // signed by the spend key and bound to the address so the relay can't substitute
-  // keys. Free. Called automatically when the wallet opens.
+  // Publish this wallet address's device messaging public keys to the relay,
+  // self-signed by the messaging key. Free. Called automatically when messaging opens.
   const publishMessagingKeys = async () => {
-    const { spend, msg } = getMessagingIdentity();
-    const digest = keyRegistryDigest(spend.address, msg.publicBundle.kem, msg.publicBundle.sig);
-    const sig = signDigest(digest, spend.secretKey);
+    const { address, msg } = getMessagingIdentity();
+    const digest = keyRegistryDigest(address, msg.publicBundle.kem, msg.publicBundle.sig);
+    const sig = signMessagingDigest(digest, msg.sigSecretKey);
     const resp = await fetchWithTimeout(`${getRelayUrl()}/api/messages/keys`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        address: spend.address,
+        address,
         kem_pub: msg.publicBundle.kem,
         sig_pub: msg.publicBundle.sig,
-        spend_pub: spend.publicKeyHex,
         sig,
       }),
     });
@@ -978,11 +943,11 @@ export const WalletProvider = ({ children }) => {
 
   // Encrypt + send a message to a recipient address (E2E; relay stays blind). Free.
   const sendMessage = async (toAddress, plaintext) => {
-    const { spend, msg } = getMessagingIdentity();
+    const { address, msg } = getMessagingIdentity();
     const keys = await _resolveRecipientKeys(toAddress);
     const envelope = encryptMessage({
       plaintext,
-      fromAddress: spend.address,
+      fromAddress: address,
       toAddress,
       recipientKemPublicKeyHex: keys.kem_pub,
       senderSigSecretKey: msg.sigSecretKey,
@@ -998,15 +963,17 @@ export const WalletProvider = ({ children }) => {
     return payload;
   };
 
-  // Owner-authenticated inbox fetch; decrypts envelopes locally.
+  // Inbox fetch authenticated by the device messaging key; decrypts locally.
   const fetchMessages = async () => {
-    const { spend, msg } = getMessagingIdentity();
+    const { address, msg } = getMessagingIdentity();
+    // Make sure our keys are registered before we try to prove ownership of the inbox.
+    await ensureMessagingReady();
     const ts = Math.floor(Date.now() / 1000);
-    const sig = signDigest(fetchAuthDigest(spend.address, ts), spend.secretKey);
+    const sig = signMessagingDigest(fetchAuthDigest(address, ts), msg.sigSecretKey);
     const resp = await fetchWithTimeout(`${getRelayUrl()}/api/messages/fetch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ address: spend.address, spend_pub: spend.publicKeyHex, sig, ts }),
+      body: JSON.stringify({ address, sig_pub: msg.publicBundle.sig, sig, ts }),
     });
     const payload = await resp.json().catch(() => ({}));
     if (!resp.ok) throw new Error(payload.detail || payload.error || 'Failed to fetch messages');
@@ -1108,7 +1075,6 @@ export const WalletProvider = ({ children }) => {
     publishMessagingKeys,
     ensureMessagingReady,
     isMessagingActivated,
-    activateMessaging,
     sendMessage,
     fetchMessages,
     loadWalletData,

@@ -1031,10 +1031,12 @@ async def rwa_get_assets_for_owner(owner_address: str):
 
 @app.post("/api/messages/keys")
 async def publish_messaging_keys(request: Request, data: dict):
-    """Publish a user's messaging public keys, bound to their WEPO address.
+    """Publish a user's device-local messaging public keys for their WEPO address.
 
-    The bundle must be signed by the account's spend key and the address must
-    equal H(spend pubkey), so the relay cannot substitute keys for a MITM.
+    The bundle is self-signed by the messaging key it registers (proves the
+    registrant holds that key). This is the click-and-use convenience path; it does
+    not prove spend-key ownership of the address (see messaging_relay note). Stored
+    last-write-wins.
     """
     client_id = SecurityManager.get_client_identifier(request)
     if SecurityManager.is_rate_limited(client_id, "messaging_keys"):
@@ -1043,16 +1045,17 @@ async def publish_messaging_keys(request: Request, data: dict):
     address = SecurityManager.sanitize_input(data.get("address", ""))
     kem_pub = SecurityManager.sanitize_input(data.get("kem_pub", ""))
     sig_pub = SecurityManager.sanitize_input(data.get("sig_pub", ""))
-    spend_pub = SecurityManager.sanitize_input(data.get("spend_pub", ""))
     sig = SecurityManager.sanitize_input(data.get("sig", ""))
 
-    if not messaging_relay.verify_key_binding(address, kem_pub, sig_pub, spend_pub, sig):
-        raise HTTPException(status_code=400, detail="Invalid or unauthorized messaging key bundle")
+    if not SecurityManager.validate_wepo_address(address):
+        raise HTTPException(status_code=400, detail="Invalid recipient address")
+    if not messaging_relay.verify_key_registration(address, kem_pub, sig_pub, sig):
+        raise HTTPException(status_code=400, detail="Invalid messaging key bundle")
 
     await db.message_keys.replace_one(
         {"_id": address},
         {"_id": address, "address": address, "kem_pub": kem_pub, "sig_pub": sig_pub,
-         "spend_pub": spend_pub, "updated_at": int(time.time())},
+         "updated_at": int(time.time())},
         upsert=True,
     )
     return {"success": True, "address": address}
@@ -1163,11 +1166,12 @@ async def fetch_messages(request: Request, data: dict):
     relay does not hand an inbox listing to arbitrary callers.
     """
     address = SecurityManager.sanitize_input(data.get("address", ""))
-    spend_pub = SecurityManager.sanitize_input(data.get("spend_pub", ""))
     sig = SecurityManager.sanitize_input(data.get("sig", ""))
     ts = data.get("ts")
 
-    if not messaging_relay.verify_fetch_auth(address, spend_pub, sig, ts):
+    key_doc = await db.message_keys.find_one({"_id": address})
+    registered_sig_pub = key_doc.get("sig_pub") if key_doc else None
+    if not messaging_relay.verify_fetch_auth(address, registered_sig_pub, sig, ts):
         raise HTTPException(status_code=403, detail="Inbox fetch not authorized")
 
     cursor = db.messages.find({"to": address}).sort("stored_at", 1).limit(500)
@@ -1181,12 +1185,13 @@ async def fetch_messages(request: Request, data: dict):
 async def ack_messages(request: Request, data: dict):
     """Owner-authenticated delete of delivered envelopes (keeps relay storage bounded)."""
     address = SecurityManager.sanitize_input(data.get("address", ""))
-    spend_pub = SecurityManager.sanitize_input(data.get("spend_pub", ""))
     sig = SecurityManager.sanitize_input(data.get("sig", ""))
     ts = data.get("ts")
     message_ids = data.get("message_ids") or []
 
-    if not messaging_relay.verify_fetch_auth(address, spend_pub, sig, ts):
+    key_doc = await db.message_keys.find_one({"_id": address})
+    registered_sig_pub = key_doc.get("sig_pub") if key_doc else None
+    if not messaging_relay.verify_fetch_auth(address, registered_sig_pub, sig, ts):
         raise HTTPException(status_code=403, detail="Ack not authorized")
     if not isinstance(message_ids, list):
         raise HTTPException(status_code=400, detail="message_ids must be a list")

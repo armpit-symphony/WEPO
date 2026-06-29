@@ -59,38 +59,45 @@ key can recover the shared secret and decrypt.
 ## 5. Blind relay — IMPLEMENTED (2026-06-21)
 
 - `backend/messaging_relay.py` — verification core (pure, unit-tested):
-  `verify_key_binding` (bundle must be spend-key-signed AND address == H(spend
-  pubkey) → no key substitution / MITM) and `verify_fetch_auth` (fresh spend-key
-  signature → only the owner reads their inbox).
+  `verify_key_registration` (bundle must be self-signed by the messaging key it
+  registers) and `verify_fetch_auth` (fresh signature by the messaging key
+  currently registered for the address → only that key-holder reads the inbox).
 - `backend/server.py` endpoints (Mongo-backed, ciphertext-only):
   `POST /api/messages/keys`, `GET /api/messages/keys/{address}`,
   `POST /api/messages` (store envelope; size-capped), `POST /api/messages/fetch`
-  (owner-authenticated), `POST /api/messages/ack` (owner-authenticated delete).
+  (auth by registered key), `POST /api/messages/ack` (auth by registered key).
 - Client: `WalletContext.publishMessagingKeys / sendMessage / fetchMessages`
-  (derives spend + messaging keys from the mnemonic). UI: `QuantumMessaging.js`
-  is a simple **send form** (recipient address + message + Send) plus an **Inbox**
-  button that retrieves all messages — modeled on the WEPO send screen.
-- Tests: `tests/test_messaging_relay.py` (key-binding + fetch-auth, accept/reject)
-  and `tests/run_messaging_test.sh` (E2E envelope round-trip). All pass.
+  (uses the device messaging key). UI: `QuantumMessaging.js` is a simple **send
+  form** (recipient address + message + Send) plus an **Inbox** button that
+  retrieves all messages — modeled on the WEPO send screen.
+- Tests: `tests/test_messaging_relay.py` (registration + fetch-auth, accept/reject)
+  and `tests/run_messaging_test.sh` (E2E envelope round-trip). All pass; JS→Python
+  relay self-auth verified cross-runtime.
 
-### Identity model (UX): wired to the address, password-free
+### Identity model (UX): click-and-use, device-local key
 
-Messaging is wired to the wallet address and runs with no password and no "enable"
-step once activated; sending is free (relay store, no on-chain tx). `WalletContext`
-derives the messaging + spend keypairs from the mnemonic and **persists the seed
-locally for messaging** (`localStorage` `wepo_messaging_seed`) so messaging stays
-on across reloads and restarts without re-prompting:
+Messaging is wired to the wallet address and is **click-and-use**: no password, no
+recovery phrase, no "enable" step, and sending is free (relay store, no on-chain
+tx). It uses a **device-local messaging keypair** (ML-KEM + ML-DSA) that is:
 
-- Armed automatically at create/login/recover (when the password is in hand).
-- For wallets opened before this feature existed, a **one-time** `activateMessaging`
-  (password entered once) bootstraps it; afterwards messaging never asks again.
-- An effect auto-publishes the keys to the relay registry when the wallet opens, so
-  the address is always reachable. `logout` calls `disarmMessagingSession()`.
+- generated automatically the first time you open messaging for an address, then
+  persisted on the device (`localStorage` `wepo_msgseed_<address>`, a random seed);
+- **independent of the recovery phrase and the spend/funds key** — so it works for
+  any wallet (even custodial / no phrase on this device) and never touches funds keys;
+- self-registered with the relay (the messaging key signs its own registration) and
+  used to authenticate inbox fetches.
 
-**Trade-off (lab/test; messaging is gated pre-mainnet):** persisting the seed for
-messaging stores the spend secret unencrypted on the device until logout. Spending
-WEPO still requires the password every time. This must be revisited (e.g. a
-messaging-only subkey, or OS keystore) before enabling messaging on mainnet.
+The seed survives logout/login on the same device so the inbox stays readable;
+`logout` only drops the in-memory copy.
+
+**Trade-off (lab/test; messaging is gated pre-mainnet):** because registration is
+authenticated by the messaging key itself, the relay does **not** prove those keys
+belong to the address's spend-key owner — a malicious relay/attacker could
+substitute keys at the registry layer (MITM) or squat an address (last-write-wins).
+Message **content** stays end-to-end encrypted regardless. The trustless path is the
+on-chain key anchor (spend-key-bound consensus tx), which clients resolve **first**;
+the relay registry is the convenience fallback. Harden the binding (e.g. require the
+on-chain anchor, or sign the device key with the spend key once) before mainnet.
 
 ## 6. Next slices
 

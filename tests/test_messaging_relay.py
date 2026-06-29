@@ -2,14 +2,17 @@
 """
 Messaging blind-relay verification tests (server-side security checks).
 
-Proves the relay's two trust anchors:
-  * key registry binding: a messaging key bundle is accepted only when signed by
-    the account's spend key AND the address equals H(spend pubkey) — so the relay
-    cannot substitute keys (no MITM)
-  * inbox fetch auth: only the address owner, via a fresh spend-key signature, can
-    fetch their envelopes; stale or wrong-key requests are rejected
+Messaging uses a device-local messaging key (ML-DSA), independent of the spend/
+funds key, so messaging is click-and-use. The relay enforces:
+  * key registration: a bundle is accepted only when self-signed by the messaging
+    key (sig_pub) it registers — proving the registrant holds that key
+  * inbox fetch auth: only the holder of the messaging key currently registered
+    for an address, via a fresh signature, can fetch its envelopes; stale or
+    wrong-key requests are rejected
 
-The relay never decrypts content; these checks are all it enforces.
+This is the click-and-use convenience path: it is claim-based and does NOT prove
+spend-key ownership of the address (that is the on-chain anchor's job). The relay
+never decrypts content; these checks are all it enforces.
 
 Run: python3 tests/test_messaging_relay.py
 """
@@ -35,53 +38,51 @@ def check(name, cond):
 
 
 def main():
-    # Owner spend key + address (self-custody identity).
+    # A wallet address (the device messaging key is independent of the spend key).
     spend = generate_dilithium_keypair()
-    spend_pub_hex = spend.public_key.hex()
     address = generate_wepo_address(spend.public_key, address_type="quantum")
 
-    # Published messaging public keys (values are opaque to these checks).
-    kem_pub_hex = ("aa" * 1184)
-    sig_pub_hex = ("bb" * 1312)
+    # Device messaging key (this is what the relay authenticates).
+    msg = generate_dilithium_keypair()
+    sig_pub_hex = msg.public_key.hex()
+    kem_pub_hex = ("aa" * 1184)  # opaque to these checks
 
-    # --- key registry binding ---
+    # --- key registration (self-signed by the messaging key) ---
     digest = relay.key_registry_digest(address, kem_pub_hex, sig_pub_hex)
-    good_sig = sign_with_dilithium(digest, spend.private_key).hex()
-    check("valid spend-signed, address-bound bundle is accepted",
-          relay.verify_key_binding(address, kem_pub_hex, sig_pub_hex, spend_pub_hex, good_sig) is True)
+    good_sig = sign_with_dilithium(digest, msg.private_key).hex()
+    check("valid self-signed messaging bundle is accepted",
+          relay.verify_key_registration(address, kem_pub_hex, sig_pub_hex, good_sig) is True)
 
-    # Attacker tries to publish keys for someone else's address.
+    # Signature by a different key than the sig_pub being registered → rejected.
     attacker = generate_dilithium_keypair()
-    atk_digest = relay.key_registry_digest(address, kem_pub_hex, sig_pub_hex)
-    atk_sig = sign_with_dilithium(atk_digest, attacker.private_key).hex()
-    check("bundle signed by a non-owner key is rejected (no key hijack)",
-          relay.verify_key_binding(address, kem_pub_hex, sig_pub_hex,
-                                   attacker.public_key.hex(), atk_sig) is False)
+    atk_sig = sign_with_dilithium(digest, attacker.private_key).hex()
+    check("bundle whose signature doesn't match its sig_pub is rejected",
+          relay.verify_key_registration(address, kem_pub_hex, sig_pub_hex, atk_sig) is False)
 
-    # Tampered keys (signature no longer matches the published kem/sig pubkeys).
+    # Tampered keys (signature no longer matches the published kem field).
     check("tampered key bundle is rejected",
-          relay.verify_key_binding(address, "cc" * 1184, sig_pub_hex, spend_pub_hex, good_sig) is False)
+          relay.verify_key_registration(address, "cc" * 1184, sig_pub_hex, good_sig) is False)
 
-    # Address that doesn't match the spend key.
-    check("address not equal to H(spend pubkey) is rejected",
-          relay.verify_key_binding("wepo1qbogusaddress", kem_pub_hex, sig_pub_hex, spend_pub_hex, good_sig) is False)
-
-    # --- inbox fetch authorization ---
+    # --- inbox fetch authorization (against the registered messaging key) ---
     now = int(time.time())
-    fetch_sig = sign_with_dilithium(relay.fetch_auth_digest(address, now), spend.private_key).hex()
-    check("fresh owner-signed fetch is authorized",
-          relay.verify_fetch_auth(address, spend_pub_hex, fetch_sig, now, now=now) is True)
+    fetch_sig = sign_with_dilithium(relay.fetch_auth_digest(address, now), msg.private_key).hex()
+    check("fresh fetch signed by the registered key is authorized",
+          relay.verify_fetch_auth(address, sig_pub_hex, fetch_sig, now, now=now) is True)
 
     # Stale request (replay window exceeded).
     old_ts = now - (relay.FETCH_AUTH_MAX_SKEW + 60)
-    stale_sig = sign_with_dilithium(relay.fetch_auth_digest(address, old_ts), spend.private_key).hex()
+    stale_sig = sign_with_dilithium(relay.fetch_auth_digest(address, old_ts), msg.private_key).hex()
     check("stale fetch request is rejected",
-          relay.verify_fetch_auth(address, spend_pub_hex, stale_sig, old_ts, now=now) is False)
+          relay.verify_fetch_auth(address, sig_pub_hex, stale_sig, old_ts, now=now) is False)
 
-    # Someone else trying to fetch this address's inbox.
+    # Someone whose key is NOT the one registered for the address cannot fetch.
     other_sig = sign_with_dilithium(relay.fetch_auth_digest(address, now), attacker.private_key).hex()
-    check("fetch signed by a non-owner is rejected",
-          relay.verify_fetch_auth(address, attacker.public_key.hex(), other_sig, now, now=now) is False)
+    check("fetch signed by a non-registered key is rejected",
+          relay.verify_fetch_auth(address, sig_pub_hex, other_sig, now, now=now) is False)
+
+    # No key registered for the address → no inbox access.
+    check("fetch against an unregistered address is rejected",
+          relay.verify_fetch_auth(address, None, fetch_sig, now, now=now) is False)
 
     print()
     if FAILURES:

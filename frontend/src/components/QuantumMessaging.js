@@ -7,36 +7,20 @@ import {
   ShieldCheck,
   CheckCircle,
   RefreshCw,
-  Eye,
-  EyeOff,
 } from 'lucide-react';
 import { useWallet } from '../contexts/WalletContext';
 
 /**
- * Private messaging — wired to the wallet address. Dead simple: enter a recipient
+ * Private messaging — wired to the wallet address. Click-and-use: enter a recipient
  * WEPO address, type a message, Send. An Inbox button retrieves all messages.
  *
- * Post-quantum end-to-end encrypted (ML-KEM-768 + AES-256-GCM + ML-DSA-44); all
- * crypto is client-side and the relay only ever stores opaque ciphertext. Once
- * activated, messaging needs no password and is free.
+ * No password and no recovery phrase needed — messaging uses a device-local key
+ * that auto-generates on entry. Post-quantum end-to-end encrypted (ML-KEM-768 +
+ * AES-256-GCM + ML-DSA-44); the relay only ever stores opaque ciphertext. Free.
  */
 const QuantumMessaging = ({ onBack }) => {
-  const {
-    wallet,
-    sendMessage,
-    fetchMessages,
-    isMessagingActivated,
-    activateMessaging,
-    ensureMessagingReady,
-  } = useWallet();
+  const { wallet, sendMessage, fetchMessages, ensureMessagingReady } = useWallet();
   const currentAddress = wallet?.address;
-
-  const [activated, setActivated] = useState(isMessagingActivated());
-
-  // Activation (one-time, only for wallets opened before messaging existed)
-  const [activatePw, setActivatePw] = useState('');
-  const [showPw, setShowPw] = useState(false);
-  const [activating, setActivating] = useState(false);
 
   // Compose
   const [toAddress, setToAddress] = useState('');
@@ -51,40 +35,25 @@ const QuantumMessaging = ({ onBack }) => {
   const [success, setSuccess] = useState('');
 
   const loadInbox = useCallback(async () => {
-    if (!isMessagingActivated()) return;
+    if (!currentAddress) return;
     setLoadingInbox(true);
+    setError('');
     try {
       const msgs = await fetchMessages();
       setInbox(msgs);
     } catch (e) {
-      if (e.code !== 'MESSAGING_NOT_ACTIVATED') setError(e.message || 'Failed to load inbox');
+      setError(e.message || 'Failed to load inbox');
     } finally {
       setLoadingInbox(false);
     }
-  }, [fetchMessages, isMessagingActivated]);
+  }, [fetchMessages, currentAddress]);
 
   // On open: publish our keys (so others can reach us) and pull the inbox once.
   useEffect(() => {
-    if (!activated || !currentAddress) return;
+    if (!currentAddress) return;
     ensureMessagingReady();
     loadInbox();
-  }, [activated, currentAddress, ensureMessagingReady, loadInbox]);
-
-  const handleActivate = async () => {
-    if (!activatePw) { setError('Enter your wallet password'); return; }
-    setActivating(true);
-    setError('');
-    try {
-      await activateMessaging(activatePw);
-      setActivatePw('');
-      setActivated(true);
-      setSuccess('Messaging activated. You won’t need a password for messaging again.');
-    } catch (e) {
-      setError(e.message || 'Activation failed');
-    } finally {
-      setActivating(false);
-    }
-  };
+  }, [currentAddress, ensureMessagingReady, loadInbox]);
 
   const handleSend = async () => {
     const to = toAddress.trim();
@@ -105,11 +74,7 @@ const QuantumMessaging = ({ onBack }) => {
   };
 
   const short = (addr) => (addr && addr.length > 20 ? `${addr.slice(0, 12)}…${addr.slice(-8)}` : addr);
-  const fmt = (ts) => {
-    if (!ts) return '';
-    const d = new Date(ts * 1000);
-    return d.toLocaleString();
-  };
+  const fmt = (ts) => (ts ? new Date(ts * 1000).toLocaleString() : '');
 
   const Header = () => (
     <div className="flex items-center gap-3 mb-6">
@@ -119,13 +84,6 @@ const QuantumMessaging = ({ onBack }) => {
         <h2 className="text-xl font-semibold text-white">Private Messages</h2>
       </div>
     </div>
-  );
-
-  const Alerts = () => (
-    <>
-      {error && <div className="bg-red-900/50 border border-red-500 rounded-lg p-3 text-red-200 text-sm">{error}</div>}
-      {success && <div className="bg-green-900/40 border border-green-500 rounded-lg p-3 text-green-200 text-sm">{success}</div>}
-    </>
   );
 
   if (!currentAddress) {
@@ -138,38 +96,6 @@ const QuantumMessaging = ({ onBack }) => {
     );
   }
 
-  // One-time activation (only shown for wallets opened before messaging existed).
-  if (!activated) {
-    return (
-      <div className="space-y-6"><Header />
-        <div className="bg-gray-700/40 border border-purple-500/30 rounded-lg p-4 text-sm text-gray-300">
-          <div className="flex items-center gap-2 mb-2"><Lock className="h-4 w-4 text-purple-400" /><span className="font-medium text-purple-200">Activate messaging (one-time)</span></div>
-          Enter your wallet password once to turn on private messaging for this wallet.
-          After this you’ll never need a password to message — just type an address and send.
-        </div>
-        <Alerts />
-        <div className="relative">
-          <input
-            type={showPw ? 'text' : 'password'}
-            value={activatePw}
-            onChange={(e) => { setActivatePw(e.target.value); setError(''); }}
-            onKeyDown={(e) => e.key === 'Enter' && handleActivate()}
-            placeholder="Wallet password"
-            className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 pr-12"
-          />
-          <button type="button" onClick={() => setShowPw(!showPw)} className="absolute right-3 top-3 text-gray-400 hover:text-purple-400">
-            {showPw ? <EyeOff size={20} /> : <Eye size={20} />}
-          </button>
-        </div>
-        <button onClick={handleActivate} disabled={activating || !activatePw}
-          className="w-full bg-purple-600 hover:bg-purple-700 text-white font-semibold py-3 px-6 rounded-lg transition-colors disabled:opacity-50">
-          {activating ? 'Activating…' : 'Activate messaging'}
-        </button>
-      </div>
-    );
-  }
-
-  // Main: simple send form + inbox.
   return (
     <div className="space-y-6"><Header />
 
@@ -178,7 +104,8 @@ const QuantumMessaging = ({ onBack }) => {
         Post-quantum end-to-end encrypted · free · no password needed
       </div>
 
-      <Alerts />
+      {error && <div className="bg-red-900/50 border border-red-500 rounded-lg p-3 text-red-200 text-sm">{error}</div>}
+      {success && <div className="bg-green-900/40 border border-green-500 rounded-lg p-3 text-green-200 text-sm">{success}</div>}
 
       {/* Compose */}
       <div className="space-y-4">
