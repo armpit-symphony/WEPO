@@ -59,8 +59,14 @@ class SecurityManager:
     # Different rate limits for different endpoints
     RATE_LIMIT_CONFIG = {
         "wallet_create": 3,      # 3 per minute
-        "wallet_login": 5,       # 5 per minute  
+        "wallet_login": 5,       # 5 per minute
         "transaction_send": 10,  # 10 per minute
+        # Messaging is free/interactive: opening the tab publishes keys and normal
+        # chat activity issues bursts of sends/fetches, so the default of 10/min
+        # trips within seconds (429). Give messaging its own generous buckets.
+        "messaging_keys": 60,    # key publish/lookup
+        "messaging_send": 60,    # send encrypted envelope
+        "messaging_fetch": 120,  # inbox fetch/ack polling
         "global_api": 60,        # General API traffic
         "default": 10           # Default rate limit
     }

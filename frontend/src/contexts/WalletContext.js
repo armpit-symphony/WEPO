@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import CryptoJS from 'crypto-js';
 import * as bip39 from 'bip39';
 import { sessionManager, secureLog, secureStorage } from '../utils/securityUtils';
@@ -218,7 +218,12 @@ export const WalletProvider = ({ children }) => {
   // (the messaging "send" spinner used to spin forever on a stuck request).
   const fetchWithTimeout = async (url, options = {}, ms = 8000) => {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), ms);
+    // Abort with an explicit reason so callers/UI can surface something meaningful
+    // instead of the opaque browser default "signal is aborted without reason".
+    const timer = setTimeout(
+      () => controller.abort(new DOMException('Request timed out', 'TimeoutError')),
+      ms,
+    );
     try {
       return await fetch(url, { ...options, signal: controller.signal });
     } finally {
@@ -467,7 +472,12 @@ export const WalletProvider = ({ children }) => {
 
   // Remove old generateWepoAddress - now handled by addressUtils
 
-  const loadWalletData = async (address) => {
+  // Stable identity (useCallback with no deps — it only closes over stable state
+  // setters and the module-level sessionManager). Without this, every context
+  // render produced a new loadWalletData reference; Dashboard's effect listed it
+  // as a dependency and re-ran on every render, unbounded-polling /api/wallet/*
+  // and backing up the request queue until messaging fetches timed out.
+  const loadWalletData = useCallback(async (address) => {
     setIsLoading(true);
     try {
       // Check if we have a real backend connection
@@ -517,7 +527,7 @@ export const WalletProvider = ({ children }) => {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
 
   // ===== SELF-CUSTODIAL BITCOIN WALLET FUNCTIONS =====
   

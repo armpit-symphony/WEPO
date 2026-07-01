@@ -27,10 +27,12 @@ except ImportError:
 try:
     from dilithium_py.ml_dsa import ML_DSA_44
     REAL_DILITHIUM_AVAILABLE = True
-    print("✅ ML-DSA-44 (FIPS 204) imported successfully")
+    # ASCII-only (no emoji): emoji crashes Python on Windows under the default
+    # cp1252 console codec. This is a one-time module-load notice.
+    print("[ML-DSA-44] FIPS 204 imported successfully")
 except ImportError:
     REAL_DILITHIUM_AVAILABLE = False
-    print("⚠️  ML-DSA-44 not available - using RSA simulation")
+    print("[ML-DSA-44] not available - using RSA simulation")
     # Fallback imports for RSA simulation
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import rsa, padding
@@ -72,11 +74,12 @@ class DilithiumSigner:
             # Use REAL ML-DSA-44 (FIPS 204) implementation. Signing draws fresh
             # OS randomness per call (hedged ML-DSA), so we do not pin a DRBG seed.
             self._dilithium = ML_DSA_44
-            print("🔐 Using ML-DSA-44 (FIPS 204) - TRUE quantum resistance")
+            # No per-instance print here: signers are constructed frequently (e.g.
+            # per signature verification), so printing each time floods logs and
+            # buries real output. Availability is already announced once at import.
         else:
             # Fallback to RSA simulation
             self._rsa_key_pair = None
-            print("⚠️  Using RSA simulation - NOT quantum resistant")
         
     def generate_keypair(self) -> DilithiumKeyPair:
         """Generate a new Dilithium key pair (REAL or simulated)"""

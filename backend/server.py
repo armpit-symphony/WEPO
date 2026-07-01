@@ -8,7 +8,9 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 import os
 import asyncio
+import json
 import logging
+import tempfile
 import math
 from pathlib import Path
 from pydantic import BaseModel, Field
@@ -219,7 +221,12 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler('/tmp/wepo_security.log')
+        # Cross-platform log path: honor WEPO_SECURITY_LOG if set, else the OS temp
+        # dir (avoids the hardcoded /tmp that becomes C:\tmp\ on Windows).
+        logging.FileHandler(
+            os.environ.get("WEPO_SECURITY_LOG")
+            or os.path.join(tempfile.gettempdir(), "wepo_security.log")
+        )
     ]
 )
 
