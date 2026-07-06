@@ -60,8 +60,11 @@ key can recover the shared secret and decrypt.
 
 - `backend/messaging_relay.py` — verification core (pure, unit-tested):
   `verify_key_registration` (bundle must be self-signed by the messaging key it
-  registers) and `verify_fetch_auth` (fresh signature by the messaging key
-  currently registered for the address → only that key-holder reads the inbox).
+  registers), `verify_fetch_auth` (fresh signature by the messaging key currently
+  registered for the address → only that key-holder reads the inbox), and
+  `registration_action` / `verify_key_rotation` (first-write-wins registry: TOFU on
+  first publish, idempotent same-key re-publish, and a different key may only
+  replace an in-use registration with a rotation signature from the incumbent key).
 - `backend/server.py` endpoints (Mongo-backed, ciphertext-only):
   `POST /api/messages/keys`, `GET /api/messages/keys/{address}`,
   `POST /api/messages` (store envelope; size-capped), `POST /api/messages/fetch`
@@ -90,14 +93,25 @@ tx). It uses a **device-local messaging keypair** (ML-KEM + ML-DSA) that is:
 The seed survives logout/login on the same device so the inbox stays readable;
 `logout` only drops the in-memory copy.
 
-**Trade-off (lab/test; messaging is gated pre-mainnet):** because registration is
-authenticated by the messaging key itself, the relay does **not** prove those keys
-belong to the address's spend-key owner — a malicious relay/attacker could
-substitute keys at the registry layer (MITM) or squat an address (last-write-wins).
-Message **content** stays end-to-end encrypted regardless. The trustless path is the
-on-chain key anchor (spend-key-bound consensus tx), which clients resolve **first**;
-the relay registry is the convenience fallback. Harden the binding (e.g. require the
-on-chain anchor, or sign the device key with the spend key once) before mainnet.
+**Relay binding — first-write-wins + incumbent-authorized rotation (hardened
+2026-07-06):** registration is authenticated by the messaging key itself, so the
+relay still does **not** prove those keys belong to the address's spend-key owner
+(that is the on-chain anchor's job). But the registry is no longer last-write-wins:
+
+- the **first** self-signed bundle for an address is accepted (trust-on-first-use);
+- re-publishing the **same** key is idempotent (the normal single-device case);
+- replacing an in-use address's key with a **different** key requires a **rotation
+  signature by the currently registered key** (`verify_key_rotation`) — or the
+  on-chain anchor. So an attacker cannot silently overwrite an active inbox's key.
+
+This narrows the residual exposure to **squatting an address that has never
+registered** (low impact: message **content** stays end-to-end encrypted regardless,
+and the real owner overrides via the on-chain key anchor, which clients resolve
+**first**). Trade-off for the click-and-use constraint: a genuinely new device /
+cleared browser storage generates a new device key and is refused re-registration
+(HTTP 409) until it rotates with the old key or anchors on-chain — the price of
+blocking takeover without requiring the spend key/phrase at every use. Messaging is
+gated pre-mainnet; the on-chain anchor remains the fully trustless path.
 
 ## 6. Next slices
 

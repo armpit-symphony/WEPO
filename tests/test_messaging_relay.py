@@ -84,6 +84,42 @@ def main():
     check("fetch against an unregistered address is rejected",
           relay.verify_fetch_auth(address, None, fetch_sig, now, now=now) is False)
 
+    # --- first-write-wins + incumbent-authorized key rotation ---
+    # `msg` is the incumbent (currently registered) messaging key from above; the
+    # attacker holds a different, valid messaging key and tries to take over.
+    new_sig_pub = attacker.public_key.hex()
+    new_kem = ("bb" * 1184)
+
+    # First registration for an address (no incumbent) → trust-on-first-use accept.
+    allowed, why = relay.registration_action(None, None, address, kem_pub_hex, sig_pub_hex)
+    check("first registration (no incumbent) is accepted as TOFU", allowed and why == "tofu")
+
+    # Re-publishing the SAME key is idempotent (the common single-device case).
+    allowed, why = relay.registration_action(kem_pub_hex, sig_pub_hex, address, kem_pub_hex, sig_pub_hex)
+    check("re-publishing the same key is idempotent", allowed and why == "idempotent")
+
+    # A DIFFERENT key with NO rotation signature is rejected (no silent takeover).
+    allowed, why = relay.registration_action(kem_pub_hex, sig_pub_hex, address, new_kem, new_sig_pub, "")
+    check("a different key without a rotation signature is rejected (conflict)",
+          (not allowed) and why == "conflict")
+
+    # A rotation signed by the INCUMBENT key authorizes the change.
+    rot_digest = relay.key_rotation_digest(address, sig_pub_hex, new_kem, new_sig_pub)
+    rot_sig = sign_with_dilithium(rot_digest, msg.private_key).hex()
+    check("rotation signed by the incumbent key verifies",
+          relay.verify_key_rotation(address, sig_pub_hex, new_kem, new_sig_pub, rot_sig) is True)
+    allowed, why = relay.registration_action(kem_pub_hex, sig_pub_hex, address, new_kem, new_sig_pub, rot_sig)
+    check("incumbent-authorized rotation is accepted", allowed and why == "rotation")
+
+    # A rotation signed by a NON-incumbent key (the attacker signing their own) is rejected.
+    bad_rot = sign_with_dilithium(rot_digest, attacker.private_key).hex()
+    check("rotation signed by a non-incumbent key is rejected",
+          relay.verify_key_rotation(address, sig_pub_hex, new_kem, new_sig_pub, bad_rot) is False)
+
+    # A valid rotation signature does not authorize a DIFFERENT new key (bound to the bundle).
+    check("rotation signature is bound to the new bundle it authorizes",
+          relay.verify_key_rotation(address, sig_pub_hex, "cc" * 1184, new_sig_pub, rot_sig) is False)
+
     print()
     if FAILURES:
         print(f"RESULT: FAILED ({len(FAILURES)}): {FAILURES}")

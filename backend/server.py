@@ -1042,8 +1042,12 @@ async def publish_messaging_keys(request: Request, data: dict):
 
     The bundle is self-signed by the messaging key it registers (proves the
     registrant holds that key). This is the click-and-use convenience path; it does
-    not prove spend-key ownership of the address (see messaging_relay note). Stored
-    last-write-wins.
+    not prove spend-key ownership of the address (see messaging_relay note).
+
+    Stored FIRST-WRITE-WINS: the first bundle for an address is accepted (TOFU),
+    re-publishing the SAME key is idempotent, and replacing it with a DIFFERENT key
+    requires `rotation_sig` from the currently registered key — so an attacker
+    cannot silently overwrite an in-use address's messaging key.
     """
     client_id = SecurityManager.get_client_identifier(request)
     if SecurityManager.is_rate_limited(client_id, "messaging_keys"):
@@ -1053,11 +1057,27 @@ async def publish_messaging_keys(request: Request, data: dict):
     kem_pub = SecurityManager.sanitize_input(data.get("kem_pub", ""))
     sig_pub = SecurityManager.sanitize_input(data.get("sig_pub", ""))
     sig = SecurityManager.sanitize_input(data.get("sig", ""))
+    rotation_sig = SecurityManager.sanitize_input(data.get("rotation_sig", ""))
 
     if not SecurityManager.validate_wepo_address(address):
         raise HTTPException(status_code=400, detail="Invalid recipient address")
     if not messaging_relay.verify_key_registration(address, kem_pub, sig_pub, sig):
         raise HTTPException(status_code=400, detail="Invalid messaging key bundle")
+
+    # First-write-wins + incumbent-authorized rotation (see messaging_relay).
+    existing = await db.message_keys.find_one({"_id": address})
+    allowed, reason = messaging_relay.registration_action(
+        existing.get("kem_pub") if existing else None,
+        existing.get("sig_pub") if existing else None,
+        address, kem_pub, sig_pub, rotation_sig,
+    )
+    if not allowed:
+        raise HTTPException(
+            status_code=409,
+            detail="This address already has a different messaging key. Replacing it "
+                   "requires a rotation signature from the current key, or use the "
+                   "on-chain messaging-key anchor.",
+        )
 
     await db.message_keys.replace_one(
         {"_id": address},
@@ -1065,7 +1085,7 @@ async def publish_messaging_keys(request: Request, data: dict):
          "updated_at": int(time.time())},
         upsert=True,
     )
-    return {"success": True, "address": address}
+    return {"success": True, "address": address, "status": reason}
 
 
 @app.post("/api/messages/keys/build-unsigned-register")
