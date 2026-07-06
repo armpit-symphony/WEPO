@@ -2383,6 +2383,7 @@ class WepoBlockchain:
 
         selected_transactions = []
         selected_txids = []
+        selected_outpoints = set()
         provisional_coinbase = self.create_coinbase_transaction(
             height,
             miner_address,
@@ -2395,10 +2396,19 @@ class WepoBlockchain:
             if not self.validate_transaction(tx):
                 continue
 
+            # Never pack two transactions that spend the same outpoint into one
+            # block — that would be an intra-block double-spend (rejected by
+            # validate_block). Skip a candidate conflicting with an already
+            # selected transaction.
+            tx_outpoints = {(inp.prev_txid, inp.prev_vout) for inp in tx.inputs}
+            if tx_outpoints & selected_outpoints:
+                continue
+
             tx_size = self._estimate_transaction_size(tx)
             if current_size + tx_size <= MAX_BLOCK_SIZE:
                 selected_transactions.append(tx)
                 selected_txids.append(txid)
+                selected_outpoints |= tx_outpoints
                 current_size += tx_size
             else:
                 break
@@ -2727,11 +2737,32 @@ class WepoBlockchain:
         else:
             return False
         
+        # Reject intra-block double-spends: no two transactions in one block may
+        # spend the same outpoint. validate_transaction only checks each tx
+        # against COMMITTED UTXO state (the block is not applied yet), so without
+        # this cross-transaction check two conflicting spends of a single UTXO
+        # could both land in a block and both mint outputs — minting coins from
+        # nothing and breaking value conservation and the supply cap.
+        block_spent_outpoints = set()
+        for tx in block.transactions:
+            if tx.is_coinbase():
+                continue
+            for inp in tx.inputs:
+                outpoint = (inp.prev_txid, inp.prev_vout)
+                if outpoint in block_spent_outpoints:
+                    print(
+                        f"Invalid block {block.height}: outpoint "
+                        f"{inp.prev_txid}:{inp.prev_vout} is spent by more than one "
+                        f"transaction in the same block (double-spend)"
+                    )
+                    return False
+                block_spent_outpoints.add(outpoint)
+
         # Validate all transactions
         for tx in block.transactions:
             if not self.validate_transaction(tx):
                 return False
-        
+
         return True
 
     def validate_pow_block(self, block: Block) -> bool:
@@ -2872,8 +2903,24 @@ class WepoBlockchain:
 
         # Basic validation
         if self.validate_transaction(transaction):
+            # Reject a transaction that conflicts with one already in the mempool
+            # (both spend the same outpoint). Keeping the mempool single-spend per
+            # outpoint means block assembly cannot accidentally pack a
+            # double-spend, and a conflicting spend can't silently evict the
+            # first. (A replacement policy could be added later; for now
+            # first-seen wins.)
+            new_outpoints = {(inp.prev_txid, inp.prev_vout) for inp in transaction.inputs}
+            for existing in self.mempool.values():
+                existing_outpoints = {(i.prev_txid, i.prev_vout) for i in existing.inputs}
+                if new_outpoints & existing_outpoints:
+                    print(
+                        f"Rejected transaction {txid}: conflicts with an existing "
+                        f"mempool transaction (double-spend of a claimed outpoint)"
+                    )
+                    return False
+
             self.mempool[txid] = transaction
-            
+
             print(f"Transaction added to mempool: {txid}")
             return True
         else:
