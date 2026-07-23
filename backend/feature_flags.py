@@ -10,6 +10,7 @@ Flags (set to 1/true/yes/on to ENABLE the feature):
   WEPO_FEATURE_PRIVACY        privacy proofs / Quantum Vault (zk-STARK)
   WEPO_FEATURE_RWA            RWA assets, vault flows, and trading
   WEPO_FEATURE_BTC            Bitcoin relay and atomic/BTC swaps
+  WEPO_FEATURE_MESSAGING      private messaging relay/key registry
   WEPO_ENABLE_STAGING_TOGGLES staging-only test hooks (e.g. genesis flip)
 """
 import os
@@ -28,6 +29,7 @@ LAUNCH_GATED_PREFIXES = [
     ("/api/bitcoin/relay", "WEPO_FEATURE_BTC", "Bitcoin relay"),
     ("/api/dex/swap", "WEPO_FEATURE_BTC", "Atomic swap"),
     ("/api/swap/execute", "WEPO_FEATURE_BTC", "Atomic swap"),
+    ("/api/messages", "WEPO_FEATURE_MESSAGING", "Private messaging"),
     ("/api/mining/_toggle_genesis", "WEPO_ENABLE_STAGING_TOGGLES", "Staging genesis toggle"),
 ]
 

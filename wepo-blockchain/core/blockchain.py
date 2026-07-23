@@ -124,7 +124,7 @@ HALVING_INTERVAL = 1051200    # OLD: Blocks between halvings (not used in new sc
 # NETWORK PROFILE CONFIGURATION
 MAINNET_GENESIS_TIMESTAMP = PROFILE_MAINNET_GENESIS_TIMESTAMP
 STAKING_ACTIVATION_DELAY = 18 * 30 * 24 * 60 * 60
-PRODUCTION_MODE = False
+PRODUCTION_MODE = True
 NETWORK_PROFILE_NAME = "mainnet"
 NETWORK_NAME = "mainnet"
 MIN_STAKE_AMOUNT = 1000 * COIN
@@ -141,6 +141,11 @@ TX_TYPE_STAKE_DEACTIVATE = "stake_deactivate"
 TX_TYPE_MASTERNODE_CREATE = "masternode_create"
 TX_TYPE_MASTERNODE_DEACTIVATE = "masternode_deactivate"
 TX_TYPE_RWA_CREATE = "rwa_create"
+
+# Privacy fields are not active consensus until a separately specified and
+# audited activation path exists. Keep this hardcoded; environment flags may
+# gate services, but they must not change mainnet consensus behavior.
+PRIVACY_CONSENSUS_ENABLED = False
 
 # Real-world-asset on-chain issuance. An rwa_create tx is an ordinary
 # self-custody (Dilithium-signed) transaction that pays an anti-spam fee and
@@ -282,6 +287,13 @@ class TransactionOutput:
     address: str = ""
     
     def __post_init__(self):
+        if type(self.value) is not int:
+            raise ValueError(f"Invalid output value type: {type(self.value).__name__}")
+        if self.value < 0:
+            raise ValueError(f"Output value cannot be negative: {self.value}")
+        if self.value > SUPPLY_CAP:
+            raise ValueError(f"Output value exceeds supply cap: {self.value}")
+
         # Validate address format (supports both regular and quantum addresses)
         if not self.is_valid_address():
             raise ValueError(f"Invalid address format: {self.address}")
@@ -2676,6 +2688,65 @@ class WepoBlockchain:
             # This would trigger miners to start mining
             pass
     
+    def _validate_transaction_consensus_shape(
+        self,
+        transaction: Transaction,
+        *,
+        allow_coinbase: bool,
+        context: str = "transaction",
+    ) -> bool:
+        """Validate consensus-critical transaction fields before value math."""
+        if not PRIVACY_CONSENSUS_ENABLED and (
+            transaction.privacy_proof is not None or transaction.ring_signature is not None
+        ):
+            print(f"Invalid {context}: privacy fields are not active consensus")
+            return False
+
+        if type(transaction.fee) is not int or transaction.fee < 0:
+            print(f"Invalid {context}: fee must be a non-negative integer")
+            return False
+
+        if not transaction.inputs:
+            print(f"Invalid {context}: transaction must contain at least one input")
+            return False
+        if not transaction.outputs:
+            print(f"Invalid {context}: transaction must contain at least one output")
+            return False
+
+        if transaction.is_coinbase() and not allow_coinbase:
+            print(f"Invalid {context}: coinbase transaction is not allowed here")
+            return False
+
+        seen_outpoints = set()
+        for idx, inp in enumerate(transaction.inputs):
+            if not isinstance(inp.prev_txid, str) or len(inp.prev_txid) != 64:
+                print(f"Invalid {context}: input {idx} has malformed prev_txid")
+                return False
+            if type(inp.prev_vout) is not int or inp.prev_vout < 0:
+                print(f"Invalid {context}: input {idx} has malformed prev_vout")
+                return False
+            outpoint = (inp.prev_txid, inp.prev_vout)
+            if outpoint in seen_outpoints:
+                print(f"Invalid {context}: input {idx} duplicates an outpoint")
+                return False
+            seen_outpoints.add(outpoint)
+
+        for idx, out in enumerate(transaction.outputs):
+            if type(out.value) is not int:
+                print(f"Invalid {context}: output {idx} value must be an integer")
+                return False
+            if out.value < 0:
+                print(f"Invalid {context}: output {idx} value cannot be negative")
+                return False
+            if out.value > SUPPLY_CAP:
+                print(f"Invalid {context}: output {idx} exceeds the supply cap")
+                return False
+            if not out.is_valid_address():
+                print(f"Invalid {context}: output {idx} has an invalid address")
+                return False
+
+        return True
+
     def validate_block(self, block: Block) -> bool:
         """Validate a block (supports both PoW and PoS)"""
         # Basic validation
@@ -2700,31 +2771,24 @@ class WepoBlockchain:
 
         if block.header.merkle_root != block.calculate_merkle_root():
             return False
-        
-        # Check coinbase transaction
+
         coinbase = block.transactions[0]
         if not coinbase.is_coinbase():
             return False
 
-        # Enforce the hard supply cap at consensus level: the coinbase may mint at
-        # most the cap-clamped base reward, plus a redistribution of this block's
-        # transaction fees. This bounds new issuance regardless of the block
-        # producer, so cumulative issuance can never exceed SUPPLY_CAP.
-        consensus_type = "pos" if block.header.is_pos_block() else "pow"
-        allowed_base_reward = self.clamped_base_reward(block.height, consensus_type)
-        total_block_fees = sum(
-            tx.fee for tx in block.transactions[1:] if getattr(tx, "fee", 0)
-        )
-        coinbase_total = sum(out.value for out in coinbase.outputs)
-        max_allowed_coinbase = allowed_base_reward + total_block_fees
-        if coinbase_total > max_allowed_coinbase:
-            print(
-                f"Invalid coinbase at height {block.height}: mints "
-                f"{coinbase_total / COIN:.8f} WEPO, max allowed "
-                f"{max_allowed_coinbase / COIN:.8f} (base {allowed_base_reward / COIN:.8f} "
-                f"+ fees {total_block_fees / COIN:.8f})"
-            )
-            return False
+        for tx_index, tx in enumerate(block.transactions):
+            if tx_index > 0 and tx.is_coinbase():
+                print(
+                    f"Invalid block {block.height}: only transaction 0 may be coinbase "
+                    f"(found coinbase at index {tx_index})"
+                )
+                return False
+            if not self._validate_transaction_consensus_shape(
+                tx,
+                allow_coinbase=(tx_index == 0),
+                context=f"block {block.height} transaction {tx_index}",
+            ):
+                return False
 
         # Validate based on consensus type
         if block.header.is_pos_block():
@@ -2736,17 +2800,15 @@ class WepoBlockchain:
                 return False
         else:
             return False
-        
+
         # Reject intra-block double-spends: no two transactions in one block may
         # spend the same outpoint. validate_transaction only checks each tx
         # against COMMITTED UTXO state (the block is not applied yet), so without
         # this cross-transaction check two conflicting spends of a single UTXO
-        # could both land in a block and both mint outputs — minting coins from
-        # nothing and breaking value conservation and the supply cap.
+        # could both land in a block and both mint outputs, breaking value
+        # conservation and the supply cap.
         block_spent_outpoints = set()
-        for tx in block.transactions:
-            if tx.is_coinbase():
-                continue
+        for tx in block.transactions[1:]:
             for inp in tx.inputs:
                 outpoint = (inp.prev_txid, inp.prev_vout)
                 if outpoint in block_spent_outpoints:
@@ -2758,10 +2820,26 @@ class WepoBlockchain:
                     return False
                 block_spent_outpoints.add(outpoint)
 
-        # Validate all transactions
-        for tx in block.transactions:
+        total_block_fees = 0
+        for tx in block.transactions[1:]:
             if not self.validate_transaction(tx):
                 return False
+            total_block_fees += tx.fee
+
+        # Enforce the hard supply cap at consensus level: the coinbase may mint at
+        # most the cap-clamped base reward, plus validated fee redistribution.
+        consensus_type = "pos" if block.header.is_pos_block() else "pow"
+        allowed_base_reward = self.clamped_base_reward(block.height, consensus_type)
+        coinbase_total = sum(out.value for out in coinbase.outputs)
+        max_allowed_coinbase = allowed_base_reward + total_block_fees
+        if coinbase_total > max_allowed_coinbase:
+            print(
+                f"Invalid coinbase at height {block.height}: mints "
+                f"{coinbase_total / COIN:.8f} WEPO, max allowed "
+                f"{max_allowed_coinbase / COIN:.8f} (base {allowed_base_reward / COIN:.8f} "
+                f"+ fees {total_block_fees / COIN:.8f})"
+            )
+            return False
 
         return True
 
@@ -2930,10 +3008,19 @@ class WepoBlockchain:
     def validate_transaction(self, transaction: Transaction) -> bool:
         """Validate a transaction with proper UTXO checking and quantum signature support"""
         try:
-            # Skip validation for coinbase transactions
+            if not self._validate_transaction_consensus_shape(
+                transaction,
+                allow_coinbase=True,
+                context="transaction",
+            ):
+                return False
+
+            # Skip UTXO/signature checks for the single block coinbase path only.
+            # Block and mempool validation decide whether coinbase is allowed in
+            # that context.
             if transaction.is_coinbase():
                 return True
-            
+
             # Check inputs exist and are unspent
             total_input_value = 0
             input_rows = []

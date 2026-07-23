@@ -227,13 +227,63 @@ export const validateSendForm = (formData, balance = 0) => {
 };
 
 // Secure localStorage wrapper (encrypted storage)
+const SECURE_STORAGE_VERSION = 2;
+const SECURE_STORAGE_KDF_ITERATIONS = 310000;
+
+const timingSafeHexEqual = (a, b) => {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+};
+
+const deriveStorageKeys = (CryptoJS, password, saltHex, iterations = SECURE_STORAGE_KDF_ITERATIONS) => {
+  const material = CryptoJS.PBKDF2(password, CryptoJS.enc.Hex.parse(saltHex), {
+    keySize: 512 / 32,
+    iterations,
+    hasher: CryptoJS.algo.SHA256,
+  });
+  return {
+    encKey: CryptoJS.lib.WordArray.create(material.words.slice(0, 8), 32),
+    macKey: CryptoJS.lib.WordArray.create(material.words.slice(8, 16), 32),
+  };
+};
+
+const encodeStorageMacPayload = (payload) => [
+  payload.version,
+  payload.kdf,
+  payload.iterations,
+  payload.salt,
+  payload.iv,
+  payload.ciphertext,
+].join('|');
+
 export const secureStorage = {
-  // Encrypt sensitive data before storing
+  // Encrypt sensitive data before storing. Version 2 uses explicit PBKDF2 plus
+  // encrypt-then-MAC so wrong passwords or tampering fail before JSON parsing.
   setSecureItem: (key, value, password) => {
     try {
       const CryptoJS = require('crypto-js');
-      const encrypted = CryptoJS.AES.encrypt(JSON.stringify(value), password).toString();
-      localStorage.setItem(`wepo_secure_${key}`, encrypted);
+      const salt = CryptoJS.lib.WordArray.random(16).toString(CryptoJS.enc.Hex);
+      const iv = CryptoJS.lib.WordArray.random(16);
+      const { encKey, macKey } = deriveStorageKeys(CryptoJS, password, salt);
+      const encrypted = CryptoJS.AES.encrypt(JSON.stringify(value), encKey, {
+        iv,
+        mode: CryptoJS.mode.CBC,
+        padding: CryptoJS.pad.Pkcs7,
+      });
+      const payload = {
+        version: SECURE_STORAGE_VERSION,
+        kdf: 'PBKDF2-HMAC-SHA256',
+        iterations: SECURE_STORAGE_KDF_ITERATIONS,
+        salt,
+        iv: iv.toString(CryptoJS.enc.Hex),
+        ciphertext: encrypted.ciphertext.toString(CryptoJS.enc.Base64),
+      };
+      payload.mac = CryptoJS.HmacSHA256(encodeStorageMacPayload(payload), macKey).toString(CryptoJS.enc.Hex);
+      localStorage.setItem(`wepo_secure_${key}`, JSON.stringify(payload));
       return true;
     } catch (error) {
       console.error('Secure storage encryption failed:', error);
@@ -241,15 +291,52 @@ export const secureStorage = {
     }
   },
   
-  // Decrypt data when retrieving
+  // Decrypt data when retrieving. Legacy passphrase-format blobs are accepted once
+  // and immediately migrated to the authenticated versioned format.
   getSecureItem: (key, password) => {
     try {
       const CryptoJS = require('crypto-js');
-      const encrypted = localStorage.getItem(`wepo_secure_${key}`);
-      if (!encrypted) return null;
-      
-      const decrypted = CryptoJS.AES.decrypt(encrypted, password);
-      return JSON.parse(decrypted.toString(CryptoJS.enc.Utf8));
+      const stored = localStorage.getItem(`wepo_secure_${key}`);
+      if (!stored) return null;
+
+      let payload = null;
+      try { payload = JSON.parse(stored); } catch (e) { payload = null; }
+
+      if (payload?.version === SECURE_STORAGE_VERSION) {
+        if (
+          payload.kdf !== 'PBKDF2-HMAC-SHA256' ||
+          typeof payload.salt !== 'string' ||
+          typeof payload.iv !== 'string' ||
+          typeof payload.ciphertext !== 'string' ||
+          typeof payload.mac !== 'string'
+        ) {
+          return null;
+        }
+        const iterations = Number(payload.iterations);
+        if (!Number.isInteger(iterations) || iterations < 100000) return null;
+
+        const { encKey, macKey } = deriveStorageKeys(CryptoJS, password, payload.salt, iterations);
+        const expectedMac = CryptoJS.HmacSHA256(encodeStorageMacPayload(payload), macKey).toString(CryptoJS.enc.Hex);
+        if (!timingSafeHexEqual(expectedMac, payload.mac)) return null;
+
+        const cipherParams = CryptoJS.lib.CipherParams.create({
+          ciphertext: CryptoJS.enc.Base64.parse(payload.ciphertext),
+        });
+        const decrypted = CryptoJS.AES.decrypt(cipherParams, encKey, {
+          iv: CryptoJS.enc.Hex.parse(payload.iv),
+          mode: CryptoJS.mode.CBC,
+          padding: CryptoJS.pad.Pkcs7,
+        });
+        const plaintext = decrypted.toString(CryptoJS.enc.Utf8);
+        return plaintext ? JSON.parse(plaintext) : null;
+      }
+
+      const legacy = CryptoJS.AES.decrypt(stored, password);
+      const legacyText = legacy.toString(CryptoJS.enc.Utf8);
+      if (!legacyText) return null;
+      const parsed = JSON.parse(legacyText);
+      secureStorage.setSecureItem(key, parsed, password);
+      return parsed;
     } catch (error) {
       console.error('Secure storage decryption failed:', error);
       return null;

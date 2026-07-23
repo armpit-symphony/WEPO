@@ -58,7 +58,7 @@ except ImportError:
     get_reward_phase_label = None
 
 # Initialize security features
-init_redis()  # Initialize Redis for rate limiting (fallback to in-memory if Redis unavailable)
+init_redis(os.getenv("REDIS_URL", "redis://localhost:6379"))
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']

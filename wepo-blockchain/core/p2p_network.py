@@ -93,11 +93,12 @@ class P2PMessage:
 class WepoP2PNode:
     """WEPO P2P Network Node"""
     
-    def __init__(self, host: str = "0.0.0.0", port: int = DEFAULT_PORT, 
-                 user_agent: str = "/WepoCore:1.0.0/"):
+    def __init__(self, host: str = "0.0.0.0", port: int = DEFAULT_PORT,
+                 user_agent: str = "/WepoCore:1.0.0/", network_profile: Optional[str] = None):
         self.host = host
         self.port = port
         self.user_agent = user_agent
+        self.network_profile = (network_profile or os.getenv("WEPO_NETWORK_PROFILE", "mainnet")).strip().lower()
         self.node_id = hashlib.sha256(f"{host}:{port}:{time.time()}".encode()).hexdigest()[:16]
         
         # Network state
@@ -148,16 +149,24 @@ class WepoP2PNode:
         self.socks5_proxy = self._parse_socks5_proxy(os.getenv("WEPO_SOCKS5_PROXY", ""))
 
         self.static_seed_addresses = self._load_static_seed_addresses()
+        self.dns_seeds = self._load_dns_seeds()
+        if self._requires_mainnet_seeds() and not self.static_seed_addresses and not self.dns_seeds:
+            raise RuntimeError(
+                "Mainnet P2P seeds are required. Set WEPO_STATIC_PEERS or WEPO_DNS_SEEDS."
+            )
 
-        # DNS seeds for peer discovery
-        self.dns_seeds = [
-            "seed1.wepo.network",
-            "seed2.wepo.network", 
-            "seed3.wepo.network"
-        ]
-        
         print(f"WEPO P2P Node initialized: {self.node_id}")
         print(f"Listening on: {host}:{port}")
+
+    def _network_profile_name(self) -> str:
+        return self.network_profile
+
+    def _requires_mainnet_seeds(self) -> bool:
+        return (
+            self._network_profile_name() == "mainnet"
+            and os.getenv("WEPO_REQUIRE_MAINNET_SEEDS", "").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
 
     def _load_static_seed_addresses(self) -> List[tuple[str, int]]:
         """Load fixed seed peers, allowing test/smoke overrides through env."""
@@ -165,10 +174,12 @@ class WepoP2PNode:
         if configured_peers.lower() in {"none", "off", "disabled", "-"}:
             return []
         if not configured_peers:
-            return [
-                ("127.0.0.1", 22567),
-                ("127.0.0.1", 22568),
-            ]
+            if self._network_profile_name() == "test":
+                return [
+                    ("127.0.0.1", 22567),
+                    ("127.0.0.1", 22568),
+                ]
+            return []
 
         seed_addresses: List[tuple[str, int]] = []
         for entry in configured_peers.split(","):
@@ -181,6 +192,14 @@ class WepoP2PNode:
             except ValueError:
                 continue
         return seed_addresses
+
+    def _load_dns_seeds(self) -> List[str]:
+        configured_seeds = os.getenv("WEPO_DNS_SEEDS", "").strip()
+        if configured_seeds.lower() in {"none", "off", "disabled", "-"}:
+            return []
+        if not configured_seeds:
+            return []
+        return [seed.strip() for seed in configured_seeds.split(",") if seed.strip()]
 
     def _is_self_endpoint(self, host: str, port: int) -> bool:
         """Reject obvious loopback/self peer targets during local discovery."""
@@ -349,10 +368,13 @@ class WepoP2PNode:
         """Discover peers through DNS seeds and existing connections"""
         print("Discovering peers...")
         
+        if not self.static_seed_addresses and not self.dns_seeds:
+            print("No P2P seed peers configured; set WEPO_STATIC_PEERS or WEPO_DNS_SEEDS to bootstrap peers.")
+
         for host, port in self.static_seed_addresses:
             if len(self.peers) < MAX_PEERS:
                 self.connect_to_peer(host, port)
-        
+
         # Request addresses from existing peers
         for peer in self.peers.values():
             if peer.is_connected():

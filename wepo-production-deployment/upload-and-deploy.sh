@@ -7,12 +7,19 @@
 # - This script still deploys the bridge-era `wepo-fast-test-bridge.py` path.
 # - It is not the current authoritative production deployment path.
 # - Verify the canonical local backend/node flow first with:
-#   /home/sparky/WEPO/wepo-blockchain/scripts/run_canonical_fee_smoke.sh
+#   wepo-blockchain/scripts/run_canonical_fee_smoke.sh
 
 set -e
 
+LEGACY_DEPLOY_RETIRED=1
+if [[ "${WEPO_ALLOW_LEGACY_BRIDGE_DEPLOY:-}" != "I_UNDERSTAND_THIS_DEPLOYS_RETIRED_PLACEHOLDER_CODE" ]]; then
+    echo "ERROR: This legacy bridge deployment path is retired and must not be used for public launch."
+    echo "Use the canonical backend plus full-node deployment runbook instead."
+    exit 1
+fi
+
 # Configuration - UPDATE THESE
-SERVER_IP="YOUR_SERVER_IP"           # e.g., "192.168.1.100" or "your-domain.com"
+SERVER_IP="YOUR_SERVER_IP"           # e.g., "203.0.113.10" or "your-domain.com"
 SERVER_USER="root"                   # Usually "root" for initial setup
 DOMAIN="api.wepo.network"            # Your chosen domain
 WEPO_DIR="/opt/wepo"

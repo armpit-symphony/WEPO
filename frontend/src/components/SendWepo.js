@@ -70,8 +70,8 @@ const SendWepo = ({ onClose, isPreGenesis = false }) => {
       )}
 
       <div className="bg-gray-700/50 rounded-lg p-4 border border-purple-500/30">
-        <div className="flex items-center gap-2 mb-2"><AlertTriangle className="h-4 w-4 text-yellow-400" /><span className="text-sm font-medium text-yellow-200">Privacy Notice</span></div>
-        <p className="text-sm text-gray-300">All WEPO transactions are private by default using zk-STARKs and ring signatures.</p>
+        <div className="flex items-center gap-2 mb-2"><AlertTriangle className="h-4 w-4 text-yellow-400" /><span className="text-sm font-medium text-yellow-200">Transparent Transaction</span></div>
+        <p className="text-sm text-gray-300">This sends a standard transparent WEPO transaction. Ghost Send and Vault privacy are disabled for this release.</p>
       </div>
 
       <div className="space-y-4">

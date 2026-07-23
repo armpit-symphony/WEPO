@@ -8,9 +8,16 @@
 # - It still provisions the bridge-era deployment model and should not be treated
 #   as the authoritative production runbook.
 # - Verify the canonical local backend/node flow first with:
-#   /home/sparky/WEPO/wepo-blockchain/scripts/run_canonical_fee_smoke.sh
+#   wepo-blockchain/scripts/run_canonical_fee_smoke.sh
 
 set -e
+
+LEGACY_DEPLOY_RETIRED=1
+if [[ "${WEPO_ALLOW_LEGACY_BRIDGE_DEPLOY:-}" != "I_UNDERSTAND_THIS_DEPLOYS_RETIRED_PLACEHOLDER_CODE" ]]; then
+    echo "ERROR: This legacy bridge deployment path is retired and must not be used for public launch."
+    echo "Use the canonical backend plus full-node deployment runbook instead."
+    exit 1
+fi
 
 echo "🚀 WEPO Network Production Deployment"
 echo "====================================="

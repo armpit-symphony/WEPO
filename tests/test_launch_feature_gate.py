@@ -37,6 +37,8 @@ GATED = {
     "/api/bitcoin/relay/broadcast": "Bitcoin relay",
     "/api/dex/swap": "Atomic swap",
     "/api/swap/execute": "Atomic swap",
+    "/api/messages": "Private messaging",
+    "/api/messages/keys": "Private messaging",
     "/api/mining/_toggle_genesis": "Staging genesis toggle",
 }
 
@@ -55,7 +57,7 @@ ALWAYS_OPEN = [
 
 def main():
     # Default (no flags set): every gated feature is disabled.
-    for k in ("WEPO_FEATURE_PRIVACY", "WEPO_FEATURE_RWA", "WEPO_FEATURE_BTC", "WEPO_ENABLE_STAGING_TOGGLES"):
+    for k in ("WEPO_FEATURE_PRIVACY", "WEPO_FEATURE_RWA", "WEPO_FEATURE_BTC", "WEPO_FEATURE_MESSAGING", "WEPO_ENABLE_STAGING_TOGGLES"):
         os.environ.pop(k, None)
     ff = reload_ff()
 

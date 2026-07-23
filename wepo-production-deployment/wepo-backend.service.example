@@ -10,6 +10,7 @@ Group=wepo
 WorkingDirectory=/opt/wepo/backend
 EnvironmentFile=/etc/wepo/backend.env
 Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=WEPO_REQUIRE_REDIS_RATE_LIMIT=1
 ExecStart=/opt/wepo/.venv/bin/uvicorn server:app --host 127.0.0.1 --port 8011
 Restart=always
 RestartSec=5

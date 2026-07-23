@@ -53,21 +53,25 @@ except Exception:
     ATOMIC_SWAPS_AVAILABLE = False
 
 # Import quantum-resistant components
-from quantum_blockchain import QuantumWepoBlockchain
-from quantum_transaction import QuantumWallet
-from dilithium import generate_wepo_address, validate_wepo_address as validate_quantum_address, get_dilithium_info as get_dilithium_info_impl
+from dilithium import generate_wepo_address, get_dilithium_info as get_dilithium_info_impl
 
 class WepoFullNode:
     """WEPO Full Blockchain Node"""
     
-    def __init__(self, data_dir: str = "/tmp/wepo", p2p_port: int = 22567, 
+    def __init__(self, data_dir: str = "/tmp/wepo", p2p_port: int = 22567,
                  api_port: int = 8001, enable_mining: bool = True,
                  background_mining_enabled: Optional[bool] = None,
                  difficulty_override: Optional[int] = None,
-                 network_profile: str = "mainnet"):
+                 network_profile: str = "mainnet",
+                 api_host: Optional[str] = None):
         self.data_dir = data_dir
         self.p2p_port = p2p_port
         self.api_port = api_port
+        self.api_host = api_host or os.getenv("WEPO_NODE_API_HOST", "127.0.0.1")
+        allowed_origins = os.getenv("WEPO_NODE_ALLOWED_ORIGINS", "").strip()
+        self.api_allowed_origins = [
+            origin.strip() for origin in allowed_origins.split(",") if origin.strip()
+        ]
         self.network_profile = network_profile
         self.mining_api_enabled = enable_mining
         self.background_mining_enabled = (
@@ -80,11 +84,8 @@ class WepoFullNode:
             self.blockchain.fixed_difficulty = max(1, int(difficulty_override))
             self.blockchain.current_difficulty = self.blockchain.fixed_difficulty
         
-        # Initialize quantum-resistant blockchain
-        self.quantum_blockchain = QuantumWepoBlockchain(data_dir + "_quantum")
-        
         # Initialize P2P network
-        self.p2p_node = WepoP2PNode(port=p2p_port)
+        self.p2p_node = WepoP2PNode(port=p2p_port, network_profile=network_profile)
         
         # Connect blockchain and P2P
         self.p2p_node.on_new_block = self.handle_new_block
@@ -111,6 +112,7 @@ class WepoFullNode:
         print(f"WEPO Full Node initialized:")
         print(f"  Data directory: {data_dir}")
         print(f"  P2P port: {p2p_port}")
+        print(f"  API host: {self.api_host}")
         print(f"  API port: {api_port}")
         print(f"  Mining API enabled: {self.mining_api_enabled}")
         print(f"  Background mining enabled: {self.background_mining_enabled}")
@@ -134,16 +136,16 @@ class WepoFullNode:
         # Add CORS middleware
         self.app.add_middleware(
             CORSMiddleware,
-            allow_origins=["*"],
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
+            allow_origins=self.api_allowed_origins,
+            allow_credentials=False,
+            allow_methods=["GET", "POST"],
+            allow_headers=["Authorization", "Content-Type"],
         )
 
         # Launch-scope feature gate (MAINNET_V1_LAUNCH_SCOPE.md): privacy proofs
         # (stubbed zk-STARK) and BTC atomic swaps are disabled unless explicitly
-        # enabled. Quantum (Dilithium) wallet endpoints are NOT gated - they are
-        # the standard signing wallet post-fork.
+        # enabled. Legacy node quantum wallet routes are retired below; canonical
+        # Dilithium signing stays client-side.
         def _node_feature_enabled(env_name: str) -> bool:
             return os.environ.get(env_name, "").strip().lower() in ("1", "true", "yes", "on")
 
@@ -1255,124 +1257,50 @@ class WepoFullNode:
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))
         
-        # Quantum-Resistant Blockchain Operations
+        # Quantum-resistant implementation metadata and retired legacy node wallet routes.
+        def _retired_quantum_wallet_endpoint():
+            raise HTTPException(
+                status_code=410,
+                detail=(
+                    "Legacy node quantum wallet endpoints are retired. Build unsigned "
+                    "transactions with /api/transaction/build-unsigned, sign locally, "
+                    "then submit with /api/transaction/send."
+                ),
+            )
+
         @self.app.get("/api/quantum/info")
         async def get_quantum_info():
-            """Get quantum blockchain information"""
-            try:
-                return self.quantum_blockchain.get_quantum_info()
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=str(e))
-        
+            """Retired parallel quantum-chain information endpoint."""
+            _retired_quantum_wallet_endpoint()
+
         @self.app.get("/api/quantum/dilithium")
         async def get_dilithium_info():
-            """Get Dilithium implementation details"""
+            """Get Dilithium implementation details."""
             try:
                 return get_dilithium_info_impl()
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))
-        
+
         @self.app.post("/api/quantum/wallet/create")
         async def create_quantum_wallet():
-            """Create a new quantum-resistant wallet"""
-            try:
-                wallet = QuantumWallet()
-                wallet_info = wallet.generate_new_wallet()
-                
-                return {
-                    'success': True,
-                    'wallet': wallet_info,
-                    'quantum_resistant': True,
-                    'message': 'Quantum-resistant wallet created successfully'
-                }
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=str(e))
-        
+            """Retired server-side wallet creation endpoint."""
+            _retired_quantum_wallet_endpoint()
+
         @self.app.get("/api/quantum/wallet/{address}")
         async def get_quantum_wallet_info(address: str):
-            """Get quantum wallet information"""
-            try:
-                if not validate_quantum_address(address):
-                    raise HTTPException(status_code=400, detail="Invalid quantum address format")
-                
-                balance = self.quantum_blockchain.get_balance_wepo(address)
-                
-                return {
-                    'address': address,
-                    'balance': balance,
-                    'quantum_resistant': True,
-                    'signature_algorithm': 'Dilithium2',
-                    'hash_algorithm': 'BLAKE2b'
-                }
-            except HTTPException:
-                raise
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=str(e))
-        
+            """Retired parallel quantum-chain balance endpoint."""
+            _retired_quantum_wallet_endpoint()
+
         @self.app.post("/api/quantum/transaction/create")
         async def create_quantum_transaction(request: dict):
-            """Create a quantum-resistant transaction"""
-            try:
-                from_address = request.get('from_address')
-                to_address = request.get('to_address')
-                amount = request.get('amount')
-                fee = request.get('fee', 0.0001)
-                private_key = request.get('private_key')
-                
-                if not all([from_address, to_address, amount, private_key]):
-                    raise HTTPException(status_code=400, detail="Missing required fields")
-                
-                # Create and sign transaction
-                wallet = QuantumWallet()
-                if not wallet.load_wallet(private_key):
-                    raise HTTPException(status_code=400, detail="Invalid private key")
-                
-                # Get UTXOs (simplified)
-                utxos = []  # In real implementation, get from blockchain
-                
-                # Create transaction
-                transaction = wallet.create_transaction(
-                    recipient_address=to_address,
-                    amount=int(amount * 100000000),  # Convert to satoshis
-                    fee=int(fee * 100000000),
-                    utxos=utxos
-                )
-                
-                if not transaction:
-                    raise HTTPException(status_code=400, detail="Failed to create transaction")
-                
-                # Add to mempool
-                if self.quantum_blockchain.add_transaction_to_mempool(transaction):
-                    return {
-                        'success': True,
-                        'transaction_id': transaction.calculate_txid(),
-                        'quantum_resistant': True,
-                        'signature_algorithm': 'Dilithium2',
-                        'status': 'pending'
-                    }
-                else:
-                    raise HTTPException(status_code=400, detail="Transaction validation failed")
-                
-            except HTTPException:
-                raise
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=str(e))
-        
+            """Retired server-side transaction signing endpoint."""
+            _retired_quantum_wallet_endpoint()
+
         @self.app.get("/api/quantum/status")
         async def get_quantum_status():
-            """Get quantum blockchain status"""
-            try:
-                return {
-                    'quantum_ready': True,
-                    'current_height': self.quantum_blockchain.get_block_height(),
-                    'mempool_size': len(self.quantum_blockchain.mempool),
-                    'signature_algorithm': 'Dilithium2',
-                    'hash_algorithm': 'BLAKE2b',
-                    'implementation': 'WEPO Quantum-Resistant v1.0'
-                }
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=str(e))
-    
+            """Retired parallel quantum-chain status endpoint."""
+            _retired_quantum_wallet_endpoint()
+
     def handle_new_block(self, block_data: dict):
         """Handle new block from P2P network"""
         try:
@@ -1462,12 +1390,13 @@ class WepoFullNode:
         print(f"WEPO Full Node started successfully!")
         print(f"Blockchain height: {self.blockchain.get_block_height()}")
         print(f"P2P port: {self.p2p_port}")
+        print(f"API host: {self.api_host}")
         print(f"API port: {self.api_port}")
-        
+
         # Run API server
         uvicorn.run(
             self.app,
-            host="0.0.0.0",
+            host=self.api_host,
             port=self.api_port,
             log_level="info"
         )
@@ -1499,6 +1428,8 @@ def main():
                        help='Data directory for blockchain storage')
     parser.add_argument('--p2p-port', type=int, default=22567,
                        help='P2P network port')
+    parser.add_argument('--api-host', default=os.getenv("WEPO_NODE_API_HOST", "127.0.0.1"),
+                       help='API server bind host (defaults to localhost)')
     parser.add_argument('--api-port', type=int, default=8001,
                        help='API server port')
     parser.add_argument('--no-mining', action='store_true',
@@ -1525,6 +1456,7 @@ def main():
     print(f"Version: 1.0.0")
     print(f"Data directory: {args.data_dir}")
     print(f"P2P port: {args.p2p_port}")
+    print(f"API host: {args.api_host}")
     print(f"API port: {args.api_port}")
     print(f"Network profile: {args.network_profile}")
     print(f"Mining API: {'Disabled' if args.no_mining else 'Enabled'}")
@@ -1540,6 +1472,7 @@ def main():
         data_dir=args.data_dir,
         p2p_port=args.p2p_port,
         api_port=args.api_port,
+        api_host=args.api_host,
         enable_mining=not args.no_mining,
         background_mining_enabled=False if args.no_mining else not args.no_background_mining,
         difficulty_override=args.difficulty_override,

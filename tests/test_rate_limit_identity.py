@@ -51,7 +51,7 @@ def main():
     sec.rate_limit_storage.clear()
     SM = sec.SecurityManager
     blocked = sum(
-        SM.is_rate_limited(SM.get_client_identifier(_Req(x_real_ip=f"10.0.0.{i}")), "global_api")
+        SM.is_rate_limited(SM.get_client_identifier(_Req(x_real_ip=f"203.0.113.{i}")), "global_api")
         for i in range(70)
     )
     check("default mode: spoofed X-Real-IP cannot bypass the limiter", blocked == 70 - 60)
@@ -61,7 +61,7 @@ def main():
     sec.rate_limit_storage.clear()
     SM = sec.SecurityManager
     blocked = sum(
-        SM.is_rate_limited(SM.get_client_identifier(_Req(x_real_ip=f"198.51.100.{i}", peer="10.0.0.1")), "global_api")
+        SM.is_rate_limited(SM.get_client_identifier(_Req(x_real_ip=f"198.51.100.{i}", peer="203.0.113.200")), "global_api")
         for i in range(70)
     )
     check("proxy mode: distinct real clients are not throttled together", blocked == 0)
@@ -69,10 +69,21 @@ def main():
     # Proxy trust: a single downstream client is still throttled at the limit.
     sec.rate_limit_storage.clear()
     blocked = sum(
-        SM.is_rate_limited(SM.get_client_identifier(_Req(x_real_ip="198.51.100.42", peer="10.0.0.1")), "global_api")
+        SM.is_rate_limited(SM.get_client_identifier(_Req(x_real_ip="198.51.100.42", peer="203.0.113.200")), "global_api")
         for i in range(70)
     )
     check("proxy mode: a single real client is throttled at 60/min", blocked == 70 - 60)
+
+    # Production mode: Redis is mandatory when explicitly required.
+    os.environ["WEPO_REQUIRE_REDIS_RATE_LIMIT"] = "1"
+    sec = load_security(trust_proxy=False)
+    try:
+        sec.init_redis("redis://127.0.0.1:1")
+        redis_required_failed_closed = False
+    except RuntimeError:
+        redis_required_failed_closed = True
+    check("production mode: missing Redis fails closed", redis_required_failed_closed)
+    os.environ.pop("WEPO_REQUIRE_REDIS_RATE_LIMIT", None)
 
     os.environ.pop("WEPO_TRUST_PROXY_HEADERS", None)
     print()

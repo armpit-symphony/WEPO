@@ -29,17 +29,33 @@ TRUST_PROXY_HEADERS = os.environ.get("WEPO_TRUST_PROXY_HEADERS", "").strip().low
 # Redis for rate limiting and session storage
 redis_client = None
 
-def init_redis(redis_url: str = "redis://localhost:6379"):
-    """Initialize Redis connection for rate limiting"""
+
+def redis_required_for_rate_limits() -> bool:
+    return os.environ.get("WEPO_REQUIRE_REDIS_RATE_LIMIT", "").strip().lower() in (
+        "1", "true", "yes", "on"
+    )
+
+
+def init_redis(redis_url: str | None = None):
+    """Initialize Redis connection for rate limiting.
+
+    Local/dev deployments may fall back to process memory. Public production can
+    set WEPO_REQUIRE_REDIS_RATE_LIMIT=1 to fail closed instead of silently losing
+    distributed rate limiting across workers or restarts.
+    """
     global redis_client
+    redis_url = redis_url or os.getenv("REDIS_URL", "redis://localhost:6379")
     try:
         redis_client = redis.Redis.from_url(redis_url, decode_responses=True)
         redis_client.ping()
         logger.info("Redis connection established for security features")
         return True
     except Exception as e:
+        redis_client = None  # Set to None so local/dev can use in-memory fallback.
+        if redis_required_for_rate_limits():
+            logger.critical(f"Redis connection failed while required for rate limiting: {e}")
+            raise RuntimeError("Redis is required for production rate limiting but is unavailable") from e
         logger.warning(f"Redis connection failed: {e}. Using in-memory fallback.")
-        redis_client = None  # Set to None so we use in-memory fallback
         return False
 
 # In-memory fallback for rate limiting when Redis is not available
@@ -231,7 +247,7 @@ class SecurityManager:
         
         except Exception as e:
             logger.error(f"Rate limiting error: {e}")
-            return False  # Fail open for availability
+            return redis_required_for_rate_limits()
 
     @staticmethod
     def get_rate_limit_reset_seconds(client_id: str, endpoint: str) -> int:

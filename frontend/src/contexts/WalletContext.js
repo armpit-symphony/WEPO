@@ -21,6 +21,9 @@ import {
 // const SelfCustodialBitcoinWallet = null; // not used directly
 
 const WalletContext = createContext();
+const MESSAGING_ENABLED = ['1', 'true', 'yes', 'on'].includes(
+  String(process.env.REACT_APP_WEPO_FEATURE_MESSAGING || '').trim().toLowerCase()
+);
 
 export const useWallet = () => {
   const context = useContext(WalletContext);
@@ -186,6 +189,9 @@ export const WalletProvider = ({ children }) => {
   // derive its keypair. Cached in memory and rebuilt automatically — never throws
   // for "not activated", so messaging is always ready when a wallet is open.
   const getMessagingIdentity = () => {
+    if (!MESSAGING_ENABLED) {
+      throw new Error('Private messaging is not available in this release.');
+    }
     const address = wallet?.address;
     if (!address) throw new Error('Open your wallet to use messaging.');
     const cached = messagingIdentityRef.current;
@@ -204,8 +210,8 @@ export const WalletProvider = ({ children }) => {
     return identity;
   };
 
-  // Messaging is always usable whenever a wallet is open.
-  const isMessagingActivated = () => !!wallet?.address;
+  // Messaging is available only when explicitly enabled for a staging build.
+  const isMessagingActivated = () => MESSAGING_ENABLED && !!wallet?.address;
 
   const disarmMessagingSession = () => {
     // Drop the in-memory identity only. The per-address device seed stays in
@@ -901,6 +907,7 @@ export const WalletProvider = ({ children }) => {
   // Publish this wallet address's device messaging public keys to the relay,
   // self-signed by the messaging key. Free. Called automatically when messaging opens.
   const publishMessagingKeys = async () => {
+    if (!MESSAGING_ENABLED) throw new Error('Private messaging is not available in this release.');
     const { address, msg } = getMessagingIdentity();
     const digest = keyRegistryDigest(address, msg.publicBundle.kem, msg.publicBundle.sig);
     const sig = signMessagingDigest(digest, msg.sigSecretKey);
@@ -922,6 +929,7 @@ export const WalletProvider = ({ children }) => {
   // Idempotently make sure our keys are published for this open session, so others
   // can always reach us. Best-effort: failures don't block opening the inbox.
   const ensureMessagingReady = async () => {
+    if (!MESSAGING_ENABLED) return false;
     if (messagingReadyRef.current) return true;
     try {
       await publishMessagingKeys();
@@ -953,6 +961,7 @@ export const WalletProvider = ({ children }) => {
 
   // Encrypt + send a message to a recipient address (E2E; relay stays blind). Free.
   const sendMessage = async (toAddress, plaintext) => {
+    if (!MESSAGING_ENABLED) throw new Error('Private messaging is not available in this release.');
     const { address, msg } = getMessagingIdentity();
     const keys = await _resolveRecipientKeys(toAddress);
     const envelope = encryptMessage({
@@ -975,6 +984,7 @@ export const WalletProvider = ({ children }) => {
 
   // Inbox fetch authenticated by the device messaging key; decrypts locally.
   const fetchMessages = async () => {
+    if (!MESSAGING_ENABLED) throw new Error('Private messaging is not available in this release.');
     const { address, msg } = getMessagingIdentity();
     // Make sure our keys are registered before we try to prove ownership of the inbox.
     await ensureMessagingReady();
@@ -1005,7 +1015,7 @@ export const WalletProvider = ({ children }) => {
   // Auto-publish messaging keys whenever a wallet with a local identity is open, so
   // it's always reachable — no "enable" step. Best-effort; safe to re-run.
   useEffect(() => {
-    if (!wallet?.address) return;
+    if (!MESSAGING_ENABLED || !wallet?.address) return;
     let cancelled = false;
     (async () => { if (!cancelled) await ensureMessagingReady(); })();
     return () => { cancelled = true; };
@@ -1084,6 +1094,7 @@ export const WalletProvider = ({ children }) => {
     createRwaAsset,
     publishMessagingKeys,
     ensureMessagingReady,
+    messagingEnabled: MESSAGING_ENABLED,
     isMessagingActivated,
     sendMessage,
     fetchMessages,

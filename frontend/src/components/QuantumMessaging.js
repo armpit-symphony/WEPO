@@ -19,7 +19,7 @@ import { useWallet } from '../contexts/WalletContext';
  * AES-256-GCM + ML-DSA-44); the relay only ever stores opaque ciphertext. Free.
  */
 const QuantumMessaging = ({ onBack }) => {
-  const { wallet, sendMessage, fetchMessages, ensureMessagingReady } = useWallet();
+  const { wallet, sendMessage, fetchMessages, ensureMessagingReady, messagingEnabled } = useWallet();
   const currentAddress = wallet?.address;
 
   // Compose
@@ -91,6 +91,20 @@ const QuantumMessaging = ({ onBack }) => {
       <div className="space-y-6"><Header />
         <div className="bg-yellow-900/30 border border-yellow-500/30 rounded-lg p-4 text-yellow-100 text-sm">
           Open your wallet to use private messaging.
+        </div>
+      </div>
+    );
+  }
+
+  if (!messagingEnabled) {
+    return (
+      <div className="space-y-6"><Header />
+        <div className="bg-gray-800 border border-gray-700 rounded-lg p-4 text-gray-200 text-sm flex items-start gap-3">
+          <Lock className="h-5 w-5 text-gray-400 flex-shrink-0 mt-0.5" />
+          <div>
+            <div className="font-semibold text-white mb-1">Private messaging is unavailable in this release.</div>
+            <div className="text-gray-400">Messaging will return after address ownership and key discovery are independently audited.</div>
+          </div>
         </div>
       </div>
     );

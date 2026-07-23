@@ -18,9 +18,9 @@ const QuantumVault = ({ onClose, isPreGenesis = true }) => {
         <div className="p-5">
           {isPreGenesis ? (
             <>
-              <PreGenesisBanner message="Vault operations are disabled until genesis. You can explore later for deposits, withdrawals and ghost transfers." />
+              <PreGenesisBanner message="Vault and Ghost Send operations are disabled for this release." />
               <div className="text-gray-300 text-sm">
-                During pre-genesis, vault creation, deposits, withdrawals and ghost transfers are gated for network safety.
+                Vault creation, deposits, withdrawals, and ghost transfers remain unavailable until the cryptography and activation rules are independently audited.
               </div>
             </>
           ) : (
@@ -29,15 +29,15 @@ const QuantumVault = ({ onClose, isPreGenesis = true }) => {
                 <div className="flex items-start gap-3">
                   <AlertTriangle className="h-5 w-5 text-blue-300 mt-0.5" />
                   <div>
-                    <div className="text-blue-200 font-semibold">Web Vault Preview</div>
+                    <div className="text-blue-200 font-semibold">Vault Unavailable</div>
                     <div className="text-blue-100/90 text-sm">
-                      The backend vault and ghost-transfer APIs are live on the test stack, but the full interactive vault workflow is not yet exposed in this web wallet. Treat this surface as preview-only in the current public-test build.
+                      Vault and Ghost Send APIs are disabled in the launch build. This surface is retained only as a placeholder for a future audited release.
                     </div>
                   </div>
                 </div>
               </div>
               <div className="text-gray-300 text-sm">
-                Vault creation, deposits, withdrawals, and ghost transfers still need a dedicated web workflow before this surface should be treated as fully user-ready.
+                Do not deposit funds into Vault flows or treat Ghost Send as live until a future consensus activation explicitly enables it.
               </div>
             </div>
           )}
