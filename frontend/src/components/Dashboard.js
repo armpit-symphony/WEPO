@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Eye, EyeOff, Send, Download, Settings as SettingsIcon, Pickaxe, Shield, LogOut, Bitcoin, ChevronDown, Coins, Package } from 'lucide-react';
+import { Eye, EyeOff, Send, Download, Settings as SettingsIcon, Pickaxe, Shield, LogOut, Bitcoin, ChevronDown, Coins, Package, Boxes } from 'lucide-react';
 import { useWallet } from '../contexts/WalletContext';
 import SendWepo from './SendWepo';
 import ReceiveWepo from './ReceiveWepo';
@@ -9,6 +9,7 @@ import SettingsPanel from './SettingsPanel';
 import QuantumMessaging from './QuantumMessaging';
 import StakingInterface from './StakingInterface';
 import RWADashboard from './RWADashboard';
+import BlockExplorer from './BlockExplorer';
 import { sessionManager } from '../utils/securityUtils';
 
 const Dashboard = ({ onLogout }) => {
@@ -114,6 +115,17 @@ const Dashboard = ({ onLogout }) => {
   const openSendTab = async () => {
     await refreshMiningStatus();
     setActiveTab('send');
+  };
+
+  // Block explorer: open the external explorer if one is configured
+  // (REACT_APP_EXPLORER_URL), otherwise use the built-in in-wallet explorer.
+  const openExplorer = () => {
+    const explorerUrl = process.env.REACT_APP_EXPLORER_URL;
+    if (explorerUrl) {
+      window.open(explorerUrl, '_blank', 'noopener,noreferrer');
+    } else {
+      setActiveTab('explorer');
+    }
   };
 
   const formatBalance = (amt) => new Intl.NumberFormat('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 }).format(amt || 0);
@@ -239,7 +251,13 @@ const Dashboard = ({ onLogout }) => {
           <span className="text-white font-medium">RWA / Exchange</span>
           <div className="text-xs text-gray-400 mt-1">Public-test preview</div>
         </button>
-        {/* 9: Logout */}
+        {/* 9: Block Explorer */}
+        <button onClick={openExplorer} className="bg-gray-800/50 hover:bg-gray-700/50 border border-purple-500/30 rounded-xl p-4 text-center transition-all">
+          <Boxes className="h-6 w-6 text-blue-400 mx-auto mb-2" />
+          <span className="text-white font-medium">Block Explorer</span>
+          <div className="text-xs text-gray-400 mt-1">Blocks · tx · address</div>
+        </button>
+        {/* 10: Logout */}
         <button onClick={async () => { await logout(); onLogout && onLogout(); }} className="bg-gray-800/50 hover:bg-gray-700/50 border border-purple-500/30 rounded-xl p-4 text-center transition-all">
           <LogOut className="h-6 w-6 text-red-400 mx-auto mb-2" />
           <span className="text-white font-medium">Logout</span>
@@ -258,6 +276,7 @@ const Dashboard = ({ onLogout }) => {
       {activeTab === 'messaging' && <QuantumMessaging onBack={() => setActiveTab('overview')} />}
       {activeTab === 'staking' && <StakingInterface onClose={() => setActiveTab('overview')} />}
       {activeTab === 'rwa' && <RWADashboard onBack={() => setActiveTab('overview')} />}
+      {activeTab === 'explorer' && <BlockExplorer onBack={() => setActiveTab('overview')} />}
 
       {showVaultModal && (
         <QuantumVault onClose={() => setShowVaultModal(false)} isPreGenesis={isPreGenesis} />

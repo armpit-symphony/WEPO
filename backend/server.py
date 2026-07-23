@@ -37,6 +37,7 @@ if str(CORE_DIR) not in sys.path:
 # Import security utilities
 from security_utils import SecurityManager, init_redis
 import messaging_relay
+import explorer_privacy
 try:
     from network_profile import (
         build_collateral_schedule,
@@ -145,7 +146,9 @@ class SecurityMiddleware(BaseHTTPMiddleware):
                     path.startswith("/api/wallet/") or
                     path.startswith("/api/quantum/status") or
                     path.startswith("/api/collateral/schedule") or
-                    path.startswith("/api/swap/rate")
+                    path.startswith("/api/swap/rate") or
+                    # Public block-explorer reads (privacy-aware, read-only)
+                    path.startswith("/api/explorer/")
                 ))
             )
 
@@ -1532,6 +1535,123 @@ async def get_latest_blocks(limit: int = 10):
     """Get latest blocks"""
     blocks = await db.blocks.find().sort("height", -1).limit(limit).to_list(limit)
     return blocks
+
+# ---------------------------------------------------------------------------
+# Block explorer (privacy-aware public reads)
+# ---------------------------------------------------------------------------
+# The explorer surfaces only data already public on-chain and NEVER weakens
+# privacy: transparent transactions render in full (the base UTXO layer is
+# auditable by design), while shielded "Ghost" transactions expose only that a
+# valid transaction occurred — amounts and parties stay cryptographically
+# hidden. The redaction policy lives in explorer_privacy.py (pure + unit-tested).
+# See WEPO_WHITEPAPER.md sections 2, 9 and 11.
+
+
+@api_router.get("/explorer/info")
+async def explorer_info():
+    """Chain-level stats for the explorer landing page."""
+    try:
+        r = requests.get(f"{WEPO_NODE_API_URL}/api/blockchain/info", timeout=3)
+        r.raise_for_status()
+        return {"success": True, "data": r.json()}
+    except Exception as e:
+        logger.error(f"Explorer info proxy error: {e}")
+        raise HTTPException(status_code=503, detail="Explorer backend (node) unavailable")
+
+
+@api_router.get("/explorer/blocks/latest")
+async def explorer_latest_blocks(limit: int = 20):
+    limit = max(1, min(int(limit or 20), 50))
+    try:
+        r = requests.get(f"{WEPO_NODE_API_URL}/api/blocks/latest", params={"limit": limit}, timeout=3)
+        r.raise_for_status()
+        return {"success": True, "blocks": r.json()}
+    except Exception as e:
+        logger.error(f"Explorer blocks proxy error: {e}")
+        raise HTTPException(status_code=503, detail="Explorer backend (node) unavailable")
+
+
+@api_router.get("/explorer/block/{identifier}")
+async def explorer_block(identifier: str):
+    """Look up a block by height (numeric) or by hash."""
+    identifier = (identifier or "").strip()
+    try:
+        if identifier.isdigit():
+            url = f"{WEPO_NODE_API_URL}/api/block/height/{int(identifier)}"
+        else:
+            url = f"{WEPO_NODE_API_URL}/api/block/{identifier}"
+        r = requests.get(url, timeout=3)
+        if r.status_code == 404:
+            raise HTTPException(status_code=404, detail="Block not found")
+        r.raise_for_status()
+        return {"success": True, "block": r.json()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Explorer block proxy error: {e}")
+        raise HTTPException(status_code=503, detail="Explorer backend (node) unavailable")
+
+
+@api_router.get("/explorer/tx/{txid}")
+async def explorer_tx(txid: str):
+    try:
+        r = requests.get(f"{WEPO_NODE_API_URL}/api/tx/{txid}", timeout=3)
+        if r.status_code == 404:
+            raise HTTPException(status_code=404, detail="Transaction not found")
+        r.raise_for_status()
+        return {"success": True, "transaction": explorer_privacy.sanitize_tx(r.json())}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Explorer tx proxy error: {e}")
+        raise HTTPException(status_code=503, detail="Explorer backend (node) unavailable")
+
+
+@api_router.get("/explorer/address/{address}")
+async def explorer_address(address: str, limit: int = 25):
+    """Public activity for an address (transparent base-layer view)."""
+    if not address.startswith("wepo1") or len(address) < 30:
+        raise HTTPException(status_code=400, detail="Invalid address format")
+    limit = max(1, min(int(limit or 25), 100))
+    info: dict = {}
+    txs: list = []
+    try:
+        ri = requests.get(f"{WEPO_NODE_API_URL}/api/wallet/{address}", timeout=3)
+        if ri.status_code == 200:
+            info = ri.json()
+        rt = requests.get(
+            f"{WEPO_NODE_API_URL}/api/wallet/{address}/transactions",
+            params={"limit": limit},
+            timeout=3,
+        )
+        if rt.status_code == 200 and isinstance(rt.json(), list):
+            txs = rt.json()
+    except Exception as e:
+        logger.error(f"Explorer address proxy error: {e}")
+        raise HTTPException(status_code=503, detail="Explorer backend (node) unavailable")
+    return {"success": True, "address": address, "info": info, "transactions": txs}
+
+
+@api_router.get("/explorer/search")
+async def explorer_search(q: str = ""):
+    """Route a query string to a block, transaction, or address."""
+    q = (q or "").strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="Empty query")
+    if q.isdigit():
+        return {"success": True, "type": "block", "id": q}
+    if q.startswith("wepo1") and len(q) >= 30:
+        return {"success": True, "type": "address", "id": q}
+    if len(q) == 64 and all(c in "0123456789abcdefABCDEF" for c in q):
+        # 64-hex could be a txid or a block hash — probe tx first.
+        try:
+            r = requests.get(f"{WEPO_NODE_API_URL}/api/tx/{q}", timeout=3)
+            if r.status_code == 200:
+                return {"success": True, "type": "tx", "id": q}
+        except Exception:
+            pass
+        return {"success": True, "type": "block", "id": q}
+    raise HTTPException(status_code=404, detail="No block, transaction, or address matches that query")
 
 @api_router.get("/quantum/status")
 async def quantum_status():
