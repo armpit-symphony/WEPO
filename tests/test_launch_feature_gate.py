@@ -57,7 +57,8 @@ ALWAYS_OPEN = [
 
 def main():
     # Default (no flags set): every gated feature is disabled.
-    for k in ("WEPO_FEATURE_PRIVACY", "WEPO_FEATURE_RWA", "WEPO_FEATURE_BTC", "WEPO_FEATURE_MESSAGING", "WEPO_ENABLE_STAGING_TOGGLES"):
+    for k in ("WEPO_FEATURE_PRIVACY", "WEPO_FEATURE_RWA", "WEPO_FEATURE_RWA_TRADE",
+              "WEPO_FEATURE_BTC", "WEPO_FEATURE_MESSAGING", "WEPO_ENABLE_STAGING_TOGGLES"):
         os.environ.pop(k, None)
     ff = reload_ff()
 
@@ -69,15 +70,25 @@ def main():
     for path in ALWAYS_OPEN:
         check(f"{path} -> open", ff.disabled_feature_for_path(path) is None)
 
-    # Enabling a flag opens exactly that feature, leaving others gated.
-    print("\nEnabling WEPO_FEATURE_RWA opens RWA only:")
+    # Enabling RWA creation opens ONLY creation/reads — trading (mock swap engine) and
+    # privacy stay gated behind their own flags.
+    print("\nEnabling WEPO_FEATURE_RWA opens RWA creation only (not trading, not privacy):")
     os.environ["WEPO_FEATURE_RWA"] = "1"
     ff = reload_ff()
     check("/api/rwa/tokenize -> open when RWA enabled", ff.disabled_feature_for_path("/api/rwa/tokenize") is None)
-    check("/api/dex/rwa-trade -> open when RWA enabled", ff.disabled_feature_for_path("/api/dex/rwa-trade") is None)
+    check("/api/dex/rwa-trade -> STILL blocked (trading has its own flag)",
+          ff.disabled_feature_for_path("/api/dex/rwa-trade") == "RWA trading")
     check("/api/vault/create -> still blocked (privacy still off)",
           ff.disabled_feature_for_path("/api/vault/create") == "Privacy / Quantum Vault")
     os.environ.pop("WEPO_FEATURE_RWA", None)
+
+    # Trading opens only under its own flag.
+    print("\nEnabling WEPO_FEATURE_RWA_TRADE opens trading:")
+    os.environ["WEPO_FEATURE_RWA_TRADE"] = "1"
+    ff = reload_ff()
+    check("/api/dex/rwa-trade -> open when RWA_TRADE enabled",
+          ff.disabled_feature_for_path("/api/dex/rwa-trade") is None)
+    os.environ.pop("WEPO_FEATURE_RWA_TRADE", None)
 
     print()
     if FAILURES:

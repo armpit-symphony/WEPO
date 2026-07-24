@@ -8,7 +8,8 @@ clients, regardless of which handler would otherwise run.
 
 Flags (set to 1/true/yes/on to ENABLE the feature):
   WEPO_FEATURE_PRIVACY        privacy proofs / Quantum Vault (zk-STARK)
-  WEPO_FEATURE_RWA            RWA assets, vault flows, and trading
+  WEPO_FEATURE_RWA            RWA on-chain asset CREATION + reads (real, self-custody)
+  WEPO_FEATURE_RWA_TRADE      RWA trading / order matching (depends on the swap engine)
   WEPO_FEATURE_BTC            Bitcoin relay and atomic/BTC swaps
   WEPO_FEATURE_MESSAGING      private messaging relay/key registry
   WEPO_ENABLE_STAGING_TOGGLES staging-only test hooks (e.g. genesis flip)
@@ -24,7 +25,9 @@ def feature_enabled(env_name: str) -> bool:
 # most descriptive label wins (e.g. /api/dex/rwa-trade before /api/dex/swap).
 LAUNCH_GATED_PREFIXES = [
     ("/api/vault", "WEPO_FEATURE_PRIVACY", "Privacy / Quantum Vault"),
-    ("/api/dex/rwa-trade", "WEPO_FEATURE_RWA", "RWA trading"),
+    # RWA trading rides the swap engine (mock/simplified), so it keeps its OWN flag
+    # and stays off even when RWA creation (real, self-custody) is enabled.
+    ("/api/dex/rwa-trade", "WEPO_FEATURE_RWA_TRADE", "RWA trading"),
     ("/api/rwa", "WEPO_FEATURE_RWA", "RWA"),
     ("/api/bitcoin/relay", "WEPO_FEATURE_BTC", "Bitcoin relay"),
     ("/api/dex/swap", "WEPO_FEATURE_BTC", "Atomic swap"),

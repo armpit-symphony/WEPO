@@ -17,7 +17,7 @@ hybrid Proof-of-Work → Proof-of-Stake Layer-1. Three pillars:
 
 1. **Private value transfer** — self-custodied money with a post-quantum shielded layer.
 2. **Private messaging** — end-to-end, post-quantum encrypted, blind-relay chat.
-3. **Real-world assets (RWA)** — on-chain issuance of asset records anchored to the chain.
+3. **Real-world assets (RWA)** — on-chain issuance of asset records anchored to the chain ✅.
 
 ## 2. Consensus & blockchain technology ✅
 
@@ -88,9 +88,11 @@ Rewards halve across 2A→2B→2C→2D. Supply split: **~20.7 M (30%) to PoW**,
 ## 4. Wallet & functions ✅
 
 Self-custody wallet (web + desktop). **BIP39 12-word recovery phrase**, client-side key
-derivation and transaction signing (the server never holds keys). Functions: send /
-receive, in-wallet mining, staking, masternode setup, RWA creation, private messaging, and
-(gated) Ghost transfers + Quantum Vault. Recovery/restore on any device from the phrase.
+derivation and transaction signing (the server never holds keys). Functions live at launch:
+send / receive, in-wallet mining, staking / masternode setup (activate at block 131,400),
+private messaging, on-chain RWA creation, and the block explorer. Gated at launch (enable
+after audit): Ghost transfers, Quantum Vault, and RWA *trading*. Recovery/restore on any
+device from the phrase.
 
 ## 5. Private chat technology ✅
 
@@ -149,8 +151,12 @@ governance — on the roadmap."*
 ## 11. Ecosystem 🕒 / 🔒
 
 - **DEX / exchange:** 🕒 planned (BTC swaps + RWA trading tracks) — placeholder at launch.
-- **RWA issuance:** ✅ on-chain asset *creation* is built (gated at launch); *trading* is later.
-- **Block explorer:** 🕒 not built — placeholder (worth prioritizing; users expect one at launch).
+- **RWA issuance:** ✅ on-chain asset *creation* is **live at launch** — consensus-validated
+  and owner-bound (only the address that controls the funds can issue), self-custody signing.
+  *Trading* is 🕒 later (it depends on the swap/DEX track).
+- **Block explorer:** ✅ built — privacy-aware in-wallet explorer (blocks, transactions,
+  addresses, search) served by the gateway; shielded transactions expose shape only, never
+  amounts or parties. A standalone external explorer can be pointed to via config later.
 - **dApp platform:** 🕒 placeholder.
 
 ## 12. Roadmap & milestones
@@ -159,8 +165,8 @@ governance — on the roadmap."*
   server), parameter freeze, security signoff.
 - **Genesis:** **2026-09-02, 18:00:00 UTC** (epoch `1788372000`).
 - **~Month 18 (block 131,400):** PoS + staking + masternode rewards activate.
-- **Post-launch, audited tracks (in order):** Ghost transfers + Quantum Vault → block
-  explorer → RWA trading / DEX → governance → mobile.
+- **Post-launch, audited tracks (in order):** Ghost transfers + Quantum Vault → RWA
+  trading / DEX → governance → mobile. (Block explorer and RWA creation ship at launch.)
 - **Block 1,008,000:** PoW emission ends; PoS-only issuance continues to the 69,000,003 cap.
 
 ---
