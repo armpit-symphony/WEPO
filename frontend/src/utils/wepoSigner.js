@@ -62,6 +62,15 @@ export function deriveAddress(publicKey) {
   return 'wepo1q' + sha256HexOfString(pubHex).slice(0, 39);
 }
 
+/**
+ * Same derivation as deriveAddress but from a hex-encoded public key. Matches the
+ * Python node's generate_wepo_address(pubkey_hex, "quantum") used by consensus, so
+ * it can be used to verify an ML-DSA-44 public key really owns a given address.
+ */
+export function deriveAddressFromHex(publicKeyHex) {
+  return 'wepo1q' + sha256HexOfString(publicKeyHex).slice(0, 39);
+}
+
 // ---- canonical sighash (must match Transaction.get_canonical_sighash) ----
 
 function hexMarkerToText(hex) {

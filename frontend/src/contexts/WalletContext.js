@@ -2,7 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useRef, useCallb
 import CryptoJS from 'crypto-js';
 import * as bip39 from 'bip39';
 import { sessionManager, secureLog, secureStorage } from '../utils/securityUtils';
-import { deriveWepoKeypair, signTransaction } from '../utils/wepoSigner';
+import { deriveWepoKeypair, signTransaction, signDigest } from '../utils/wepoSigner';
 import {
   deriveMessagingKeypair,
   encryptMessage,
@@ -11,6 +11,8 @@ import {
   fetchAuthDigest,
   randomMessagingSeed,
   signMessagingDigest,
+  keyOwnerBindingDigest,
+  verifyOwnerBinding,
 } from '../utils/wepoMessaging';
 // import { generateWepoAddress, generateBitcoinAddress, validateAddress } from '../utils/addressUtils';
 // Temporarily comment out Bitcoin wallet import to prevent runtime errors
@@ -54,6 +56,11 @@ export const WalletProvider = ({ children }) => {
   // (re)built by getMessagingIdentity below. No password / phrase involved.
   const messagingIdentityRef = useRef(null);
   const messagingReadyRef = useRef(false); // becomes true once keys are published
+  // Ready-to-POST, owner-bound registration body (address + keys + self-sig +
+  // spend-key ownership proof). Built at login/create/recover when the spend key is
+  // momentarily available, then cached (it holds only signatures, never the secret)
+  // so background publishing needs no extra password prompt. Cleared on logout.
+  const messagingRegistrationRef = useRef(null);
 
   const getWalletAddress = (walletData) => walletData?.address || walletData?.wepo?.address || '';
 
@@ -184,6 +191,9 @@ export const WalletProvider = ({ children }) => {
   // owner (claim-based; possible registry MITM). The trustless path is the on-chain
   // key anchor, resolved first. Messaging is gated pre-mainnet. See MESSAGING_DESIGN.md.
   const MESSAGING_SEED_PREFIX = 'wepo_msgseed_';
+  // Persisted owner-bound registration body (public keys + signatures only, never a
+  // secret) so publishing survives page reloads without re-entering the phrase.
+  const MESSAGING_REG_PREFIX = 'wepo_msgreg_';
 
   // Load (or create + persist) the device messaging seed for an address, then
   // derive its keypair. Cached in memory and rebuilt automatically — never throws
@@ -218,6 +228,7 @@ export const WalletProvider = ({ children }) => {
     // localStorage so the same device keeps the same inbox across logout/login.
     messagingIdentityRef.current = null;
     messagingReadyRef.current = false;
+    messagingRegistrationRef.current = null;
   };
 
   // fetch() with a hard timeout so a slow/half-open relay can never hang the UI
@@ -253,6 +264,10 @@ export const WalletProvider = ({ children }) => {
         ? providedMnemonic.trim()
         : generateMnemonic();
       const { address } = deriveWepoKeypair(mnemonic);
+
+      // Produce the messaging ownership proof now (spend key in hand) so receiving
+      // works later with no extra step. Best-effort; never blocks wallet creation.
+      prepareMessagingRegistration(mnemonic, address);
 
       // Register the client-derived address; backend mints nothing.
       const response = await fetch(`${getBackendUrl()}/api/wallet/create`, {
@@ -344,6 +359,9 @@ export const WalletProvider = ({ children }) => {
       if (mnemonic && validateMnemonic(mnemonic)) {
         const { address: derived } = deriveWepoKeypair(mnemonic);
         recoveryAvailable = derived === payload.address;
+        // Produce the messaging ownership proof now, while the spend key is
+        // unlocked, so receiving works with no extra prompt later. Best-effort.
+        if (recoveryAvailable) prepareMessagingRegistration(mnemonic, payload.address);
       }
 
       const walletData = {
@@ -398,6 +416,10 @@ export const WalletProvider = ({ children }) => {
     try {
       setIsLoading(true);
       const { address } = deriveWepoKeypair(phrase);
+
+      // Produce the messaging ownership proof now (spend key in hand) so receiving
+      // works immediately on this device with no extra step. Best-effort.
+      prepareMessagingRegistration(phrase, address);
 
       // Store the phrase locally so this device can sign.
       storeMnemonic(phrase, password);
@@ -904,22 +926,77 @@ export const WalletProvider = ({ children }) => {
   // is post-quantum E2E (ML-KEM-768 + AES-256-GCM + ML-DSA-44); the relay only ever
   // sees ciphertext. Sending is free (relay store, no on-chain tx, no fee).
 
-  // Publish this wallet address's device messaging public keys to the relay,
-  // self-signed by the messaging key. Free. Called automatically when messaging opens.
+  // Build (and cache) this address's owner-bound messaging registration using the
+  // spend key derived from `mnemonic`. Called at login/create/recover — the only
+  // moments the spend key is in hand — so publishing later needs NO extra prompt.
+  // The cached body holds only public keys + signatures, never the secret key.
+  // Best-effort: returns null if messaging is off or the phrase can't prove
+  // ownership of `address` (e.g. a read-only wallet with no local phrase).
+  const prepareMessagingRegistration = (mnemonic, address) => {
+    if (!MESSAGING_ENABLED || !mnemonic || !address) return null;
+    try {
+      const spend = deriveWepoKeypair(mnemonic);
+      if (spend.address !== address) return null; // this phrase does not own the address
+      // Device-local messaging identity (same per-address seed used everywhere).
+      const seedKey = `${MESSAGING_SEED_PREFIX}${address}`;
+      let seed = null;
+      try { seed = localStorage.getItem(seedKey); } catch (e) { /* non-fatal */ }
+      if (!seed) {
+        seed = randomMessagingSeed();
+        try { localStorage.setItem(seedKey, seed); } catch (e) { /* non-fatal */ }
+      }
+      const msg = deriveMessagingKeypair(seed);
+      const kem_pub = msg.publicBundle.kem;
+      const sig_pub = msg.publicBundle.sig;
+      // (a) self-signature by the messaging key — proves we hold the inbox key.
+      const sig = signMessagingDigest(keyRegistryDigest(address, kem_pub, sig_pub), msg.sigSecretKey);
+      // (b) ownership proof — the SPEND key signs the owner-binding digest, and its
+      // public key hashes to `address`, so the relay/senders know we own it.
+      const owner_sig = signDigest(keyOwnerBindingDigest(address, kem_pub, sig_pub), spend.secretKey);
+      const body = {
+        address, kem_pub, sig_pub, sig,
+        owner_sig_pub: spend.publicKeyHex, owner_sig,
+      };
+      messagingRegistrationRef.current = body;
+      // Persist the proof (public keys + signatures only — NO secret key) so a
+      // session restored after a page reload can still auto-publish without asking
+      // for the phrase again. Safe: this is exactly what gets published publicly.
+      try { localStorage.setItem(`${MESSAGING_REG_PREFIX}${address}`, JSON.stringify(body)); } catch (e) { /* non-fatal */ }
+      messagingReadyRef.current = false; // (re)publish with the fresh ownership proof
+      return body;
+    } catch (e) {
+      secureLog.warn('Messaging registration prepare deferred', e?.message);
+      return null;
+    }
+  };
+
+  // Publish this address's owner-bound messaging registration to the relay. Free and
+  // silent (no fee, no on-chain tx, no prompt) — the ownership proof was already
+  // produced at login. Called automatically when messaging opens.
   const publishMessagingKeys = async () => {
     if (!MESSAGING_ENABLED) throw new Error('Private messaging is not available in this release.');
-    const { address, msg } = getMessagingIdentity();
-    const digest = keyRegistryDigest(address, msg.publicBundle.kem, msg.publicBundle.sig);
-    const sig = signMessagingDigest(digest, msg.sigSecretKey);
+    let body = messagingRegistrationRef.current;
+    // Fall back to the persisted proof from a prior login (survives page reloads).
+    if ((!body || body.address !== wallet?.address) && wallet?.address) {
+      try {
+        const saved = localStorage.getItem(`${MESSAGING_REG_PREFIX}${wallet.address}`);
+        const parsed = saved ? JSON.parse(saved) : null;
+        if (parsed && parsed.address === wallet.address && parsed.owner_sig) {
+          body = parsed;
+          messagingRegistrationRef.current = parsed;
+        }
+      } catch (e) { /* non-fatal */ }
+    }
+    if (!body || body.address !== wallet?.address) {
+      // No ownership proof available (e.g. a read-only wallet without its recovery
+      // phrase). Sending still works; to RECEIVE, open/import the phrase so the
+      // wallet can prove it owns this address.
+      throw new Error('Open your wallet with your recovery phrase to enable receiving messages.');
+    }
     const resp = await fetchWithTimeout(`${getRelayUrl()}/api/messages/keys`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        address,
-        kem_pub: msg.publicBundle.kem,
-        sig_pub: msg.publicBundle.sig,
-        sig,
-      }),
+      body: JSON.stringify(body),
     });
     const payload = await resp.json().catch(() => ({}));
     if (!resp.ok) throw new Error(payload.detail || payload.error || 'Failed to publish messaging keys');
@@ -956,6 +1033,12 @@ export const WalletProvider = ({ children }) => {
     const reg = await fetchWithTimeout(`${getRelayUrl()}/api/messages/keys/${encodeURIComponent(toAddress)}`);
     const k = await reg.json().catch(() => ({}));
     if (!reg.ok) throw new Error(k.detail || 'This address has not used messaging yet, so it can\'t receive messages.');
+    // Trustless: never trust the relay as an authority. Verify the returned keys are
+    // bound to `toAddress` by that address's own spend key before encrypting to them,
+    // so a forged/front-run registry entry can never redirect a message.
+    if (!verifyOwnerBinding(toAddress, k.kem_pub, k.sig_pub, k.owner_sig_pub, k.owner_sig)) {
+      throw new Error('Could not verify the recipient owns these messaging keys; refusing to send.');
+    }
     return { kem_pub: k.kem_pub, sig_pub: k.sig_pub, source: 'registry' };
   };
 

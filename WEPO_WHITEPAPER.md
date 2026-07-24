@@ -96,10 +96,14 @@ receive, in-wallet mining, staking, masternode setup, RWA creation, private mess
 
 End-to-end **post-quantum** encrypted messaging. Per-message **ML-KEM-768 (FIPS 203)** key
 encapsulation → **AES-256-GCM**, signed with **ML-DSA-44**. The server is a **blind relay**
-(stores only opaque ciphertext, never keys, cannot read content). **Click-and-use**
-(device-local messaging key, no password). Trustless key discovery via **on-chain key
-anchoring**; optional **Tor** routing for metadata privacy. Live and tested (two-wallet
-E2E succeeded).
+(stores only opaque ciphertext, never keys, cannot read content). **Click-and-use**: sending
+and reading use a device-local messaging key with no password. **Trustless key discovery** —
+a recipient's messaging keys are cryptographically **bound to their address by their wallet's
+spend key** (the same key that controls funds), so no one can front-run or spoof another
+address's keys; the sender verifies this binding before encrypting. The ownership proof is
+produced automatically when the wallet is opened (no extra step, no fee, no on-chain
+transaction required), with an **on-chain key anchor** available as an even-stronger option.
+Optional **Tor** routing for metadata privacy. Live and tested (two-wallet E2E succeeded).
 
 ## 6. Mining ✅ / 🕒
 

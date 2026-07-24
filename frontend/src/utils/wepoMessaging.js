@@ -17,7 +17,7 @@ import { ml_dsa44 } from '@noble/post-quantum/ml-dsa.js';
 import { gcm } from '@noble/ciphers/aes.js';
 import { sha256, sha512 } from '@noble/hashes/sha2.js';
 import { randomBytes } from '@noble/post-quantum/utils.js';
-import { bytesToHex, hexToBytes } from './wepoSigner.js';
+import { bytesToHex, hexToBytes, deriveAddressFromHex } from './wepoSigner.js';
 
 const utf8 = (s) => new TextEncoder().encode(s);
 const fromUtf8 = (b) => new TextDecoder().decode(b);
@@ -68,6 +68,34 @@ export function keyRegistryDigest(address, kemPubHex, sigPubHex) {
 
 export function fetchAuthDigest(address, ts) {
   return sha256(utf8(`WEPO-MSGFETCH-v1|${address}|${ts}`));
+}
+
+// Bytes the address's SPEND key signs to prove it owns (authorizes) a messaging
+// bundle. Must match backend/messaging_relay.py key_owner_binding_digest byte-for-byte.
+export function keyOwnerBindingDigest(address, kemPubHex, sigPubHex) {
+  return sha256(utf8(`WEPO-MSGKEY-OWNER-v1|${address}|${kemPubHex}|${sigPubHex}`));
+}
+
+/**
+ * SENDER-SIDE trust check: verify that a resolved messaging bundle is genuinely
+ * bound to `address` by that address's spend key, so the relay can never be trusted
+ * to hand back forged/front-run keys. Mirrors messaging_relay.verify_owner_binding:
+ *   1. the spend public key must hash to `address` (same derivation as consensus),
+ *   2. it must validly sign the owner-binding digest over (kem_pub, sig_pub).
+ */
+export function verifyOwnerBinding(address, kemPubHex, sigPubHex, ownerSigPubHex, ownerSigHex) {
+  if (!address || !kemPubHex || !sigPubHex || !ownerSigPubHex || !ownerSigHex) return false;
+  try {
+    if (ownerSigPubHex.length !== 1312 * 2) return false; // ML-DSA-44 public key
+    if (deriveAddressFromHex(ownerSigPubHex) !== address) return false;
+    return ml_dsa44.verify(
+      hexToBytes(ownerSigHex),
+      keyOwnerBindingDigest(address, kemPubHex, sigPubHex),
+      hexToBytes(ownerSigPubHex),
+    );
+  } catch (e) {
+    return false;
+  }
 }
 
 // Deterministic bytes signed/verified for envelope authenticity.

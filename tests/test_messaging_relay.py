@@ -120,6 +120,40 @@ def main():
     check("rotation signature is bound to the new bundle it authorizes",
           relay.verify_key_rotation(address, sig_pub_hex, "cc" * 1184, new_sig_pub, rot_sig) is False)
 
+    # --- spend-key OWNERSHIP binding (front-run / squat prevention) ---
+    # The owner proves control of `address` by signing the bundle with the SPEND
+    # key whose public key hashes to `address` (same derivation consensus enforces).
+    owner_pub_hex = spend.public_key.hex()
+    owner_binding = relay.key_owner_binding_digest(address, kem_pub_hex, sig_pub_hex)
+    owner_sig = sign_with_dilithium(owner_binding, spend.private_key).hex()
+    check("owner binding by the address's spend key is accepted",
+          relay.verify_owner_binding(address, kem_pub_hex, sig_pub_hex, owner_pub_hex, owner_sig) is True)
+
+    # Front-run attempt: attacker signs a binding for the victim's address with
+    # THEIR OWN spend key. Their key does not hash to `address` → rejected.
+    atk_owner_pub = attacker.public_key.hex()
+    atk_owner_sig = sign_with_dilithium(
+        relay.key_owner_binding_digest(address, kem_pub_hex, sig_pub_hex), attacker.private_key).hex()
+    check("owner binding signed by a non-owner spend key is rejected (no front-run)",
+          relay.verify_owner_binding(address, kem_pub_hex, sig_pub_hex, atk_owner_pub, atk_owner_sig) is False)
+
+    # Lying about the spend pubkey (claim the victim's address but present a key
+    # that doesn't hash to it) is rejected by the address-binding check.
+    check("owner binding whose spend pubkey doesn't hash to the address is rejected",
+          relay.verify_owner_binding(address, kem_pub_hex, sig_pub_hex, atk_owner_pub, owner_sig) is False)
+
+    # Owner binding is bound to the exact bundle: tampering the kem field invalidates it.
+    check("owner binding is rejected when the kem bundle is tampered",
+          relay.verify_owner_binding(address, "cc" * 1184, sig_pub_hex, owner_pub_hex, owner_sig) is False)
+
+    # Missing owner-binding material is rejected (registration must be owner-bound).
+    check("owner binding with missing signature is rejected",
+          relay.verify_owner_binding(address, kem_pub_hex, sig_pub_hex, owner_pub_hex, "") is False)
+
+    # A malformed (wrong-length) spend pubkey is rejected before any crypto work.
+    check("owner binding with a malformed spend pubkey is rejected",
+          relay.verify_owner_binding(address, kem_pub_hex, sig_pub_hex, "ab", owner_sig) is False)
+
     print()
     if FAILURES:
         print(f"RESULT: FAILED ({len(FAILURES)}): {FAILURES}")

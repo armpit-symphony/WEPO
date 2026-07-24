@@ -1043,14 +1043,15 @@ async def rwa_get_assets_for_owner(owner_address: str):
 async def publish_messaging_keys(request: Request, data: dict):
     """Publish a user's device-local messaging public keys for their WEPO address.
 
-    The bundle is self-signed by the messaging key it registers (proves the
-    registrant holds that key). This is the click-and-use convenience path; it does
-    not prove spend-key ownership of the address (see messaging_relay note).
-
-    Stored FIRST-WRITE-WINS: the first bundle for an address is accepted (TOFU),
-    re-publishing the SAME key is idempotent, and replacing it with a DIFFERENT key
-    requires `rotation_sig` from the currently registered key — so an attacker
-    cannot silently overwrite an in-use address's messaging key.
+    Two proofs are required, both verified server-side:
+      * self-signature by the messaging key it registers (`sig`) — proves the
+        registrant holds that inbox key;
+      * owner binding (`owner_sig_pub` + `owner_sig`) — a signature by the address's
+        SPEND key whose public key hashes to `address` — proves the registrant OWNS
+        the address. This makes discovery trustless and stops anyone front-running /
+        squatting an address's messaging keys. Because the spend key is the address
+        authority, an owner-bound publish may set OR replace the registration freely
+        (seamless key rotation across devices), so no rotation signature is needed.
     """
     client_id = SecurityManager.get_client_identifier(request)
     if SecurityManager.is_rate_limited(client_id, "messaging_keys"):
@@ -1060,35 +1061,38 @@ async def publish_messaging_keys(request: Request, data: dict):
     kem_pub = SecurityManager.sanitize_input(data.get("kem_pub", ""))
     sig_pub = SecurityManager.sanitize_input(data.get("sig_pub", ""))
     sig = SecurityManager.sanitize_input(data.get("sig", ""))
-    rotation_sig = SecurityManager.sanitize_input(data.get("rotation_sig", ""))
+    owner_sig_pub = SecurityManager.sanitize_input(data.get("owner_sig_pub", ""))
+    owner_sig = SecurityManager.sanitize_input(data.get("owner_sig", ""))
 
     if not SecurityManager.validate_wepo_address(address):
         raise HTTPException(status_code=400, detail="Invalid recipient address")
     if not messaging_relay.verify_key_registration(address, kem_pub, sig_pub, sig):
         raise HTTPException(status_code=400, detail="Invalid messaging key bundle")
-
-    # First-write-wins + incumbent-authorized rotation (see messaging_relay).
-    existing = await db.message_keys.find_one({"_id": address})
-    allowed, reason = messaging_relay.registration_action(
-        existing.get("kem_pub") if existing else None,
-        existing.get("sig_pub") if existing else None,
-        address, kem_pub, sig_pub, rotation_sig,
-    )
-    if not allowed:
+    # Ownership proof: the address's spend key must authorize this bundle. Without
+    # it we would be back to the front-runnable claim-based registry.
+    if not messaging_relay.verify_owner_binding(address, kem_pub, sig_pub, owner_sig_pub, owner_sig):
         raise HTTPException(
-            status_code=409,
-            detail="This address already has a different messaging key. Replacing it "
-                   "requires a rotation signature from the current key, or use the "
-                   "on-chain messaging-key anchor.",
+            status_code=400,
+            detail="Messaging registration must be signed by the address's spend key "
+                   "(ownership proof). Open your wallet to publish your messaging keys.",
         )
+
+    existing = await db.message_keys.find_one({"_id": address})
+    if not existing:
+        status = "registered"
+    elif existing.get("kem_pub") == kem_pub and existing.get("sig_pub") == sig_pub:
+        status = "idempotent"
+    else:
+        status = "rotated"
 
     await db.message_keys.replace_one(
         {"_id": address},
         {"_id": address, "address": address, "kem_pub": kem_pub, "sig_pub": sig_pub,
+         "owner_sig_pub": owner_sig_pub, "owner_sig": owner_sig,
          "updated_at": int(time.time())},
         upsert=True,
     )
-    return {"success": True, "address": address, "status": reason}
+    return {"success": True, "address": address, "status": status}
 
 
 @app.post("/api/messages/keys/build-unsigned-register")
@@ -1145,11 +1149,20 @@ async def get_onchain_messaging_keys(address: str):
 
 @app.get("/api/messages/keys/{address}")
 async def get_messaging_keys(address: str):
-    """Look up a recipient's published messaging public keys (relay registry)."""
+    """Look up a recipient's published messaging public keys (relay registry).
+
+    Returns the owner binding (owner_sig_pub + owner_sig) alongside the keys so the
+    SENDER can independently re-verify that the keys are bound to the address's spend
+    key before encrypting — the relay is never trusted as an authority.
+    """
     doc = await db.message_keys.find_one({"_id": address})
     if not doc:
         raise HTTPException(status_code=404, detail="No published messaging keys for this address")
-    return {"success": True, "address": address, "kem_pub": doc["kem_pub"], "sig_pub": doc["sig_pub"]}
+    return {
+        "success": True, "address": address,
+        "kem_pub": doc["kem_pub"], "sig_pub": doc["sig_pub"],
+        "owner_sig_pub": doc.get("owner_sig_pub", ""), "owner_sig": doc.get("owner_sig", ""),
+    }
 
 
 @app.post("/api/messages")
