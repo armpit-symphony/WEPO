@@ -61,14 +61,22 @@ def test_hash_agnostic():
     import hashlib
 
     check("default algorithm is the consensus constant",
-          S.active_hash_algorithm().name == S.POOL_HASH_ALGORITHM == "sha3-256")
+          S.active_hash_algorithm().name == S.POOL_HASH_ALGORITHM
+          == "rescue-rp64-256")
 
     # Pin the wire encoding: tag and parts are length-prefixed, then hashed once.
-    expected = hashlib.sha3_256(
-        S._field(b"tag") + S._field(b"a") + S._field(b"bb")
-    ).digest()
-    check("tagged_hash encoding is pinned to length-prefixed SHA3-256",
-          S.tagged_hash(b"tag", b"a", b"bb") == expected)
+    # Stated against the *active* algorithm so this tests the encoding rather
+    # than the hash -- it is unchanged by the SHA3 -> Rescue swap, which is the
+    # point. The encoding is consensus-critical independently of which hash runs.
+    buf = S._field(b"tag") + S._field(b"a") + S._field(b"bb")
+    check("tagged_hash is one digest over length-prefixed tag and parts",
+          S.tagged_hash(b"tag", b"a", b"bb") == S.active_hash_algorithm().fn(buf))
+
+    # Pin the concrete bytes under SHA3 as well, where hashlib is an independent
+    # implementation. Also exercises the swap context in both directions.
+    with S.using_hash_algorithm("sha3-256"):
+        check("tagged_hash encoding is pinned to length-prefixed SHA3-256",
+              S.tagged_hash(b"tag", b"a", b"bb") == hashlib.sha3_256(buf).digest())
 
     check("wrong digest size rejected at registration",
           raises(S.register_hash_algorithm,
@@ -119,7 +127,7 @@ def test_hash_agnostic():
                   for i in range(3)))
 
     check("algorithm restored after the context exits",
-          S.active_hash_algorithm().name == "sha3-256")
+          S.active_hash_algorithm().name == S.POOL_HASH_ALGORITHM)
     check("commitment restored after the context exits",
           note.commitment() == baseline_cm)
     check("EMPTY_ROOTS restored after the context exits",

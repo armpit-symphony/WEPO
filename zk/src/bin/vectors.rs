@@ -16,6 +16,42 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 use sha3::{Digest, Sha3_256};
+use winterfell::{
+    crypto::{hashers::Rp64_256, Digest as _, ElementHasher},
+    math::fields::f64::BaseElement,
+};
+
+/// Which pool hash a golden file was generated under.
+#[derive(Clone, Copy, PartialEq)]
+enum Pool {
+    Sha3,
+    Rescue,
+}
+
+impl Pool {
+    fn parse(name: &str) -> Pool {
+        match name {
+            "sha3-256" => Pool::Sha3,
+            "rescue-rp64-256" => Pool::Rescue,
+            other => panic!("unknown pool hash algorithm: {other}"),
+        }
+    }
+
+    /// The one-shot digest. Rescue goes through `hash_elements` -- never
+    /// `Rp64_256::hash()`, which panics on ~half of all input lengths.
+    fn digest(self, data: &[u8]) -> Vec<u8> {
+        match self {
+            Pool::Sha3 => Sha3_256::digest(data).to_vec(),
+            Pool::Rescue => {
+                let elements: Vec<BaseElement> = encode_bytes_as_field_elements(data)
+                    .into_iter()
+                    .map(BaseElement::new)
+                    .collect();
+                Rp64_256::hash_elements(&elements).as_bytes().to_vec()
+            },
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // the contract, ported
@@ -34,12 +70,12 @@ fn field(x: &[u8]) -> Vec<u8> {
 
 /// One-shot digest over the tag and all parts -- deliberately not a streaming
 /// update per field, so nobody reinvents it as a Merkle-Damgard chain.
-fn tagged_hash(tag: &[u8], parts: &[&[u8]]) -> Vec<u8> {
+fn tagged_hash(pool: Pool, tag: &[u8], parts: &[&[u8]]) -> Vec<u8> {
     let mut buf = field(tag);
     for p in parts {
         buf.extend_from_slice(&field(p));
     }
-    Sha3_256::digest(&buf).to_vec()
+    pool.digest(&buf)
 }
 
 const GOLDILOCKS: u128 = (1u128 << 64) - (1u128 << 32) + 1;
@@ -114,20 +150,20 @@ fn s(v: &Value) -> &str {
 
 // ---------------------------------------------------------------------------
 
-fn main() {
-    let path = std::env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {
-        let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        p.pop();
-        p.join("tests").join("vectors").join("shielded_sha3-256.json")
-    });
+fn vectors_dir() -> PathBuf {
+    let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    p.pop();
+    p.join("tests").join("vectors")
+}
 
-    println!("Phase 3 step 1 -- cross-runtime vector agreement");
-    println!("reading {}\n", path.display());
-
-    let raw = fs::read_to_string(&path).expect("cannot read vector file");
+fn run(path: &PathBuf) -> bool {
+    let raw = fs::read_to_string(path).expect("cannot read vector file");
     let j: Value = serde_json::from_str(&raw).expect("bad JSON");
 
-    assert_eq!(s(&j["algorithm"]), "sha3-256", "unexpected algorithm");
+    let algorithm = s(&j["algorithm"]).to_string();
+    let pool = Pool::parse(&algorithm);
+    println!("{} ({})", path.file_name().unwrap().to_string_lossy(), algorithm);
+
     let depth = j["merkle_depth"].as_u64().unwrap() as usize;
 
     let tags = &j["tags"];
@@ -184,7 +220,7 @@ fn main() {
         let refs: Vec<&[u8]> = parts.iter().map(|p| p.as_slice()).collect();
         r.check(
             &format!("tagged_hash[{i}]"),
-            &hex(&tagged_hash(&tag, &refs)),
+            &hex(&tagged_hash(pool, &tag, &refs)),
             s(&c["digest"]),
         );
     }
@@ -195,8 +231,8 @@ fn main() {
     for (i, c) in j["key_derivation"].as_array().unwrap().iter().enumerate() {
         let sk = unhex(s(&c["spending_key"]));
         let div = unhex(s(&c["diversifier"]));
-        let nk = tagged_hash(&t_nk, &[&sk]);
-        let pkd = tagged_hash(&t_pkd, &[&sk, &div]);
+        let nk = tagged_hash(pool, &t_nk, &[&sk]);
+        let pkd = tagged_hash(pool, &t_pkd, &[&sk, &div]);
         r.check(&format!("key_derivation[{i}].nk"), &hex(&nk), s(&c["nullifier_key"]));
         r.check(
             &format!("key_derivation[{i}].pk_d"),
@@ -215,8 +251,8 @@ fn main() {
         let rcm = unhex(s(&c["rcm"]));
         let nk = unhex(s(&c["nullifier_key"]));
 
-        let cm = tagged_hash(&t_note, &[&value.to_le_bytes(), &pkd, &rho, &rcm]);
-        let nf = tagged_hash(&t_nf, &[&nk, &rho]);
+        let cm = tagged_hash(pool, &t_note, &[&value.to_le_bytes(), &pkd, &rho, &rcm]);
+        let nf = tagged_hash(pool, &t_nf, &[&nk, &rho]);
 
         r.check(&format!("notes[{i}].commitment"), &hex(&cm), s(&c["commitment"]));
         r.check(&format!("notes[{i}].nullifier"), &hex(&nf), s(&c["nullifier"]));
@@ -225,10 +261,10 @@ fn main() {
     mark = r.passed;
 
     // -- merkle --------------------------------------------------------------
-    let leaf = |cm: &[u8]| tagged_hash(&t_leaf, &[cm]);
-    let node = |l: &[u8], rr: &[u8]| tagged_hash(&t_node, &[l, rr]);
+    let leaf = |cm: &[u8]| tagged_hash(pool, &t_leaf, &[cm]);
+    let node = |l: &[u8], rr: &[u8]| tagged_hash(pool, &t_node, &[l, rr]);
 
-    let mut empty_roots: Vec<Vec<u8>> = vec![tagged_hash(&t_leaf, &[b""])];
+    let mut empty_roots: Vec<Vec<u8>> = vec![tagged_hash(pool, &t_leaf, &[b""])];
     for i in 0..depth {
         let prev = empty_roots[i].clone();
         empty_roots.push(node(&prev, &prev));
@@ -344,6 +380,7 @@ fn main() {
         let nf_joined: Vec<u8> = nullifiers.concat();
         let cm_joined: Vec<u8> = commitments.concat();
         tagged_hash(
+            pool,
             &t_bundle,
             &[
                 anchor,
@@ -389,14 +426,57 @@ fn main() {
     println!("  {:<34} {} ok", "bundle", r.passed - mark);
 
     // -----------------------------------------------------------------------
-    println!("\n{}", "-".repeat(60));
     if r.failed.is_empty() {
-        println!("ALL {} CHECKS AGREE -- Rust matches the Python golden vectors", r.passed);
+        println!("  -> all {} checks agree\n", r.passed);
+        true
     } else {
-        println!("{} passed, {} FAILED\n", r.passed, r.failed.len());
+        println!("  -> {} passed, {} FAILED", r.passed, r.failed.len());
         for f in &r.failed {
-            println!("  [FAIL] {f}");
+            println!("     [FAIL] {f}");
         }
+        println!();
+        false
+    }
+}
+
+fn main() {
+    println!("Cross-runtime vector agreement (Rust side)\n");
+
+    // Check every golden file present, not just the consensus one. The retired
+    // SHA3 file stays as the reference the Rescue file is diffed against, and
+    // Rust has to reproduce both -- a port that only satisfies the live hash
+    // would hide an encoding regression in the one we still compare against.
+    let paths: Vec<PathBuf> = match std::env::args().nth(1) {
+        Some(p) => vec![PathBuf::from(p)],
+        None => {
+            let dir = vectors_dir();
+            let mut v: Vec<PathBuf> = fs::read_dir(&dir)
+                .expect("cannot read vectors dir")
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|n| n.starts_with("shielded_") && n.ends_with(".json"))
+                        .unwrap_or(false)
+                })
+                .collect();
+            v.sort();
+            v
+        },
+    };
+
+    assert!(!paths.is_empty(), "no golden vector files found");
+
+    let mut all_ok = true;
+    for p in &paths {
+        all_ok &= run(p);
+    }
+
+    println!("{}", "-".repeat(60));
+    if all_ok {
+        println!("ALL {} GOLDEN FILE(S) AGREE -- Rust matches Python", paths.len());
+    } else {
+        println!("MISMATCH -- Rust and Python disagree");
         std::process::exit(1);
     }
 }

@@ -39,3 +39,11 @@ path = "src/bin/phase2_scaling.rs"
 [[bin]]
 name = "vectors"
 path = "src/bin/vectors.rs"
+
+[[bin]]
+name = "dump_rescue_constants"
+path = "src/bin/dump_rescue_constants.rs"
+
+[[bin]]
+name = "poolhash"
+path = "src/bin/poolhash.rs"

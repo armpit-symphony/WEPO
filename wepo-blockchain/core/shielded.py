@@ -124,10 +124,35 @@ register_hash_algorithm(
     HashAlgorithm("sha3-256", 32, lambda data: hashlib.sha3_256(data).digest())
 )
 
+# Rescue-Prime Rp64_256 over the Goldilocks field, selected in Phase 2
+# (docs/GHOST_TRANSFER_PHASE2_RESULTS.md). Chosen because the spend circuit
+# proves Merkle membership, which is MERKLE_DEPTH hash invocations *inside the
+# AIR*: Rescue costs 256 trace rows there, SHA3-256 cannot even fit its 1600-bit
+# state into Winterfell's 254-column trace.
+#
+# Python does not compute Rescue itself. It delegates to the Rust binary over a
+# persistent pipe (see rescue_backend). Pure Python was measured at 853 us per
+# hash -- 28.5 minutes to rebuild a 1M-note tree -- which is disqualifying.
+#
+# There is deliberately NO fallback to SHA3 when the binary is unavailable. A
+# node that quietly fell back would compute different commitments from every
+# other node and split the chain *silently*, which is the precise failure the
+# whole cross-runtime vector apparatus exists to prevent. A missing or wrong
+# binary is a hard startup error, and rescue_backend runs a known-answer test
+# before it will use one.
+try:  # flat module by default; tolerate being imported as part of a package
+    from . import rescue_backend  # type: ignore[import-not-found]
+except ImportError:
+    import rescue_backend  # type: ignore[no-redef]
+
+register_hash_algorithm(
+    HashAlgorithm("rescue-rp64-256", 32, rescue_backend.rescue_pool_hash)
+)
+
 # Consensus constant, deliberately NOT environment-configurable: two nodes
 # running different pool hashes would compute different commitments and split the
 # chain. Changing it is a reviewed code change, not a deployment knob.
-POOL_HASH_ALGORITHM = "sha3-256"
+POOL_HASH_ALGORITHM = "rescue-rp64-256"
 
 _active_hash: HashAlgorithm = _ALGORITHMS[POOL_HASH_ALGORITHM]
 
