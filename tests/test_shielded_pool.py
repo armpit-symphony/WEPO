@@ -126,6 +126,44 @@ def test_hash_agnostic():
           S.EMPTY_ROOTS[S.MERKLE_DEPTH] == baseline_empty)
 
 
+def test_field_element_encoding():
+    print("\nCanonical bytes -> Goldilocks field elements:")
+    enc = S.encode_bytes_as_field_elements
+
+    check("empty input encodes to just the length", enc(b"") == [0])
+    check("length leads the encoding", enc(b"abc")[0] == 3)
+    check("7 bytes is one chunk", len(enc(b"a" * 7)) == 2)
+    check("8 bytes spills to two chunks", len(enc(b"a" * 8)) == 3)
+    check("chunks are little-endian",
+          enc(b"\x01\x02")[1] == 0x0201)
+
+    # 7 bytes rather than 8: a full 64-bit chunk can exceed p and would need
+    # reduction, which is not injective.
+    check("every element is a canonical field element",
+          all(0 <= e < S.GOLDILOCKS_MODULUS
+              for e in enc(bytes(range(256)))))
+    check("max chunk stays below the modulus",
+          enc(b"\xff" * 7)[1] == (1 << 56) - 1 < S.GOLDILOCKS_MODULUS)
+
+    # The length element is what makes padding unambiguous -- without it,
+    # trailing zero bytes and zero padding are indistinguishable.
+    check("trailing zeros are distinguishable from padding",
+          enc(b"\x01") != enc(b"\x01\x00"))
+    check("distinct inputs encode distinctly",
+          len({tuple(enc(bytes([i]) * n)) for i in (0, 1) for n in (0, 1, 7, 8, 15)}) == 9)
+
+    check("non-bytes rejected", raises(enc, "not bytes"))
+
+    # A realistic node hash: tagged_hash(TAG_NODE, left, right) is ~90 bytes,
+    # which is exactly where Winterfell's Rp64_256::hash() panics. The encoding
+    # must handle it, since every internal Merkle node goes through this path.
+    node_input = S._field(S._TAG_NODE) + S._field(b"\x11" * 32) + S._field(b"\x22" * 32)
+    check("realistic node-hash input encodes cleanly",
+          len(node_input) > 56 and len(node_input) % 7 != 0
+          and all(0 <= e < S.GOLDILOCKS_MODULUS
+                  for e in enc(node_input)))
+
+
 def test_note_commitment():
     print("\nNote commitments (binding + hiding):")
     sk, note = make_note(1000)
@@ -433,6 +471,7 @@ def test_end_to_end_flow():
 def main():
     test_hashing()
     test_hash_agnostic()
+    test_field_element_encoding()
     test_note_commitment()
     test_nullifier()
     test_merkle()

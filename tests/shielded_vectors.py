@@ -184,8 +184,40 @@ def build_vectors(algorithm: str = S.POOL_HASH_ALGORITHM) -> dict:
             "statement_digest": shield.statement_digest(SIGHASH).hex(),
         }
 
+        # Bytes -> Goldilocks field elements. Rescue-Prime hashes field
+        # elements, not bytes, so this encoding is its own cross-runtime
+        # agreement surface -- and it is testable now, before any Rescue
+        # implementation exists on either side.
+        element_cases = []
+        for label, data in [
+            ("empty", b""),
+            ("abc", b"abc"),
+            ("seven_bytes", b"a" * 7),
+            ("eight_bytes", b"a" * 8),
+            ("trailing_zero", b"\x01\x00"),
+            ("max_chunk", b"\xff" * 7),
+            ("node_hash_input",
+             S._field(S._TAG_NODE) + S._field(b"\x11" * 32) + S._field(b"\x22" * 32)),
+            ("long", bytes(range(256))),
+        ]:
+            element_cases.append({
+                "label": label,
+                "bytes": data.hex(),
+                "byte_len": len(data),
+                "elements": [str(e) for e in S.encode_bytes_as_field_elements(data)],
+            })
+
         return {
             "algorithm": algorithm,
+            "field": {
+                "name": "goldilocks",
+                "modulus": str(S.GOLDILOCKS_MODULUS),
+                "bytes_per_element": S.FELT_BYTES,
+                "note": "leading element is the byte length, then little-endian "
+                        "7-byte chunks, final chunk zero-padded; elements are "
+                        "decimal strings to survive JSON integer limits",
+            },
+            "element_encoding": element_cases,
             "hash_len": S.HASH_LEN,
             "merkle_depth": S.MERKLE_DEPTH,
             "max_note_value": S.MAX_NOTE_VALUE,

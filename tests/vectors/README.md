@@ -47,6 +47,37 @@ tagged_hash(tag, p0, p1, …) = H( field(tag) ‖ field(p0) ‖ field(p1) ‖ �
 buffer, **not** a streaming update per field — same bytes either way, but stated
 so nobody reinvents it as a Merkle–Damgård chain.
 
+### Bytes → field elements (required once Rescue-Prime lands)
+
+Phase 2 selected **Rescue-Prime `Rp64_256` over Goldilocks**
+(`p = 2^64 − 2^32 + 1`). Rescue hashes **field elements, not bytes**, so the
+buffer above has to be encoded before hashing, and that encoding is its own
+cross-runtime agreement surface. It is pinned by the `element_encoding` section
+of the JSON and is testable **now**, before either side has a Rescue
+implementation.
+
+```
+encode(B) = [ B.len() ]  ‖  [ le_u64(B[0..7]), le_u64(B[7..14]), … ]
+```
+
+- **7 bytes per element, not 8.** A full 64-bit chunk can exceed `p` and would
+  need reduction, and reduction is not injective — two different byte strings
+  would hash identically. 7 bytes = 56 bits is always canonical.
+- **The leading length element is load-bearing.** Without it the final chunk's
+  zero padding is indistinguishable from real trailing zero bytes, so `0x01` and
+  `0x01 0x00` would collide.
+- Elements appear in the JSON as **decimal strings**, because they exceed the
+  range JSON parsers handle reliably.
+
+> **Use `hash_elements()` / `merge()`, never `Rp64_256::hash()`.**
+> `hash()` panics on most real input lengths: it tracks the final chunk with a
+> rate position that resets every 8 absorptions, so past 8 chunks the check stops
+> meaning what it says. Probing lengths 0–200 panics for every length > 56 that
+> is not a multiple of 7 — 124 of 201. `tagged_hash(TAG_NODE, left, right)` is
+> ~90 bytes, so a naive port panics on **essentially every internal node hash**.
+> This is also why the verifier boundary is a subprocess (guardrail 5): a panic
+> must be an exit code, not a dead node.
+
 **Integer widths**
 
 | Value | Encoding |

@@ -166,6 +166,35 @@ def using_hash_algorithm(name: str):
         _activate_hash_algorithm(previous)
 
 
+# Goldilocks field, p = 2**64 - 2**32 + 1. Phase 2 selected Rescue-Prime
+# Rp64_256 over this field, which hashes FIELD ELEMENTS, not bytes -- so the
+# swap needs an explicit, canonical bytes->elements encoding that both runtimes
+# agree on. Defined here now (additive; it changes no digest) so the encoding is
+# pinned by test vectors before the hash swap itself lands.
+GOLDILOCKS_MODULUS = (1 << 64) - (1 << 32) + 1
+FELT_BYTES = 7  # 7 bytes = 56 bits < p, so every chunk is canonical and injective
+
+
+def encode_bytes_as_field_elements(data: bytes) -> List[int]:
+    """Canonical bytes -> Goldilocks field elements.
+
+    Leading element is the byte length, then little-endian 7-byte chunks with the
+    final chunk zero-padded. The length element is what keeps this injective:
+    without it, trailing zero bytes and zero padding are indistinguishable.
+
+    7 bytes per element (rather than 8) because a 64-bit chunk can exceed p and
+    would need reduction, which is not injective. This also matches Winterfell's
+    own 7-bytes-per-element convention, so the encoding agrees with `hash()` on
+    the inputs where `hash()` happens to work.
+    """
+    if not isinstance(data, (bytes, bytearray)):
+        raise ShieldedError("data must be bytes")
+    elements = [len(data)]
+    for offset in range(0, len(data), FELT_BYTES):
+        elements.append(int.from_bytes(data[offset:offset + FELT_BYTES], "little"))
+    return elements
+
+
 def _field(data: bytes) -> bytes:
     """Length-prefix a field so concatenation is unambiguous.
 
