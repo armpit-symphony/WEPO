@@ -56,6 +56,12 @@ _KAT_DIGEST = bytes.fromhex(
     "734f4ad1787930bd85e4e9a07469a6169b2ff3322ed35422a7ec3ee23aa15cff"
 )
 
+# Same guard for the field-native service: H_dom(domain=1, elements=[1]).
+_FIELD_KAT_REQUEST = "1:0100000000000000"
+_FIELD_KAT_DIGEST = bytes.fromhex(
+    "a027e36598687d9207f5d5c3370b352c3f891c313771bcb459821d69e3f87914"
+)
+
 # Binary location. Overridable for deployment, but the known-answer test above
 # runs against whatever this resolves to, so pointing it at the wrong binary
 # fails loudly at startup rather than producing wrong roots at runtime.
@@ -66,22 +72,34 @@ class RescueBackendError(RuntimeError):
     """Raised when the Rescue hashing backend cannot be trusted."""
 
 
-def _default_binary() -> Path:
+def _default_binary(stem: str = "poolhash") -> Path:
     root = Path(__file__).resolve().parents[2]
-    name = "poolhash.exe" if os.name == "nt" else "poolhash"
+    name = f"{stem}.exe" if os.name == "nt" else stem
     return root / "zk" / "target" / "release" / name
 
 
-def binary_path() -> Path:
-    override = os.environ.get(_ENV_VAR)
-    return Path(override) if override else _default_binary()
+def binary_path(stem: str = "poolhash") -> Path:
+    override = os.environ.get(_ENV_VAR if stem == "poolhash" else f"WEPO_{stem.upper()}_BIN")
+    return Path(override) if override else _default_binary(stem)
 
 
 class PoolHasher:
-    """One long-lived `poolhash` process, serialised by a lock."""
+    """One long-lived hashing process, serialised by a lock.
 
-    def __init__(self, path: Optional[Path] = None):
+    Drives either `poolhash` (byte-oriented, for the bundle statement digest)
+    or `fieldhash` (domain-separated field-native, for everything in-circuit).
+    The request line format differs; the trust model does not.
+    """
+
+    def __init__(
+        self,
+        path: Optional[Path] = None,
+        kat_request: str = "",
+        kat_digest: bytes = b"",
+    ):
         self._path = Path(path) if path else binary_path()
+        self._kat_request = kat_request
+        self._kat_digest = kat_digest
         self._proc: Optional[subprocess.Popen] = None
         self._lock = threading.Lock()
 
@@ -115,14 +133,14 @@ class PoolHasher:
 
     def _self_test(self, proc: subprocess.Popen) -> None:
         """Refuse to use a binary that does not reproduce the known answer."""
-        got = self._exchange(proc, _KAT_INPUT)
-        if got != _KAT_DIGEST:
+        got = self._exchange(proc, self._kat_request)
+        if got != self._kat_digest:
             proc.kill()
             raise RescueBackendError(
                 f"{self._path} failed the known-answer test; refusing to use it.\n"
-                f"  input  {_KAT_INPUT!r}\n"
-                f"  got    {got.hex()}\n"
-                f"  want   {_KAT_DIGEST.hex()}\n"
+                f"  request {self._kat_request!r}\n"
+                f"  got     {got.hex()}\n"
+                f"  want    {self._kat_digest.hex()}\n"
                 "A binary that disagrees here would corrupt every commitment in "
                 "the pool."
             )
@@ -130,11 +148,11 @@ class PoolHasher:
     # -- the exchange -------------------------------------------------------
 
     @staticmethod
-    def _exchange(proc: subprocess.Popen, data: bytes) -> bytes:
+    def _exchange(proc: subprocess.Popen, request: str) -> bytes:
         if proc.stdin is None or proc.stdout is None:
             raise RescueBackendError("hashing process has no pipes")
         try:
-            proc.stdin.write(data.hex() + "\n")
+            proc.stdin.write(request + "\n")
             proc.stdin.flush()
             line = proc.stdout.readline()
         except (BrokenPipeError, OSError) as exc:
@@ -157,10 +175,13 @@ class PoolHasher:
             )
         return digest
 
-    def digest(self, data: bytes) -> bytes:
+    def request(self, line: str) -> bytes:
         with self._lock:
             proc = self._ensure()
-            return self._exchange(proc, data)
+            return self._exchange(proc, line)
+
+    def digest(self, data: bytes) -> bytes:
+        return self.request(data.hex())
 
     def close(self) -> None:
         with self._lock:
@@ -174,18 +195,43 @@ class PoolHasher:
             self._proc = None
 
 
-_DEFAULT = PoolHasher()
+_DEFAULT = PoolHasher(
+    binary_path("poolhash"), _KAT_INPUT.hex(), _KAT_DIGEST
+)
+
+_FIELD = PoolHasher(
+    binary_path("fieldhash"), _FIELD_KAT_REQUEST, _FIELD_KAT_DIGEST
+)
 
 
 def rescue_pool_hash(data: bytes) -> bytes:
-    """pool_hash(B) = as_bytes(hash_elements(encode_bytes_as_field_elements(B)))."""
+    """pool_hash(B) = as_bytes(hash_elements(encode_bytes_as_field_elements(B))).
+
+    Byte-oriented. Used only for the bundle statement digest, which is never
+    computed inside the circuit.
+    """
     return _DEFAULT.digest(data)
+
+
+def field_hash(domain: int, elements: bytes) -> bytes:
+    """H_dom(domain, elements) — the field-native, in-circuit pool hash.
+
+    `elements` is 8*n bytes encoding n little-endian Goldilocks elements, each
+    of which must be canonical. Non-canonical limbs are rejected by the backend
+    rather than reduced, because reduction is not injective.
+    """
+    if len(elements) % 8 != 0:
+        raise RescueBackendError(
+            f"field hash input must be a multiple of 8 bytes, got {len(elements)}"
+        )
+    return _FIELD.request(f"{domain}:{elements.hex()}")
 
 
 def available() -> bool:
     """True if the backend can be used. Never raises — for probing only."""
     try:
         rescue_pool_hash(b"")
+        field_hash(1, (1).to_bytes(8, "little"))
         return True
     except RescueBackendError:
         return False
@@ -193,3 +239,4 @@ def available() -> bool:
 
 def close() -> None:
     _DEFAULT.close()
+    _FIELD.close()

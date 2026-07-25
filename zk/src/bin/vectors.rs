@@ -18,7 +18,7 @@ use serde_json::Value;
 use sha3::{Digest, Sha3_256};
 use winterfell::{
     crypto::{hashers::Rp64_256, Digest as _, ElementHasher},
-    math::fields::f64::BaseElement,
+    math::{fields::f64::BaseElement, FieldElement},
 };
 
 /// Which pool hash a golden file was generated under.
@@ -37,6 +37,85 @@ impl Pool {
         }
     }
 
+    /// Is this file from before the tree went field-native?
+    ///
+    /// The SHA3 golden is a frozen historical artifact: it was generated when
+    /// every derivation went through the byte-oriented `tagged_hash`. The live
+    /// Rescue golden uses `H_dom` for the six derivations the circuit proves,
+    /// and keeps `tagged_hash` only for the bundle statement digest, which is
+    /// the public input and never enters the circuit.
+    fn field_native(self) -> bool {
+        self == Pool::Rescue
+    }
+
+    fn leaf(self, cm: &[u8], t_leaf: &[u8]) -> Vec<u8> {
+        if self.field_native() {
+            h_dom(DOMAIN_LEAF, &limbs(cm))
+        } else {
+            tagged_hash(self, t_leaf, &[cm])
+        }
+    }
+
+    fn node(self, l: &[u8], r: &[u8], t_node: &[u8]) -> Vec<u8> {
+        if self.field_native() {
+            let mut e = limbs(l);
+            e.extend(limbs(r));
+            h_dom(DOMAIN_NODE, &e) // 8 elements: exactly the rate, one permutation
+        } else {
+            tagged_hash(self, t_node, &[l, r])
+        }
+    }
+
+    fn empty_leaf(self, t_leaf: &[u8]) -> Vec<u8> {
+        if self.field_native() {
+            h_dom(DOMAIN_LEAF, &[])
+        } else {
+            tagged_hash(self, t_leaf, &[b""])
+        }
+    }
+
+    fn note(self, value: u64, pkd: &[u8], rho: &[u8], rcm: &[u8], t_note: &[u8]) -> Vec<u8> {
+        if self.field_native() {
+            let mut e = vec![value];
+            e.extend(limbs(pkd));
+            e.extend(limbs(rho));
+            e.extend(limbs(rcm));
+            h_dom(DOMAIN_NOTE, &e)
+        } else {
+            tagged_hash(self, t_note, &[&value.to_le_bytes(), pkd, rho, rcm])
+        }
+    }
+
+    fn nullifier(self, nk: &[u8], rho: &[u8], t_nf: &[u8]) -> Vec<u8> {
+        if self.field_native() {
+            let mut e = limbs(nk);
+            e.extend(limbs(rho));
+            h_dom(DOMAIN_NULLIFIER, &e)
+        } else {
+            tagged_hash(self, t_nf, &[nk, rho])
+        }
+    }
+
+    fn nullifier_key(self, sk: &[u8], t_nk: &[u8]) -> Vec<u8> {
+        if self.field_native() {
+            h_dom(DOMAIN_NULLIFIER_KEY, &limbs(sk))
+        } else {
+            tagged_hash(self, t_nk, &[sk])
+        }
+    }
+
+    fn diversified_key(self, sk: &[u8], div: &[u8], t_pkd: &[u8]) -> Vec<u8> {
+        if self.field_native() {
+            // the diversifier is 11 bytes, not a whole number of limbs, and is a
+            // pure witness input -- so it uses the 7-byte chunk encoding
+            let mut e = limbs(sk);
+            e.extend(encode_bytes_as_field_elements(div));
+            h_dom(DOMAIN_DIVERSIFIED_KEY, &e)
+        } else {
+            tagged_hash(self, t_pkd, &[sk, div])
+        }
+    }
+
     /// The one-shot digest. Rescue goes through `hash_elements` -- never
     /// `Rp64_256::hash()`, which panics on ~half of all input lengths.
     fn digest(self, data: &[u8]) -> Vec<u8> {
@@ -51,6 +130,61 @@ impl Pool {
             },
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// field-native construction (everything the circuit proves)
+// ---------------------------------------------------------------------------
+
+const DOMAIN_LEAF: u64 = 1;
+const DOMAIN_NODE: u64 = 2;
+const DOMAIN_NOTE: u64 = 3;
+const DOMAIN_NULLIFIER: u64 = 4;
+const DOMAIN_NULLIFIER_KEY: u64 = 5;
+const DOMAIN_DIVERSIFIED_KEY: u64 = 6;
+
+/// `H_dom(domain, elements)` -- stock `hash_elements` with capacity[1] = domain.
+fn h_dom(domain: u64, elements: &[u64]) -> Vec<u8> {
+    use winterfell::math::StarkField;
+    let mut state = [BaseElement::ZERO; 12];
+    state[0] = BaseElement::new(elements.len() as u64);
+    state[1] = BaseElement::new(domain);
+
+    let mut i = 0;
+    let mut permuted = false;
+    for &e in elements {
+        state[4 + i] += BaseElement::new(e);
+        i += 1;
+        if i == 8 {
+            Rp64_256::apply_permutation(&mut state);
+            permuted = true;
+            i = 0;
+        }
+    }
+    // also permute for an empty input, or the digest would be the zero state
+    if i > 0 || !permuted {
+        Rp64_256::apply_permutation(&mut state);
+    }
+
+    let mut out = Vec::with_capacity(32);
+    for k in 0..4 {
+        out.extend_from_slice(&state[4 + k].as_int().to_le_bytes());
+    }
+    out
+}
+
+/// A 32-byte pool value is 4 canonical limbs, little-endian each.
+fn limbs(data: &[u8]) -> Vec<u64> {
+    assert_eq!(data.len() % 8, 0, "pool value must be a whole number of limbs");
+    data.chunks(8)
+        .map(|c| {
+            let mut b = [0u8; 8];
+            b.copy_from_slice(c);
+            let v = u64::from_le_bytes(b);
+            assert!(v < GOLDILOCKS as u64, "non-canonical limb");
+            v
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -231,8 +365,8 @@ fn run(path: &PathBuf) -> bool {
     for (i, c) in j["key_derivation"].as_array().unwrap().iter().enumerate() {
         let sk = unhex(s(&c["spending_key"]));
         let div = unhex(s(&c["diversifier"]));
-        let nk = tagged_hash(pool, &t_nk, &[&sk]);
-        let pkd = tagged_hash(pool, &t_pkd, &[&sk, &div]);
+        let nk = pool.nullifier_key(&sk, &t_nk);
+        let pkd = pool.diversified_key(&sk, &div, &t_pkd);
         r.check(&format!("key_derivation[{i}].nk"), &hex(&nk), s(&c["nullifier_key"]));
         r.check(
             &format!("key_derivation[{i}].pk_d"),
@@ -251,8 +385,8 @@ fn run(path: &PathBuf) -> bool {
         let rcm = unhex(s(&c["rcm"]));
         let nk = unhex(s(&c["nullifier_key"]));
 
-        let cm = tagged_hash(pool, &t_note, &[&value.to_le_bytes(), &pkd, &rho, &rcm]);
-        let nf = tagged_hash(pool, &t_nf, &[&nk, &rho]);
+        let cm = pool.note(value, &pkd, &rho, &rcm, &t_note);
+        let nf = pool.nullifier(&nk, &rho, &t_nf);
 
         r.check(&format!("notes[{i}].commitment"), &hex(&cm), s(&c["commitment"]));
         r.check(&format!("notes[{i}].nullifier"), &hex(&nf), s(&c["nullifier"]));
@@ -261,10 +395,10 @@ fn run(path: &PathBuf) -> bool {
     mark = r.passed;
 
     // -- merkle --------------------------------------------------------------
-    let leaf = |cm: &[u8]| tagged_hash(pool, &t_leaf, &[cm]);
-    let node = |l: &[u8], rr: &[u8]| tagged_hash(pool, &t_node, &[l, rr]);
+    let leaf = |cm: &[u8]| pool.leaf(cm, &t_leaf);
+    let node = |l: &[u8], rr: &[u8]| pool.node(l, rr, &t_node);
 
-    let mut empty_roots: Vec<Vec<u8>> = vec![tagged_hash(pool, &t_leaf, &[b""])];
+    let mut empty_roots: Vec<Vec<u8>> = vec![pool.empty_leaf(&t_leaf)];
     for i in 0..depth {
         let prev = empty_roots[i].clone();
         empty_roots.push(node(&prev, &prev));

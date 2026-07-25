@@ -1,13 +1,15 @@
-"""Independent check of the Rescue permutation itself.
+"""Independent check of the Rescue permutation and the field-native construction.
 
 The gap this closes
 -------------------
-Before the swap, Python hashed with `hashlib` and Rust with the `sha3` crate --
-two independent implementations, so cross-runtime agreement was evidence.
+Before the hash swap, Python hashed with `hashlib` and Rust with the `sha3`
+crate -- two independent implementations, so cross-runtime agreement was
+evidence.
 
 After the swap, Python gets Rescue by delegating to the Rust binary. "Python and
 Rust agree on a Rescue digest" is then tautological: they are the same code. A
-bug in the permutation would be invisible to every cross-runtime test we have.
+bug in the permutation, or in the domain-separated sponge built on it, would be
+invisible to every cross-runtime test we have.
 
 This restores independence by recomputing the node's digests with a separate
 pure-Python implementation (tests/rescue_reference.py), which is itself pinned to
@@ -43,18 +45,9 @@ def field(x: bytes) -> bytes:
     return len(x).to_bytes(4, "little") + x
 
 
-def oracle_tagged_hash(tag: bytes, *parts: bytes) -> bytes:
-    """tagged_hash rebuilt on top of the independent permutation."""
-    buf = field(tag)
-    for p in parts:
-        buf += field(p)
-    return R.pool_hash(buf)
-
-
 def main():
     print("Rescue permutation, independent oracle:")
 
-    # 1. the oracle itself must match the upstream Sage reference vector
     try:
         R.self_check()
         check("pure-Python Rescue matches the upstream Sage reference vector", True)
@@ -63,70 +56,113 @@ def main():
         return 1
 
     check("consensus hash is Rescue", S.POOL_HASH_ALGORITHM == "rescue-rp64-256")
-    check("active hash is Rescue", S.active_hash_algorithm().name == "rescue-rp64-256")
 
-    # 2. the node's raw hash must equal the oracle's
-    print("\nNode digests recomputed independently:")
+    # -- the byte-oriented hash, still used for the bundle statement digest ---
+    print("\nByte-oriented pool hash (bundle statement digest path):")
     for label, data in [
         ("empty", b""),
         ("abc", b"abc"),
-        ("32 zero bytes", bytes(32)),
-        ("103-byte node input", field(S._TAG_NODE) + field(bytes(32)) + field(bytes(32))),
+        ("103-byte tagged buffer", field(b"tag") + field(bytes(32)) + field(bytes(32))),
     ]:
         check(
             f"pool hash agrees: {label}",
             S.active_hash_algorithm().fn(data) == R.pool_hash(data),
         )
 
-    # 3. tagged_hash, the function every pool digest goes through
-    for label, args in [
-        ("leaf tag, empty", (S._TAG_LEAF, b"")),
-        ("node tag, two children", (S._TAG_NODE, bytes(32), b"\x01" * 32)),
-        ("note tag, four parts", (S._TAG_NOTE, (7).to_bytes(8, "little"),
-                                  b"\x02" * 32, b"\x03" * 32, b"\x04" * 32)),
+    # -- the field-native hash, which is what the circuit proves --------------
+    print("\nField-native H_dom (the in-circuit construction):")
+    for label, dom, els in [
+        ("empty element list", S.DOMAIN_LEAF, []),
+        ("single element", S.DOMAIN_LEAF, [1]),
+        ("4 elements (leaf)", S.DOMAIN_LEAF, [1, 2, 3, 4]),
+        ("8 elements (node, full rate)", S.DOMAIN_NODE, list(range(8))),
+        ("9 elements (spills the rate)", S.DOMAIN_NOTE, list(range(9))),
+        ("13 elements (note commitment)", S.DOMAIN_NOTE, list(range(13))),
     ]:
         check(
-            f"tagged_hash agrees: {label}",
-            S.tagged_hash(*args) == oracle_tagged_hash(*args),
+            f"H_dom agrees: {label}",
+            S.field_hash(dom, els) == R.field_hash(dom, els),
         )
 
-    # 4. the empty-subtree ladder -- 33 chained digests, so an error at any
-    #    level propagates and is caught
-    print("\nEmpty-subtree ladder (33 levels) recomputed independently:")
-    empty = [oracle_tagged_hash(S._TAG_LEAF, b"")]
-    for _ in range(S.MERKLE_DEPTH):
-        empty.append(oracle_tagged_hash(S._TAG_NODE, empty[-1], empty[-1]))
-    check("every empty root agrees", empty == list(S.EMPTY_ROOTS))
-    check("anchor of the empty tree agrees", empty[S.MERKLE_DEPTH] == S.EMPTY_ROOTS[S.MERKLE_DEPTH])
+    # domain separation must actually separate
+    check(
+        "different domains give different digests",
+        S.field_hash(S.DOMAIN_LEAF, [1, 2, 3, 4])
+        != S.field_hash(S.DOMAIN_NODE, [1, 2, 3, 4]),
+    )
+    check(
+        "empty leaf digest is not the zero state",
+        S.field_hash(S.DOMAIN_LEAF, []) != bytes(32),
+    )
 
-    # 5. a real note commitment and nullifier
+    # -- the empty-subtree ladder: 33 chained digests -------------------------
+    print("\nEmpty-subtree ladder (33 levels) recomputed independently:")
+    empty = [R.field_hash(S.DOMAIN_LEAF, [])]
+    for _ in range(S.MERKLE_DEPTH):
+        prev = R.bytes_to_field_elements(empty[-1])
+        empty.append(R.field_hash(S.DOMAIN_NODE, prev + prev))
+    check("every empty root agrees", empty == list(S.EMPTY_ROOTS))
+
+    # -- note derivation ------------------------------------------------------
     print("\nNote derivation recomputed independently:")
     sk = bytes.fromhex("01" * 32)
     div = bytes(11)
-    nk = oracle_tagged_hash(S._TAG_NK, sk)
-    pk_d = oracle_tagged_hash(S._TAG_PKD, sk, div)
-    check("nullifier key agrees", nk == S.tagged_hash(S._TAG_NK, sk))
-    check("diversified key agrees", pk_d == S.tagged_hash(S._TAG_PKD, sk, div))
+    sk_els = R.bytes_to_field_elements(sk)
 
-    rho = bytes.fromhex("0b" * 32)
-    rcm = bytes.fromhex("0c" * 32)
+    nk = R.field_hash(S.DOMAIN_NULLIFIER_KEY, sk_els)
+    check("nullifier key agrees", nk == S.derive_nullifier_key(sk))
+
+    pk_d = R.field_hash(
+        S.DOMAIN_DIVERSIFIED_KEY, sk_els + R.encode_bytes_as_field_elements(div)
+    )
+    check("diversified key agrees", pk_d == S.derive_diversified_key(sk, div))
+
+    rho = S.field_elements_to_bytes([11, 12, 13, 14])
+    rcm = S.field_elements_to_bytes([21, 22, 23, 24])
     note = S.Note(value=42, pk_d=pk_d, rho=rho, rcm=rcm)
-    cm = oracle_tagged_hash(S._TAG_NOTE, (42).to_bytes(8, "little"), pk_d, rho, rcm)
+
+    cm = R.field_hash(
+        S.DOMAIN_NOTE,
+        [42]
+        + R.bytes_to_field_elements(pk_d)
+        + R.bytes_to_field_elements(rho)
+        + R.bytes_to_field_elements(rcm),
+    )
     check("note commitment agrees", cm == note.commitment())
-    nf = oracle_tagged_hash(S._TAG_NULLIFIER, nk, rho)
+
+    nf = R.field_hash(
+        S.DOMAIN_NULLIFIER,
+        R.bytes_to_field_elements(nk) + R.bytes_to_field_elements(rho),
+    )
     check("nullifier agrees", nf == note.nullifier(nk))
 
-    # 6. negative control -- the oracle must be capable of disagreeing
-    print("\nNegative control:")
+    # -- tree operations ------------------------------------------------------
+    print("\nTree operations recomputed independently:")
+    leaf = R.field_hash(S.DOMAIN_LEAF, R.bytes_to_field_elements(cm))
+    check("leaf hash agrees", leaf == S._leaf_hash(cm))
+    node = R.field_hash(
+        S.DOMAIN_NODE,
+        R.bytes_to_field_elements(leaf) + R.bytes_to_field_elements(empty[0]),
+    )
+    check("node hash agrees", node == S._node_hash(leaf, empty[0]))
+
+    # -- negative controls ----------------------------------------------------
+    print("\nNegative controls:")
     check(
-        "oracle rejects a tampered digest",
-        R.pool_hash(b"abc") != R.pool_hash(b"abd"),
+        "oracle rejects a tampered input",
+        R.field_hash(S.DOMAIN_LEAF, [1, 2, 3, 4])
+        != R.field_hash(S.DOMAIN_LEAF, [1, 2, 3, 5]),
     )
     check(
-        "domain separation holds (leaf tag != node tag on same input)",
-        oracle_tagged_hash(S._TAG_LEAF, bytes(32))
-        != oracle_tagged_hash(S._TAG_NODE, bytes(32)),
+        "element count is bound (trailing zero changes the digest)",
+        R.field_hash(S.DOMAIN_LEAF, [1, 2, 3, 4])
+        != R.field_hash(S.DOMAIN_LEAF, [1, 2, 3, 4, 0]),
     )
+    try:
+        S.bytes_to_field_elements(b"\xff" * 8, "probe")
+        check("non-canonical limb rejected", False)
+    except S.ShieldedError:
+        check("non-canonical limb rejected", True)
 
     print()
     if FAILURES:

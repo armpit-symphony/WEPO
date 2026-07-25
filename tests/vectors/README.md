@@ -87,30 +87,82 @@ encode(B) = [ B.len() ]  ‖  [ le_u64(B[0..7]), le_u64(B[7..14]), … ]
 | bundle spend/output counts | little-endian `u32` |
 | field length prefix | little-endian `u32` |
 
-**Derivations** — tags are in the `tags` object of the JSON as hex; use those
-exact bytes, do not retype the ASCII.
+### The field-native construction (what the circuit proves)
+
+**Six of the seven derivations no longer hash bytes.** They hash field elements
+directly, via `H_dom`. Only the bundle statement digest still uses
+`tagged_hash`, because it is the public input and is computed by the verifier
+*outside* the circuit.
+
+Why: a digest is 4 elements of 8 bytes each, the byte encoding chunks at 7
+bytes, and those boundaries never align — every digest element straddles two
+chunks. Proving that conversion in-circuit needs byte decomposition of 8
+elements at each of 32 tree levels, measured at ~3.5x the proof size, and it
+compounds because it is needed wherever a digest feeds another hash.
 
 ```
-nk    = tagged_hash(TAG_NK,         spending_key)              // 32-byte key
-pk_d  = tagged_hash(TAG_PKD,        spending_key, diversifier) // diversifier is 11 bytes
-cm    = tagged_hash(TAG_NOTE,       u64_le(value), pk_d, rho, rcm)
-nf    = tagged_hash(TAG_NULLIFIER,  nk, rho)
+H_dom(domain, elements):
+    state    = [0; 12]
+    state[0] = len(elements)      // capacity[0], as stock hash_elements does
+    state[1] = domain             // capacity[1], zero in the stock sponge
+    absorb elements into rate (indices 4..12), permuting whenever the rate fills
+    if anything is unabsorbed, OR nothing was ever permuted, permute once more
+    digest   = state[4..8]        // 4 elements -> 32 bytes, LE per element
 ```
+
+Three things a port has to get right:
+
+- **Domain lives in the capacity, not the input.** Prepending a domain element
+  would make a node hash 9 elements, spilling the 8-element rate into a second
+  permutation and doubling the cost of the most repeated operation.
+- **The empty input still permutes.** Stock `hash_elements` would return the
+  untouched state — an all-zero digest — and the empty-subtree ladder starts
+  from exactly that case.
+- **A 32-byte pool value IS 4 canonical limbs**, little-endian each. A limb `>= p`
+  is **rejected, never reduced**: reduction is not injective, so two byte
+  strings would hash identically. This is why `random_note` samples elements
+  below `p` rather than calling `token_bytes(32)`.
+
+| domain | value |
+|---|---|
+| leaf | 1 |
+| node | 2 |
+| note | 3 |
+| nullifier | 4 |
+| nullifier_key | 5 |
+| diversified_key | 6 |
+
+```
+limbs(x)  = [le_u64(x[0..8]), le_u64(x[8..16]), le_u64(x[16..24]), le_u64(x[24..32])]
+
+nk    = H_dom(5, limbs(spending_key))                         // 4 elements, 1 permutation
+pk_d  = H_dom(6, limbs(spending_key) ‖ encode(diversifier))   // 6 elements, 1 permutation
+cm    = H_dom(3, [value] ‖ limbs(pk_d) ‖ limbs(rho) ‖ limbs(rcm))  // 13 elements, 2 permutations
+nf    = H_dom(4, limbs(nk) ‖ limbs(rho))                      // 8 elements, 1 permutation
+```
+
+`value` is one element: `MAX_NOTE_VALUE` is `2**63-1`, well under `p`. The
+diversifier is 11 bytes — not a whole number of limbs — and is a pure witness
+input that never feeds another hash, so it uses the 7-byte `encode()` above and
+costs the circuit nothing.
 
 **Merkle tree** — depth 32, append-only.
 
 ```
-leaf(cm)          = tagged_hash(TAG_LEAF, cm)
-node(left, right) = tagged_hash(TAG_NODE, left, right)
+leaf(cm)          = H_dom(1, limbs(cm))                    // 4 elements
+node(left, right) = H_dom(2, limbs(left) ‖ limbs(right))   // 8 elements = exactly the rate
+empty[0]          = H_dom(1, [])                           // empty element list
+empty[i+1]        = node(empty[i], empty[i])
 ```
 
-Leaf and node are separately tagged so an internal node cannot be presented as a
-leaf. The empty-subtree ladder:
+Leaf and node have distinct domains, so an internal node cannot be presented as
+a leaf. Fixed depth 32 gives the same property independently; both are kept.
 
-```
-empty[0]   = tagged_hash(TAG_LEAF, "")      // note: empty bytes, not a commitment
-empty[i+1] = node(empty[i], empty[i])
-```
+> The `tags` object and `TAG_*` byte strings still appear in the JSON and are
+> still live — but **only** for the bundle statement digest. The `shielded_sha3-256.json`
+> golden is a frozen historical artifact from before this change, when every
+> derivation went through `tagged_hash`; it is kept as the file the live golden
+> is diffed against for the hash-independent sections.
 
 Any position past the last occupied leaf uses `empty[level]` at that level. Path
 verification walks the position's bits from the bottom:

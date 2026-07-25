@@ -220,6 +220,79 @@ def encode_bytes_as_field_elements(data: bytes) -> List[int]:
     return elements
 
 
+# --- field-native hashing (everything the circuit proves) ---------------------
+#
+# Rescue hashes field elements. Converting bytes to elements is free outside a
+# circuit and expensive inside one: a digest is 4 elements of 8 bytes each, the
+# byte encoding chunks at 7 bytes, and those boundaries never align, so proving
+# the conversion needs byte decomposition of every digest at every tree level.
+# Measured, that costs ~3.5x the proof size -- and it compounds, because it is
+# needed wherever a digest feeds another hash, which is every circuit step.
+#
+# So every hash the circuit proves operates on field elements directly, and a
+# 32-byte pool value IS 4 canonical Goldilocks elements, little-endian each.
+# Nothing is ever re-chunked, so the decomposition gadget disappears entirely.
+#
+# The bundle statement digest keeps the byte-oriented `tagged_hash`: it is the
+# public input, computed by the verifier outside the circuit, so it costs
+# nothing in-circuit and keeps its self-describing ASCII tag.
+#
+# Domain separation moves from a byte tag into capacity[1]. `hash_elements`
+# puts the element count in capacity[0] and leaves capacity[1..4] at zero, and
+# those elements are already inside the 12-wide state the AIR pays for -- so a
+# domain costs no extra permutation and no extra trace column. Prepending a
+# domain element to the input instead would push a node hash to 9 elements,
+# spilling the 8-element rate into a second permutation and doubling the cost
+# of the most repeated operation in the circuit.
+
+DOMAIN_LEAF = 1
+DOMAIN_NODE = 2
+DOMAIN_NOTE = 3
+DOMAIN_NULLIFIER = 4
+DOMAIN_NULLIFIER_KEY = 5
+DOMAIN_DIVERSIFIED_KEY = 6
+
+FELT_LIMB_BYTES = 8  # a pool value is 4 canonical limbs of 8 bytes
+
+
+def bytes_to_field_elements(data: bytes, name: str = "value") -> List[int]:
+    """A 32-byte pool value -> 4 canonical Goldilocks elements, LE per limb.
+
+    Rejects non-canonical limbs rather than reducing them. Reduction is not
+    injective, so two different byte strings would hash identically -- and one
+    of them would be a value nobody could have committed to honestly.
+    """
+    if len(data) % FELT_LIMB_BYTES != 0:
+        raise ShieldedError(
+            f"{name} must be a multiple of {FELT_LIMB_BYTES} bytes, got {len(data)}"
+        )
+    out: List[int] = []
+    for off in range(0, len(data), FELT_LIMB_BYTES):
+        limb = int.from_bytes(data[off:off + FELT_LIMB_BYTES], "little")
+        if limb >= GOLDILOCKS_MODULUS:
+            raise ShieldedError(
+                f"{name} limb at offset {off} is not canonical "
+                f"({limb} >= p); pool values must be valid field elements"
+            )
+        out.append(limb)
+    return out
+
+
+def field_elements_to_bytes(elements: Sequence[int]) -> bytes:
+    return b"".join(int(e).to_bytes(FELT_LIMB_BYTES, "little") for e in elements)
+
+
+def field_hash(domain: int, elements: Sequence[int]) -> bytes:
+    """`H_dom(domain, elements)` — the in-circuit pool hash.
+
+    Pinned to Rescue-Prime. Unlike `tagged_hash`, this is deliberately not
+    routed through the swappable `HashAlgorithm` seam: the circuit is built
+    against this permutation, so a node running a different one would not merely
+    disagree, it would be unable to verify any proof at all.
+    """
+    return rescue_backend.field_hash(domain, field_elements_to_bytes(elements))
+
+
 def _field(data: bytes) -> bytes:
     """Length-prefix a field so concatenation is unambiguous.
 
@@ -255,7 +328,8 @@ def derive_nullifier_key(spending_key: bytes) -> bytes:
     owner can compute it, and it is the same every time, so a second spend of the
     same note produces the same nullifier and is caught.
     """
-    return tagged_hash(_TAG_NK, _require_len("spending_key", spending_key, HASH_LEN))
+    sk = _require_len("spending_key", spending_key, HASH_LEN)
+    return field_hash(DOMAIN_NULLIFIER_KEY, bytes_to_field_elements(sk, "spending_key"))
 
 
 def derive_diversified_key(spending_key: bytes, diversifier: bytes) -> bytes:
@@ -264,10 +338,15 @@ def derive_diversified_key(spending_key: bytes, diversifier: bytes) -> bytes:
     The diversifier lets one wallet hand out many unlinkable payment keys from a
     single spending key.
     """
-    return tagged_hash(
-        _TAG_PKD,
-        _require_len("spending_key", spending_key, HASH_LEN),
-        _require_len("diversifier", diversifier, 11),
+    sk = _require_len("spending_key", spending_key, HASH_LEN)
+    div = _require_len("diversifier", diversifier, 11)
+    # The diversifier is 11 bytes, so it is not a whole number of limbs. It is a
+    # pure witness input -- never a hash output feeding another hash -- so the
+    # 7-byte chunk encoding is used for it and costs the circuit nothing.
+    return field_hash(
+        DOMAIN_DIVERSIFIED_KEY,
+        bytes_to_field_elements(sk, "spending_key")
+        + encode_bytes_as_field_elements(div),
     )
 
 
@@ -294,44 +373,74 @@ class Note:
         _require_len("pk_d", self.pk_d, HASH_LEN)
         _require_len("rho", self.rho, HASH_LEN)
         _require_len("rcm", self.rcm, HASH_LEN)
+        # Reject non-canonical limbs at construction rather than at hash time,
+        # so a bad note cannot be built and then silently collide with another.
+        bytes_to_field_elements(self.pk_d, "pk_d")
+        bytes_to_field_elements(self.rho, "rho")
+        bytes_to_field_elements(self.rcm, "rcm")
 
     def commitment(self) -> bytes:
         """`cm = H(value, pk_d, rho, rcm)`.
 
         Binding by collision resistance; hiding because `rcm` is uniform and secret.
         """
-        return tagged_hash(
-            _TAG_NOTE,
-            struct.pack("<Q", self.value),
-            self.pk_d,
-            self.rho,
-            self.rcm,
+        # value fits one element: MAX_NOTE_VALUE is 2**63-1, well under p.
+        return field_hash(
+            DOMAIN_NOTE,
+            [self.value]
+            + bytes_to_field_elements(self.pk_d, "pk_d")
+            + bytes_to_field_elements(self.rho, "rho")
+            + bytes_to_field_elements(self.rcm, "rcm"),
         )
 
     def nullifier(self, nk: bytes) -> bytes:
         """`nf = H(nk, rho)` — revealed when the note is spent."""
-        return tagged_hash(_TAG_NULLIFIER, _require_len("nk", nk, HASH_LEN), self.rho)
+        nk = _require_len("nk", nk, HASH_LEN)
+        return field_hash(
+            DOMAIN_NULLIFIER,
+            bytes_to_field_elements(nk, "nk")
+            + bytes_to_field_elements(self.rho, "rho"),
+        )
+
+
+def random_field_value() -> bytes:
+    """32 bytes of randomness that is guaranteed to be 4 canonical elements.
+
+    `secrets.token_bytes(32)` is not safe here: a uniform 8-byte limb lands at
+    or above p with probability about 2**-32, and such a value has no canonical
+    byte representation, so it would be rejected on the way back in.
+    """
+    return field_elements_to_bytes(
+        [secrets.randbelow(GOLDILOCKS_MODULUS) for _ in range(HASH_LEN // FELT_LIMB_BYTES)]
+    )
 
 
 def random_note(value: int, pk_d: bytes) -> Note:
     """Create a note with fresh randomness for `rho` and `rcm`."""
-    return Note(value=value, pk_d=pk_d, rho=secrets.token_bytes(HASH_LEN),
-                rcm=secrets.token_bytes(HASH_LEN))
+    return Note(value=value, pk_d=pk_d, rho=random_field_value(),
+                rcm=random_field_value())
 
 
 # --- merkle accumulator -------------------------------------------------------
 
 def _leaf_hash(cm: bytes) -> bytes:
-    return tagged_hash(_TAG_LEAF, _require_len("commitment", cm, COMMITMENT_LEN))
+    cm = _require_len("commitment", cm, COMMITMENT_LEN)
+    return field_hash(DOMAIN_LEAF, bytes_to_field_elements(cm, "commitment"))
 
 
 def _node_hash(left: bytes, right: bytes) -> bytes:
-    return tagged_hash(_TAG_NODE, left, right)
+    # Exactly 8 elements -- the full rate -- so a node costs one permutation.
+    return field_hash(
+        DOMAIN_NODE,
+        bytes_to_field_elements(left, "left") + bytes_to_field_elements(right, "right"),
+    )
 
 
 def _empty_roots(depth: int) -> List[bytes]:
     """Precompute the hash of an all-empty subtree at each level."""
-    roots = [tagged_hash(_TAG_LEAF, b"")]
+    # The empty leaf hashes an empty element list. H_dom still permutes in that
+    # case, so this is a real digest rather than the untouched zero state.
+    roots = [field_hash(DOMAIN_LEAF, [])]
     for _ in range(depth):
         roots.append(_node_hash(roots[-1], roots[-1]))
     return roots

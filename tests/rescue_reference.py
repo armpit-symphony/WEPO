@@ -124,6 +124,51 @@ def hash_elements(elements: Sequence[int]) -> List[int]:
     return state[DIGEST_START:DIGEST_END]
 
 
+def h_dom(domain: int, elements: Sequence[int]) -> List[int]:
+    """Domain-separated sponge: `hash_elements` with capacity[1] = domain.
+
+    The only delta from the stock construction is that one assignment, plus
+    permuting for an entirely empty input (stock would return the untouched
+    state, i.e. an all-zero digest, and the empty-subtree ladder starts there).
+    """
+    state = [0] * STATE_WIDTH
+    state[CAPACITY_START] = len(elements) % P
+    state[CAPACITY_START + 1] = domain % P
+
+    i = 0
+    permuted = False
+    for e in elements:
+        state[RATE_START + i] = (state[RATE_START + i] + e) % P
+        i += 1
+        if i % RATE_WIDTH == 0:
+            state = apply_permutation(state)
+            permuted = True
+            i = 0
+
+    if i > 0 or not permuted:
+        state = apply_permutation(state)
+
+    return state[DIGEST_START:DIGEST_END]
+
+
+def field_hash(domain: int, elements: Sequence[int]) -> bytes:
+    """The in-circuit pool hash, computed independently."""
+    return digest_to_bytes(h_dom(domain, elements))
+
+
+def bytes_to_field_elements(data: bytes) -> List[int]:
+    """32-byte pool value -> 4 canonical limbs, little-endian each."""
+    if len(data) % 8 != 0:
+        raise ValueError(f"expected a multiple of 8 bytes, got {len(data)}")
+    out = []
+    for off in range(0, len(data), 8):
+        limb = int.from_bytes(data[off:off + 8], "little")
+        if limb >= P:
+            raise ValueError(f"non-canonical limb at offset {off}")
+        out.append(limb)
+    return out
+
+
 def encode_bytes_as_field_elements(data: bytes) -> List[int]:
     """Canonical bytes -> Goldilocks elements: [len] then LE 7-byte chunks.
 

@@ -105,13 +105,26 @@ def test_hash_agnostic():
                            rcm=bytes([i + 1]) * 32).commitment())
     baseline_root = tree.root()
 
+    # What the swappable seam governs changed when the tree went field-native.
+    # Commitments, nullifiers and roots are now computed by `field_hash`, which
+    # is pinned to Rescue because the circuit is built against that permutation:
+    # a node running a different one would not merely disagree, it would be
+    # unable to verify any proof at all. The seam still governs `tagged_hash`,
+    # which is used for the bundle statement digest -- the public input,
+    # computed by the verifier outside the circuit.
+    baseline_tagged = S.tagged_hash(S._TAG_BUNDLE, b"probe")
+
     with S.using_hash_algorithm("blake2b-256"):
-        check("commitment changes under a different hash",
-              note.commitment() != baseline_cm)
-        # The empty-subtree ladder is hash-derived; a swap that forgot to rebuild
-        # it would leave a tree that looks fine but computes wrong roots.
-        check("EMPTY_ROOTS rebuilt on swap",
-              S.EMPTY_ROOTS[S.MERKLE_DEPTH] != baseline_empty)
+        check("tagged_hash (bundle digest path) changes under a different hash",
+              S.tagged_hash(S._TAG_BUNDLE, b"probe") != baseline_tagged)
+
+        # These are asserted *stable* on purpose. If a future change routes the
+        # in-circuit hashes back through the swappable seam, these two flip and
+        # the circuit silently stops matching the node.
+        check("commitment is NOT affected by the byte-hash seam",
+              note.commitment() == baseline_cm)
+        check("EMPTY_ROOTS is NOT affected by the byte-hash seam",
+              S.EMPTY_ROOTS[S.MERKLE_DEPTH] == baseline_empty)
 
         alt_tree = S.NoteCommitmentTree()
         alt_commitments = []
@@ -120,9 +133,9 @@ def test_hash_agnostic():
                         rcm=bytes([i + 1]) * 32).commitment()
             alt_commitments.append(cm)
             alt_tree.append(cm)
-        check("tree root differs under a different hash",
-              alt_tree.root() != baseline_root)
-        check("paths still verify under the swapped hash",
+        check("tree root is field-native and so unchanged by the seam",
+              alt_tree.root() == baseline_root)
+        check("paths still verify while the byte hash is swapped",
               all(alt_tree.path(i).compute_root(alt_commitments[i]) == alt_tree.root()
                   for i in range(3)))
 

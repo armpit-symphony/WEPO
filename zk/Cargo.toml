@@ -51,3 +51,7 @@ path = "src/bin/poolhash.rs"
 [[bin]]
 name = "phase3_jive"
 path = "src/bin/phase3_jive.rs"
+
+[[bin]]
+name = "fieldhash"
+path = "src/bin/fieldhash.rs"
