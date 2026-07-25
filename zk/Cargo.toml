@@ -55,3 +55,7 @@ path = "src/bin/phase3_jive.rs"
 [[bin]]
 name = "fieldhash"
 path = "src/bin/fieldhash.rs"
+
+[[bin]]
+name = "step1_merkle"
+path = "src/bin/step1_merkle.rs"
