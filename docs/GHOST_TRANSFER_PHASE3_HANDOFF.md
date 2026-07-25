@@ -102,7 +102,7 @@ as the circuit grows, and block policy depends on it.
 
 ## Step 3 — the verifier boundary
 
-Subprocess CLI, decided and not open (guardrail 5). Reads
+Subprocess CLI, decided and not open (the "verifier panics" guardrail). Reads
 `(statement_digest, proof)`, exits 0/1. Fails **closed** on any error, non-zero
 exit, timeout, crash, missing binary or malformed output. Wall-clock timeout and
 bounded stdin, so a hostile proof cannot hang or balloon a validating node.
@@ -117,17 +117,34 @@ default.
 
 ## Guardrails
 
-Unchanged from `docs/GHOST_TRANSFER_WINDOWS_HANDOFF.md`. The ones that bite here:
+Carried from `docs/GHOST_TRANSFER_WINDOWS_HANDOFF.md`, plus one this phase
+added. Numbering below is local to this document — other docs cite that one by
+its own numbering, so cross-reference guardrails **by name**, not by number.
 
 1. **Never register a verifier that can return `True` without checking a proof.**
    Not temporarily, not to unblock testing.
-2. **Verifier panics must never reach the node process.** Phase 2 made this
+2. **Never register a verifier for a PARTIAL circuit.** Steps 2.1–2.4 are each
+   individually unsound; only the complete five-condition circuit is sound.
+   Guardrail 1 does not catch this, because a partial verifier *does* check a
+   proof — the proof simply proves too little.
+
+   Concretely, at step 2.2 a prover can show that some `cm` is in the tree and
+   that `nf` is a well-formed hash of *some* `nk` and `rho`, with nothing tying
+   either to the note being spent. Commitments are public, so anyone could pick
+   any note in the tree, invent an `nk`, and drain it. Without 2.4 and 2.5 the
+   values are unconstrained on top of that, so it mints as well as steals.
+
+   Wire the subprocess boundary only once step 2.5 lands. Until then the
+   intermediate circuits are benchmarks and correctness fixtures, exercised by
+   their own tests — never through `register_verifier()`, not even "to test the
+   integration".
+3. **Verifier panics must never reach the node process.** Phase 2 made this
    concrete twice over.
-3. **Do not hand-roll the proving system.** Implementing a published permutation
+4. **Do not hand-roll the proving system.** Implementing a published permutation
    or encoding against its spec and vectors is fine; that is not what this bans.
-4. **`WEPO_FEATURE_PRIVACY` stays `0`** regardless of how well the circuit goes.
+5. **`WEPO_FEATURE_PRIVACY` stays `0`** regardless of how well the circuit goes.
    A working verifier is not an audited one.
-5. Keep `backend/.env` and `frontend/.env` unstaged.
+6. Keep `backend/.env` and `frontend/.env` unstaged.
 
 ## Out of scope
 
