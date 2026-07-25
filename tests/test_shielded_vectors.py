@@ -62,6 +62,39 @@ def diff(expected, actual, path=""):
         yield f"{path}: {expected!r} != {actual!r}"
 
 
+# The empty-slot sentinel and the empty-tree anchor, pinned as literals.
+#
+# These survived the leaf-hash removal byte-for-byte while the populated root
+# moved, because the ladder always started from the sentinel and never from a
+# hashed commitment. That makes them a free tripwire: a change that is supposed
+# to affect only occupied leaves must leave both of these alone, and a change
+# that moves them touched the sponge, the domain constants or the ladder.
+#
+# Pinned as literals rather than recomputed, so the check cannot agree with a
+# regenerated golden that is itself wrong. If either moves, that is a consensus
+# change: confirm it was intended, then update these and say so in the commit.
+PINNED_EMPTY_LEAF = "b88b1711c776ab193129f9ac08bf6492b257745225cd8c29a33c5b5b041f5a40"
+PINNED_EMPTY_ANCHOR = "cb736bf4b5c245412b4bc1fa3739df7ea5a8da187633a8491a0b5303df3f5faf"
+
+
+def check_pinned_empty_ladder(golden):
+    print("\nEmpty ladder is pinned (tripwire for unintended consensus change):")
+    check("EMPTY_LEAF matches its pinned literal",
+          S.EMPTY_LEAF.hex() == PINNED_EMPTY_LEAF)
+    check("empty-tree anchor matches its pinned literal",
+          S.EMPTY_ROOTS[S.MERKLE_DEPTH].hex() == PINNED_EMPTY_ANCHOR)
+    check("golden agrees with the pinned sentinel",
+          golden["merkle"]["empty_leaf_sentinel"] == PINNED_EMPTY_LEAF)
+    check("golden agrees with the pinned anchor",
+          golden["merkle"]["empty_tree_root"] == PINNED_EMPTY_ANCHOR)
+    # The ladder starts at the sentinel: level 0 IS the empty leaf, and every
+    # level above is a node hash of the level below.
+    check("ladder starts at the sentinel",
+          golden["merkle"]["empty_roots"][0] == PINNED_EMPTY_LEAF)
+    check("the sentinel is not itself a note commitment",
+          PINNED_EMPTY_LEAF not in {n["commitment"] for n in golden["notes"]})
+
+
 # Sections that do not depend on the pool hash. They must be byte-identical in
 # every golden file, whatever hash it was generated under.
 HASH_INDEPENDENT = (
@@ -201,6 +234,7 @@ def main():
           golden["bundle"]["statement_digest"]
           != golden["shielding_bundle"]["statement_digest"])
 
+    check_pinned_empty_ladder(golden)
     check_hash_independent_sections(golden)
 
     print()

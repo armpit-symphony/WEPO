@@ -17,8 +17,12 @@ import os
 import struct
 import sys
 
-CORE = os.path.join(os.path.dirname(__file__), "..", "wepo-blockchain", "core")
+HERE = os.path.dirname(__file__)
+CORE = os.path.join(HERE, "..", "wepo-blockchain", "core")
 sys.path.insert(0, os.path.abspath(CORE))
+sys.path.insert(0, os.path.abspath(HERE))
+
+import _backend_shim  # noqa: F401,E402  (must precede `import shielded`)
 
 FAILURES = []
 
