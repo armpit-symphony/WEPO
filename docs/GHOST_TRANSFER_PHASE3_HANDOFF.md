@@ -97,8 +97,43 @@ Public input is `bundle.statement_digest(sighash)`, which already binds anchor,
 nullifiers, commitments, `value_balance` and the sighash. Bind the circuit to
 exactly that so a proof cannot be lifted onto another transaction.
 
-Report proof size and prove time after each step — the 17–19 tx/MB figure moves
-as the circuit grows, and block policy depends on it.
+Report proof size and prove time after each step — the tx/MB figure moves as the
+circuit grows, and block policy depends on it. Note the figure is currently
+**provisional at 14–16 tx/MB**: the scaling harness uses degree-1 constraints
+while the real AIRs carry degree-7, so it under-reads by ~20% (measured ×1.23 at
+2.1, ×1.18 at 2.2). Re-measure that ratio each step rather than treating ×1.2 as
+settled; it will drift again when 2.4's range gadget changes constraint degree.
+
+### Watch the column budget, not the rows
+
+Columns went 13 (2.1) → 25 (2.2) → 50 (2.3), all at 256 rows. Rows are cheap —
+they grow by powers of two and there is headroom. **Columns are hard-capped at
+254**, so they are now the binding constraint.
+
+The architecture commits to *one aggregate proof per transaction* covering all
+spends and outputs with balance in-circuit. At ~50 columns per spend that ceiling
+arrives fast, so project it at 2.4, before the layout is committed at 2.5:
+
+- what a realistic bundle costs — 2 spends + 2 outputs, with range and balance;
+- the spend count at which a bundle hits 254.
+
+If a common bundle does not fit, the parallel layout has to partially invert for
+multi-spend — trading rows back for columns, the same tradeoff measured at 2.2.
+That is a cheap decision at 2.4 and an expensive one at 2.5.
+
+### Test witnesses must not be structurally degenerate
+
+Steps 2.1 and 2.2 were originally witnessed with `paths[0]`. Position 0 makes
+every direction bit zero, so the bit column became the zero polynomial, the
+placement constraint collapsed from degree 2 to 1, and **the right-child branch
+of the Merkle path was never exercised**. Both steps passed anyway.
+
+The general form: convenient test data is often degenerate, and a degenerate
+witness silently collapses the constraint that depends on it. A zero diversifier
+would have hidden the `encode()` element-count bug; `value = 0` would zero the
+value column at 2.4. Choose witnesses that are structurally generic — non-zero,
+mixed bits, nothing aligned — and prefer covering both branches of any binary
+choice in every step.
 
 ## Step 3 — the verifier boundary
 
