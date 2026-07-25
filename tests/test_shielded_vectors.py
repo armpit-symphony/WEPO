@@ -61,6 +61,65 @@ def diff(expected, actual, path=""):
         yield f"{path}: {expected!r} != {actual!r}"
 
 
+# Sections that do not depend on the pool hash. They must be byte-identical in
+# every golden file, whatever hash it was generated under.
+HASH_INDEPENDENT = (
+    "hash_len",
+    "merkle_depth",
+    "max_note_value",
+    "value_encoding",
+    "field_encoding",
+    "element_encoding",
+    "field",
+    "tags",
+)
+
+
+def check_hash_independent_sections(golden):
+    """Cross-check every golden file agrees on the hash-independent parts.
+
+    Once the pool hash swaps, Python computes Rescue by delegating to Rust, so
+    "Python and Rust agree on a Rescue digest" becomes tautological. What stays
+    meaningful is that the swap disturbed nothing structural -- the encoding,
+    the tags and the parameters are the same under both hashes. Diffing the
+    golden files gives that for free.
+
+    Inert while only one golden file exists; it arms itself when the second
+    one lands.
+    """
+    import glob
+
+    print("\nHash-independent sections agree across golden files:")
+    for name in HASH_INDEPENDENT:
+        check(f"golden declares '{name}'", name in golden)
+
+    others = sorted(
+        p for p in glob.glob(os.path.join(HERE, "vectors", "shielded_*.json"))
+        if os.path.basename(p) != os.path.basename(GOLDEN)
+    )
+    if not others:
+        print("  [ .. ] only one golden file; cross-hash check arms when a "
+              "second lands")
+        return
+
+    for path in others:
+        label = os.path.basename(path)
+        with open(path) as fh:
+            other = json.load(fh)
+        check(f"{label} was generated under a different hash",
+              other.get("algorithm") != golden.get("algorithm"))
+        for name in HASH_INDEPENDENT:
+            mismatches = list(diff(golden.get(name), other.get(name), name))
+            check(f"{label}: '{name}' identical across hashes", not mismatches)
+            for line in mismatches[:3]:
+                print(f"         {line}")
+        # The hash-dependent parts must actually differ, or the "swap" did not
+        # take effect and one of the files was generated under the wrong hash.
+        check(f"{label}: merkle root differs under a different hash",
+              other.get("merkle", {}).get("root")
+              != golden.get("merkle", {}).get("root"))
+
+
 def main():
     print(f"Golden vectors ({os.path.basename(GOLDEN)}):")
 
@@ -140,6 +199,8 @@ def main():
     check("bundle statement digest binds a different sighash to a different value",
           golden["bundle"]["statement_digest"]
           != golden["shielding_bundle"]["statement_digest"])
+
+    check_hash_independent_sections(golden)
 
     print()
     if FAILURES:
