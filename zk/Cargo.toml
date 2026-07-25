@@ -1,0 +1,35 @@
+[package]
+name = "wepo-zk"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+winterfell = "0.13.1"
+sha3 = "0.10"
+
+[profile.release]
+opt-level = 3
+
+[[bin]]
+name = "phase1_spike"
+path = "src/main.rs"
+
+[[bin]]
+name = "phase2_native"
+path = "src/bin/phase2_native.rs"
+
+[[bin]]
+name = "phase2_merkle"
+path = "src/bin/phase2_merkle.rs"
+
+[[bin]]
+name = "hashcli"
+path = "src/bin/hashcli.rs"
+
+[[bin]]
+name = "rescue_len_probe"
+path = "src/bin/rescue_len_probe.rs"
+
+[[bin]]
+name = "phase2_scaling"
+path = "src/bin/phase2_scaling.rs"
