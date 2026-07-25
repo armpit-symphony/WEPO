@@ -105,6 +105,36 @@ here:
 5. Keep `backend/.env` and `frontend/.env` unstaged.
 6. Commit trailer: `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`
 
+## Prep landed on the Linux box (commit `d774a05`) — pull before starting
+
+Two things exist now that did not when Phase 1 finished:
+
+1. **The pool hash is swappable.** Every digest routes through one registered
+   `HashAlgorithm` in `shielded.py`. SHA3-256 is still the default and no digest
+   changed. When Phase 2 picks a winner the swap is one registration plus one
+   constant, not a scattered edit — and `_activate_hash_algorithm` rebuilds
+   `EMPTY_ROOTS`, which is hash-derived and would otherwise go stale and produce
+   wrong roots while still looking healthy.
+
+   `using_hash_algorithm(name)` is a context manager for **benchmarking and
+   vector generation only**. `POOL_HASH_ALGORITHM` is a consensus constant and
+   deliberately not environment-configurable.
+
+2. **Cross-runtime vectors exist.** `tests/vectors/shielded_sha3-256.json` pins
+   every distinct hash usage; `tests/vectors/README.md` states the exact encoding
+   a Rust port must match. Verified to have teeth: a one-character tag change
+   trips 44 mismatches, dropping the length prefix trips 287.
+
+   **Use these from day one of circuit work.** Have the Rust side read that JSON
+   and reproduce every digest *before* writing any AIR. A Rust/Python hash
+   disagreement is a silent chain split, and finding it after the circuit is
+   built means rewriting the circuit.
+
+   To generate vectors for a candidate hash:
+   `python3 tests/shielded_vectors.py <algorithm> > tests/vectors/shielded_<algorithm>.json`
+   (add the algorithm to the registry first — `blake2b-256` is wired up as a
+   worked example of a non-default hash).
+
 ## Report back
 
 - The benchmark table, SHA3-256 vs Rescue-Prime, held apples-to-apples.
