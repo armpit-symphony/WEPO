@@ -51,17 +51,15 @@ const MERKLE_DEPTH: usize = 32;
 
 const DOMAIN_LEAF: u64 = 1;
 const DOMAIN_NODE: u64 = 2;
-const LEAF_ELEMENTS: u64 = 4; // limbs(cm)
 const NODE_ELEMENTS: u64 = 8; // limbs(l) ‖ limbs(r)
 
 const BIT_COL: usize = STATE_WIDTH; // column 12
 const TRACE_WIDTH: usize = STATE_WIDTH + 1;
-/// 1 leaf hash + 32 node hashes
-const REAL_CYCLES: usize = MERKLE_DEPTH + 1;
-/// row where the 33rd permutation completes and the anchor is readable
-const ANCHOR_ROW: usize = REAL_CYCLES * CYCLE_LEN - 1; // 263
-const TRACE_LEN: usize = 512;
-const TOTAL_CYCLES: usize = TRACE_LEN / CYCLE_LEN;
+/// 32 node hashes and nothing else -- the commitment IS the leaf, so there is
+/// no 33rd permutation and the trace lands on a power of two with no padding.
+const TRACE_LEN: usize = MERKLE_DEPTH * CYCLE_LEN; // 256
+/// row where the last permutation completes and the anchor is readable
+const ANCHOR_ROW: usize = TRACE_LEN - 1; // 255
 
 // ---------------------------------------------------------------------------
 
@@ -134,7 +132,7 @@ impl Air for MembershipAir {
             degrees.push(TransitionConstraintDegree::with_cycles(1, vec![CYCLE_LEN])); // capacity
         }
         MembershipAir {
-            context: AirContext::new(trace_info, degrees, 12, options),
+            context: AirContext::new(trace_info, degrees, 8, options),
             anchor: pub_inputs.anchor,
         }
     }
@@ -219,15 +217,13 @@ impl Air for MembershipAir {
 
     fn get_assertions(&self) -> Vec<Assertion<Self::BaseField>> {
         let mut a = Vec::with_capacity(12);
-        // the first permutation is a LEAF hash over exactly 4 elements
-        a.push(Assertion::single(0, 0, BaseElement::new(LEAF_ELEMENTS)));
-        a.push(Assertion::single(1, 0, BaseElement::new(DOMAIN_LEAF)));
+        // Every permutation, including the first, is a NODE hash over 8
+        // elements. Pinning the capacity is what stops a prover relabelling a
+        // level as some other domain.
+        a.push(Assertion::single(0, 0, BaseElement::new(NODE_ELEMENTS)));
+        a.push(Assertion::single(1, 0, BaseElement::new(DOMAIN_NODE)));
         a.push(Assertion::single(2, 0, BaseElement::ZERO));
         a.push(Assertion::single(3, 0, BaseElement::ZERO));
-        // ...so the upper half of the rate is unabsorbed and must be zero
-        for i in 0..DIGEST_LEN {
-            a.push(Assertion::single(RATE_START + DIGEST_LEN + i, 0, BaseElement::ZERO));
-        }
         // the anchor, where the 33rd permutation completes
         for i in 0..DIGEST_LEN {
             a.push(Assertion::single(RATE_START + i, ANCHOR_ROW, self.anchor[i]));
@@ -292,15 +288,6 @@ fn h_dom(domain: u64, elements: &[BaseElement]) -> [BaseElement; DIGEST_LEN] {
     state[RATE_START..RATE_START + DIGEST_LEN].try_into().unwrap()
 }
 
-fn start_leaf(cm: &[BaseElement; DIGEST_LEN], state: &mut [BaseElement]) {
-    for s in state.iter_mut().take(STATE_WIDTH) {
-        *s = BaseElement::ZERO;
-    }
-    state[0] = BaseElement::new(LEAF_ELEMENTS);
-    state[1] = BaseElement::new(DOMAIN_LEAF);
-    state[RATE_START..RATE_START + DIGEST_LEN].copy_from_slice(cm);
-}
-
 fn start_node(
     digest: &[BaseElement; DIGEST_LEN],
     sibling: &[BaseElement; DIGEST_LEN],
@@ -323,8 +310,9 @@ fn build_trace(w: &Witness) -> TraceTable<BaseElement> {
     let mut trace = TraceTable::new(TRACE_WIDTH, TRACE_LEN);
     trace.fill(
         |state| {
-            start_leaf(&w.commitment, state);
-            state[BIT_COL] = BaseElement::ZERO;
+            // the commitment is the leaf: level 0 hashes it with its sibling
+            start_node(&w.commitment, &w.siblings[0], w.bits[0], state);
+            state[BIT_COL] = if w.bits[0] { BaseElement::ONE } else { BaseElement::ZERO };
         },
         |step, state| {
             let pos = step % CYCLE_LEN;
@@ -334,7 +322,7 @@ fn build_trace(w: &Witness) -> TraceTable<BaseElement> {
                 Rp64_256::apply_round(&mut s, pos);
                 state[..STATE_WIDTH].copy_from_slice(&s);
             } else {
-                let cycle = step / CYCLE_LEN; // cycle just completed
+                let cycle = step / CYCLE_LEN + 1; // level being set up
                 let digest: [BaseElement; DIGEST_LEN] = state
                     [RATE_START..RATE_START + DIGEST_LEN]
                     .try_into()
@@ -451,12 +439,6 @@ fn main() {
     let mut siblings: Vec<[BaseElement; DIGEST_LEN]> =
         sib_hex.iter().map(|h| limbs(&unhex(h))).collect();
     let mut bits: Vec<bool> = (0..MERKLE_DEPTH).map(|l| (position >> l) & 1 == 1).collect();
-    // inert padding so the constraints stay satisfied past the anchor row
-    while siblings.len() < TOTAL_CYCLES {
-        siblings.push([BaseElement::ZERO; DIGEST_LEN]);
-        bits.push(false);
-    }
-
     let w = Witness { commitment: limbs(&cm_bytes), siblings, bits };
     let trace = build_trace(&w);
 
@@ -473,7 +455,7 @@ fn main() {
     println!("\nAIR anchor matches the node's published anchor: OK");
 
     // independent native recomputation of the same path
-    let mut acc = h_dom(DOMAIN_LEAF, &w.commitment);
+    let mut acc = w.commitment; // the commitment IS the leaf
     for lvl in 0..MERKLE_DEPTH {
         let (l, r) = if w.bits[lvl] { (w.siblings[lvl], acc) } else { (acc, w.siblings[lvl]) };
         let mut e = Vec::with_capacity(8);

@@ -423,10 +423,46 @@ def random_note(value: int, pk_d: bytes) -> Note:
 
 # --- merkle accumulator -------------------------------------------------------
 
-def _leaf_hash(cm: bytes) -> bytes:
-    cm = _require_len("commitment", cm, COMMITMENT_LEN)
-    return field_hash(DOMAIN_LEAF, bytes_to_field_elements(cm, "commitment"))
-
+# THE TREE'S LEAVES ARE THE NOTE COMMITMENTS. There is deliberately no leaf hash.
+#
+# This is the change most likely to be mistaken for a careless optimisation, so
+# the argument is recorded here rather than left implicit. A leaf hash exists to
+# prevent *leaf/node confusion*: an attacker presenting an internal node's digest
+# as though it were a leaf, so that a shorter path is accepted and a note that
+# was never committed appears to be in the tree. Four independent properties
+# block that here, and any one of them alone would be sufficient:
+#
+# 1. FIXED DEPTH. The attack needs a path shorter than the real one. MERKLE_DEPTH
+#    is exactly 32, MerklePath rejects any path that is not exactly 32 siblings,
+#    and the circuit's trace has exactly 32 node-hash cycles. A short path is not
+#    representable, let alone acceptable -- there is no "up to 32" anywhere.
+#
+# 2. DOMAIN SEPARATION ALREADY EXISTS. A commitment is H_dom(DOMAIN_NOTE, ..) and
+#    an internal node is H_dom(DOMAIN_NODE, ..). The domain sits in capacity[1]
+#    and the element count in capacity[0], both absorbed before the permutation.
+#    Passing a node digest off as a commitment means finding a value that is
+#    simultaneously a valid output of two different domains -- a cross-domain
+#    collision, no easier than a collision in Rescue itself. Re-hashing the leaf
+#    under DOMAIN_LEAF added a third label to a value that was already labelled.
+#
+# 3. THE CIRCUIT OPENS THE COMMITMENT. From step 2.2 on, the spend circuit does
+#    not treat the leaf as opaque bytes the prover chose: it proves
+#    cm == H_dom(DOMAIN_NOTE, [value] || limbs(pk_d) || limbs(rho) || limbs(rcm))
+#    for a note the prover can spend. An internal node's digest has no such
+#    opening; producing one is a preimage break. So the leaf is constrained to be
+#    a well-formed commitment by the proof itself, not merely by its shape.
+#
+# 4. PRIOR ART. Zcash Sapling does exactly this -- its note commitment tree takes
+#    note commitments directly as leaves, at fixed depth 32, with no separate
+#    leaf hash. This is the standard construction for a shielded pool, not a
+#    shortcut taken to save a permutation.
+#
+# The saving is real but secondary: depth-32 membership needs 32 node hashes, and
+# a leaf hash made it 33 -- 264 trace rows, which Winterfell rounds up to a
+# power of two, so 512 with half the trace inert. Measured 49,017 B with the leaf
+# hash against 35,049 B without. One redundant hash cost 40% of the proof.
+#
+# DOMAIN_LEAF survives as EMPTY_LEAF, the empty-slot sentinel -- see below.
 
 def _node_hash(left: bytes, right: bytes) -> bytes:
     # Exactly 8 elements -- the full rate -- so a node costs one permutation.
@@ -436,11 +472,36 @@ def _node_hash(left: bytes, right: bytes) -> bytes:
     )
 
 
+# The value occupying every slot past the last appended note.
+#
+#   EMPTY_LEAF = H_dom(DOMAIN_LEAF, [])
+#              = b88b1711c776ab193129f9ac08bf6492b257745225cd8c29a33c5b5b041f5a40
+#
+# It must be impossible for this to be a real commitment, or a spender could
+# claim an unoccupied slot as their note and produce a membership proof for a
+# note that was never appended. It cannot be, for two reasons that compound:
+#
+#   - DOMAIN.  capacity[1] is DOMAIN_LEAF (1) here and DOMAIN_NOTE (3) for any
+#              commitment.
+#   - LENGTH.  capacity[0] is the absorbed element count: 0 here, 13 for a
+#              commitment ([value] + 4 + 4 + 4 limbs).
+#
+# Both are absorbed into the state before the permutation runs, so producing a
+# note whose commitment equals EMPTY_LEAF requires a preimage of this specific
+# 256-bit value under a different domain and a different length -- a preimage
+# break, not a coincidence. Note also that the empty ladder is unchanged by
+# dropping the leaf hash: it always started from this sentinel, never from a
+# hashed commitment, so the empty-tree anchor is byte-identical across the
+# change while the populated root moves.
+EMPTY_LEAF = field_hash(DOMAIN_LEAF, [])
+
+
 def _empty_roots(depth: int) -> List[bytes]:
     """Precompute the hash of an all-empty subtree at each level."""
-    # The empty leaf hashes an empty element list. H_dom still permutes in that
-    # case, so this is a real digest rather than the untouched zero state.
-    roots = [field_hash(DOMAIN_LEAF, [])]
+    # The empty slot is H_dom(DOMAIN_LEAF, []) -- an empty element list. H_dom
+    # still permutes in that case, so this is a real digest rather than the
+    # untouched zero state. It is domain-separated from any real commitment.
+    roots = [EMPTY_LEAF]
     for _ in range(depth):
         roots.append(_node_hash(roots[-1], roots[-1]))
     return roots
@@ -465,7 +526,9 @@ class MerklePath:
             raise ShieldedError(f"position out of range: {self.position}")
 
     def compute_root(self, commitment: bytes) -> bytes:
-        node = _leaf_hash(commitment)
+        # the commitment IS the leaf; it is already a domain-separated digest
+        node = _require_len("commitment", commitment, COMMITMENT_LEN)
+        bytes_to_field_elements(node, "commitment")
         index = self.position
         for sibling in self.siblings:
             _require_len("sibling", sibling, HASH_LEN)
@@ -510,7 +573,7 @@ class NoteCommitmentTree:
         # Recomputes the layers over the occupied prefix. The tree is small during
         # tests and early chain life; a production node keeps incremental frontier
         # state instead of rebuilding (see design doc, "frontier" section).
-        layer = [_leaf_hash(cm) for cm in self._leaves]
+        layer = list(self._leaves)  # leaves are the commitments themselves
         self._layers = [layer]
         for level in range(self.depth):
             empty = EMPTY_ROOTS[level]

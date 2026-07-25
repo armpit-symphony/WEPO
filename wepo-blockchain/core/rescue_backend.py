@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import threading
 from pathlib import Path
 from typing import Optional
@@ -66,6 +67,65 @@ _FIELD_KAT_DIGEST = bytes.fromhex(
 # runs against whatever this resolves to, so pointing it at the wrong binary
 # fails loudly at startup rather than producing wrong roots at runtime.
 _ENV_VAR = "WEPO_POOLHASH_BIN"
+
+# Opt-in pure-Python fallback, for machines with no Rust toolchain.
+#
+# This is deliberately NOT the same thing as the forbidden SHA3 fallback, and the
+# distinction is the whole reason it is allowed to exist:
+#
+#   falling back to SHA3            -> DIFFERENT digests -> silent chain split
+#   falling back to pure Rescue     -> IDENTICAL digests -> merely ~1000x slower
+#
+# The first is a consensus failure and stays forbidden. The second is a *load*
+# failure: the node computes exactly the same values, just far too slowly to
+# serve. So it is off by default, must be asked for explicitly, and says so
+# loudly — but it does not endanger consensus, and without it this repository
+# cannot run its own shielded tests on a machine without cargo.
+#
+# Never enable this on a validating node. ~853 us per permutation means roughly
+# 28 minutes to rebuild a 1M-note tree.
+_PURE_ENV = "WEPO_POOLHASH_PURE_PYTHON"
+
+_pure_impl = None
+_pure_warned = False
+
+
+def pure_python_enabled() -> bool:
+    return os.environ.get(_PURE_ENV) == "1"
+
+
+def _pure() -> object:
+    """Load the pure-Python Rescue reference, warning loudly the first time.
+
+    It lives under tests/ on purpose — it is the independent oracle, and keeping
+    it out of the node package is what stops it quietly becoming the node's
+    implementation. Importing it here is the one sanctioned exception, and only
+    when explicitly opted in.
+    """
+    global _pure_impl, _pure_warned
+    if _pure_impl is None:
+        import importlib.util
+
+        path = Path(__file__).resolve().parents[2] / "tests" / "rescue_reference.py"
+        if not path.exists():
+            raise RescueBackendError(
+                f"{_PURE_ENV}=1 but the pure-Python reference is missing at {path}"
+            )
+        spec = importlib.util.spec_from_file_location("_wepo_rescue_pure", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.self_check()  # refuse to use it unless it matches the Sage vector
+        _pure_impl = module
+
+    if not _pure_warned:
+        _pure_warned = True
+        print(
+            f"\n*** {_PURE_ENV}=1: hashing with pure-Python Rescue. ***\n"
+            "*** Digests are IDENTICAL to the Rust backend, but ~1000x slower. ***\n"
+            "*** For development and CI only. Never run a validating node this way. ***\n",
+            file=sys.stderr,
+        )
+    return _pure_impl
 
 
 class RescueBackendError(RuntimeError):
@@ -210,6 +270,8 @@ def rescue_pool_hash(data: bytes) -> bytes:
     Byte-oriented. Used only for the bundle statement digest, which is never
     computed inside the circuit.
     """
+    if pure_python_enabled():
+        return _pure().pool_hash(data)
     return _DEFAULT.digest(data)
 
 
@@ -224,6 +286,16 @@ def field_hash(domain: int, elements: bytes) -> bytes:
         raise RescueBackendError(
             f"field hash input must be a multiple of 8 bytes, got {len(elements)}"
         )
+    if pure_python_enabled():
+        pure = _pure()
+        els = [
+            int.from_bytes(elements[i:i + 8], "little")
+            for i in range(0, len(elements), 8)
+        ]
+        for e in els:
+            if e >= pure.P:
+                raise RescueBackendError("non-canonical limb")
+        return pure.field_hash(domain, els)
     return _FIELD.request(f"{domain}:{elements.hex()}")
 
 

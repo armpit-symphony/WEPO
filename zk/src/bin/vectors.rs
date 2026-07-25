@@ -48,11 +48,29 @@ impl Pool {
         self == Pool::Rescue
     }
 
+    /// The tree's leaf value for a commitment.
+    ///
+    /// Field-native: there is NO leaf hash -- a commitment IS a leaf. Safe
+    /// because depth is fixed at 32, a commitment is already domain-separated
+    /// from a node (H_dom(3,..) vs H_dom(2,..)), the circuit opens the
+    /// commitment rather than treating it as opaque, and Sapling does the same.
+    /// See tests/vectors/README.md.
+    ///
+    /// The frozen SHA3 golden predates that and still hashes its leaves.
     fn leaf(self, cm: &[u8], t_leaf: &[u8]) -> Vec<u8> {
         if self.field_native() {
-            h_dom(DOMAIN_LEAF, &limbs(cm))
+            cm.to_vec()
         } else {
             tagged_hash(self, t_leaf, &[cm])
+        }
+    }
+
+    /// The empty-slot sentinel. DOMAIN_LEAF survives only for this.
+    fn empty_sentinel(self, t_leaf: &[u8]) -> Vec<u8> {
+        if self.field_native() {
+            h_dom(DOMAIN_LEAF, &[])
+        } else {
+            tagged_hash(self, t_leaf, &[b""])
         }
     }
 
@@ -66,13 +84,6 @@ impl Pool {
         }
     }
 
-    fn empty_leaf(self, t_leaf: &[u8]) -> Vec<u8> {
-        if self.field_native() {
-            h_dom(DOMAIN_LEAF, &[])
-        } else {
-            tagged_hash(self, t_leaf, &[b""])
-        }
-    }
 
     fn note(self, value: u64, pkd: &[u8], rho: &[u8], rcm: &[u8], t_note: &[u8]) -> Vec<u8> {
         if self.field_native() {
@@ -398,7 +409,7 @@ fn run(path: &PathBuf) -> bool {
     let leaf = |cm: &[u8]| pool.leaf(cm, &t_leaf);
     let node = |l: &[u8], rr: &[u8]| pool.node(l, rr, &t_node);
 
-    let mut empty_roots: Vec<Vec<u8>> = vec![pool.empty_leaf(&t_leaf)];
+    let mut empty_roots: Vec<Vec<u8>> = vec![pool.empty_sentinel(&t_leaf)];
     for i in 0..depth {
         let prev = empty_roots[i].clone();
         empty_roots.push(node(&prev, &prev));
@@ -430,11 +441,28 @@ fn run(path: &PathBuf) -> bool {
         .collect();
     assert_eq!(commitments.len() as u64, m["size"].as_u64().unwrap());
 
-    r.check(
-        "merkle.leaf_hash_of_first_commitment",
-        &hex(&leaf(&commitments[0])),
-        s(&m["leaf_hash_of_first_commitment"]),
-    );
+    // Field-native files publish the empty-slot sentinel instead of a leaf hash,
+    // because there is no leaf hash. The frozen SHA3 file still has the old key.
+    if let Some(v) = m.get("empty_leaf_sentinel") {
+        r.check(
+            "merkle.empty_leaf_sentinel",
+            &hex(&pool.empty_sentinel(&t_leaf)),
+            s(v),
+        );
+        // the sentinel must never coincide with a real commitment
+        r.check(
+            "merkle.sentinel is not any published commitment",
+            &commitments.iter().any(|c| c == &pool.empty_sentinel(&t_leaf)).to_string(),
+            "false",
+        );
+    }
+    if let Some(v) = m.get("leaf_hash_of_first_commitment") {
+        r.check(
+            "merkle.leaf_hash_of_first_commitment",
+            &hex(&leaf(&commitments[0])),
+            s(v),
+        );
+    }
     r.check(
         "merkle.node_hash_of_first_two_leaves",
         &hex(&node(&leaf(&commitments[0]), &leaf(&commitments[1]))),

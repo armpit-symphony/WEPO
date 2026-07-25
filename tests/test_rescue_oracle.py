@@ -30,6 +30,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "wepo-blockchain", "core"))
 
 import rescue_reference as R  # noqa: E402
+import _backend_shim  # noqa: F401,E402  (must precede `import shielded`)
 import shielded as S  # noqa: E402
 
 FAILURES = []
@@ -56,6 +57,20 @@ def main():
         return 1
 
     check("consensus hash is Rescue", S.POOL_HASH_ALGORITHM == "rescue-rp64-256")
+
+    # If the node is running on the pure-Python fallback, then the "node" and the
+    # "oracle" are the same code and every comparison below is this module
+    # against itself. Say so rather than reporting a vacuous pass -- an oracle
+    # that silently stops being independent is worse than no oracle.
+    if _backend_shim.using_pure_python():
+        print()
+        print("  *** INDEPENDENCE VOID ***")
+        print("  The node is using the pure-Python reference as its hashing")
+        print("  backend, so the comparisons below are this module against")
+        print("  itself. Only the Sage reference vector check above is")
+        print("  meaningful in this configuration.")
+        print("  Restore the independent check with:")
+        print("    cargo build --release --bin poolhash --bin fieldhash")
 
     # -- the byte-oriented hash, still used for the bundle statement digest ---
     print("\nByte-oriented pool hash (bundle statement digest path):")
@@ -138,13 +153,23 @@ def main():
 
     # -- tree operations ------------------------------------------------------
     print("\nTree operations recomputed independently:")
-    leaf = R.field_hash(S.DOMAIN_LEAF, R.bytes_to_field_elements(cm))
-    check("leaf hash agrees", leaf == S._leaf_hash(cm))
+    # There is no leaf hash: a commitment IS a leaf. See tests/vectors/README.md
+    # for why that is safe (fixed depth, existing domain separation, the circuit
+    # opening the commitment, and Sapling precedent).
+    check("empty-slot sentinel agrees",
+          R.field_hash(S.DOMAIN_LEAF, []) == S.EMPTY_LEAF)
     node = R.field_hash(
         S.DOMAIN_NODE,
-        R.bytes_to_field_elements(leaf) + R.bytes_to_field_elements(empty[0]),
+        R.bytes_to_field_elements(cm) + R.bytes_to_field_elements(empty[0]),
     )
-    check("node hash agrees", node == S._node_hash(leaf, empty[0]))
+    check("node hash over a commitment leaf agrees",
+          node == S._node_hash(cm, empty[0]))
+
+    # the sentinel must not be mistakable for a commitment: different domain
+    # (1 vs 3) AND different absorbed element count (0 vs 13)
+    check("empty sentinel is not a commitment", S.EMPTY_LEAF != cm)
+    check("sentinel domain differs from note domain",
+          S.DOMAIN_LEAF != S.DOMAIN_NOTE)
 
     # -- negative controls ----------------------------------------------------
     print("\nNegative controls:")

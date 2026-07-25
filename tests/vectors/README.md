@@ -146,33 +146,86 @@ diversifier is 11 bytes — not a whole number of limbs — and is a pure witnes
 input that never feeds another hash, so it uses the 7-byte `encode()` above and
 costs the circuit nothing.
 
-**Merkle tree** — depth 32, append-only.
+**Merkle tree** — depth 32, append-only. **There is no leaf hash: the tree's
+leaves are the note commitments themselves.**
 
 ```
-leaf(cm)          = H_dom(1, limbs(cm))                    // 4 elements
 node(left, right) = H_dom(2, limbs(left) ‖ limbs(right))   // 8 elements = exactly the rate
-empty[0]          = H_dom(1, [])                           // empty element list
+empty[0]          = H_dom(1, [])                           // the empty-slot sentinel
 empty[i+1]        = node(empty[i], empty[i])
 ```
 
-Leaf and node have distinct domains, so an internal node cannot be presented as
-a leaf. Fixed depth 32 gives the same property independently; both are kept.
+Path verification therefore starts *at the commitment*, not at a hash of it:
+
+```
+cur = cm                                  // NOT leaf(cm)
+for level, sibling in path:
+    cur = if (index >> level) & 1 == 1 { node(sibling, cur) }
+          else                         { node(cur, sibling) }
+```
+
+### Why dropping the leaf hash is safe
+
+A leaf hash exists to prevent **leaf/node confusion** — presenting an internal
+node's digest as a leaf so a shorter path is accepted, making a note that was
+never committed appear to be in the tree. Four independent properties block
+that, and any one alone would suffice:
+
+1. **Fixed depth.** The attack needs a short path. `MERKLE_DEPTH` is exactly 32,
+   `MerklePath` rejects anything that is not exactly 32 siblings, and the circuit
+   trace has exactly 32 node-hash cycles. A short path is not representable.
+2. **Domain separation already exists.** A commitment is `H_dom(3, …)`; an
+   internal node is `H_dom(2, …)`. The domain is in `capacity[1]` and the element
+   count in `capacity[0]`, both absorbed before the permutation. Passing a node
+   digest off as a commitment needs a value valid under two different domains —
+   a cross-domain collision, no easier than a collision in Rescue.
+3. **The circuit opens the commitment.** From step 2.2 on, the spend circuit
+   proves `cm == H_dom(3, [value] ‖ limbs(pk_d) ‖ limbs(rho) ‖ limbs(rcm))` for a
+   note the prover can spend. An internal node's digest has no such opening;
+   producing one is a preimage break. The leaf is constrained by the proof, not
+   merely by its shape.
+4. **Prior art.** Zcash Sapling does exactly this — note commitments are the
+   leaves, fixed depth 32, no separate leaf hash. This is the standard shielded
+   pool construction.
+
+The saving was secondary but real: a leaf hash made membership 33 permutations
+instead of 32, which is 264 trace rows, which Winterfell rounds to 512 with half
+the trace inert — 49,017 B against 35,049 B.
+
+### The empty-slot sentinel
+
+```
+EMPTY_LEAF = H_dom(1, [])
+           = b88b1711c776ab193129f9ac08bf6492b257745225cd8c29a33c5b5b041f5a40
+```
+
+Every position past the last appended note holds this value, and `empty[level]`
+is used for any sibling beyond the occupied prefix. `DOMAIN_LEAF` (1) survives
+**only** for this.
+
+It must be impossible for the sentinel to be a real commitment — otherwise a
+spender could claim an unoccupied slot and prove membership of a note that was
+never appended. It cannot be, for two compounding reasons:
+
+| | sentinel | any commitment |
+|---|---|---|
+| `capacity[1]` (domain) | 1 | 3 |
+| `capacity[0]` (element count) | 0 | 13 |
+
+Both are absorbed before the permutation, so a note whose commitment equalled
+`EMPTY_LEAF` would be a preimage of a specific 256-bit value under a different
+domain *and* a different length — a preimage break, not a coincidence.
+
+Note that the empty ladder is **unchanged** by dropping the leaf hash: it always
+started from this sentinel rather than from a hashed commitment. So
+`empty_tree_root` is byte-identical across the change while the populated `root`
+moves — a useful cross-check when regenerating.
 
 > The `tags` object and `TAG_*` byte strings still appear in the JSON and are
 > still live — but **only** for the bundle statement digest. The `shielded_sha3-256.json`
 > golden is a frozen historical artifact from before this change, when every
 > derivation went through `tagged_hash`; it is kept as the file the live golden
 > is diffed against for the hash-independent sections.
-
-Any position past the last occupied leaf uses `empty[level]` at that level. Path
-verification walks the position's bits from the bottom:
-
-```
-cur = leaf(cm)
-for level, sibling in path:
-    cur = if (index >> level) & 1 == 1 { node(sibling, cur) }
-          else                         { node(cur, sibling) }
-```
 
 **Bundle statement digest** — the circuit's public input:
 
@@ -204,7 +257,7 @@ every proof gets rejected.
 | `tagged_hash` | raw cases incl. empty tag, empty part, 256-byte part, and the split-collision pair |
 | `key_derivation` | `nk` and `pk_d` |
 | `notes` | commitments and nullifiers, incl. `value = 0` and a large value |
-| `merkle` | leaf/node hashes, all 33 empty roots, empty-tree root, populated root, every authentication path |
+| `merkle` | the empty-slot sentinel, node hashes, all 33 empty roots, empty-tree root, populated root, every authentication path |
 | `bundle` | statement digest for a 2-spend / 2-output bundle |
 | `shielding_bundle` | outputs-only bundle: no anchor, positive `value_balance` |
 

@@ -16,6 +16,7 @@ import sys
 CORE = os.path.join(os.path.dirname(__file__), "..", "wepo-blockchain", "core")
 sys.path.insert(0, os.path.abspath(CORE))
 
+import _backend_shim  # noqa: F401,E402  (must precede `import shielded`)
 import shielded as S  # noqa: E402
 
 FAILURES = []
@@ -53,7 +54,8 @@ def test_hashing():
           S.tagged_hash(b"T", b"01", b"2") != S.tagged_hash(b"T", b"0", b"12"))
     cm = secrets.token_bytes(32)
     check("leaf and node hashes are separated",
-          S._leaf_hash(cm) != S._node_hash(cm, cm))
+          S.field_hash(S.DOMAIN_LEAF, S.bytes_to_field_elements(cm))
+          != S._node_hash(cm, cm))
 
 
 def test_hash_agnostic():

@@ -24,6 +24,7 @@ CORE = os.path.join(HERE, "..", "wepo-blockchain", "core")
 sys.path.insert(0, os.path.abspath(CORE))
 sys.path.insert(0, os.path.abspath(HERE))
 
+import _backend_shim  # noqa: F401,E402  (must precede `import shielded`)
 import shielded as S          # noqa: E402
 import shielded_vectors as V  # noqa: E402
 

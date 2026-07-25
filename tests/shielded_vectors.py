@@ -26,6 +26,7 @@ import sys
 CORE = os.path.join(os.path.dirname(__file__), "..", "wepo-blockchain", "core")
 sys.path.insert(0, os.path.abspath(CORE))
 
+import _backend_shim  # noqa: F401,E402  (must precede `import shielded`)
 import shielded as S  # noqa: E402
 
 # Fixed inputs -- no randomness anywhere, or the vectors are not vectors.
@@ -133,9 +134,12 @@ def build_vectors(algorithm: str = S.POOL_HASH_ALGORITHM) -> dict:
         merkle = {
             "empty_root_leaf_level": S.EMPTY_ROOTS[0].hex(),
             "empty_roots": [r.hex() for r in S.EMPTY_ROOTS],
-            "leaf_hash_of_first_commitment": S._leaf_hash(commitments[0]).hex(),
+            # There is no leaf hash: the tree's leaves ARE the commitments,
+            # which are already domain-separated digests. The empty-slot
+            # sentinel keeps DOMAIN_LEAF alive.
+            "empty_leaf_sentinel": S.EMPTY_LEAF.hex(),
             "node_hash_of_first_two_leaves": S._node_hash(
-                S._leaf_hash(commitments[0]), S._leaf_hash(commitments[1])
+                commitments[0], commitments[1]
             ).hex(),
             "empty_tree_root": S.NoteCommitmentTree().root().hex(),
             "size": tree.size,

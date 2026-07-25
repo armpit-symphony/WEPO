@@ -1,7 +1,7 @@
 {
   "algorithm": "rescue-rp64-256",
   "bundle": {
-    "anchor": "ec26aa1808daaf4f203590b22892e8a9b559f463ff207a241be9f8040307fd0c",
+    "anchor": "a45e7ecc761a8be2c56658abb4907c9bcd00bfb3bd794bb201c57fa37fb80a0d",
     "commitments": [
       "e8ec86360e97174560e8b73db1d2a3adc0eb3b8590f9932a7f07bf4055081a18",
       "3069097aeb338d183a08ac3c6672137cc372321fd63a2d05d4cd2a29c0a48e6e"
@@ -11,7 +11,7 @@
       "15b1516313b181975058065f05d8a6892323464647e1da38a4a4e6f46fef955f"
     ],
     "sighash": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
-    "statement_digest": "dc6bd3bb0dc78df0907d7e9709d8e62a8ac3b7cfb310155d23454c33ec24ea79",
+    "statement_digest": "eef182de038c6c940015ceec330e8ff850921f6b9acf26bbedb5d80cd5a889fa",
     "value_balance": -12345
   },
   "element_encoding": [
@@ -166,6 +166,7 @@
   ],
   "max_note_value": 9223372036854775807,
   "merkle": {
+    "empty_leaf_sentinel": "b88b1711c776ab193129f9ac08bf6492b257745225cd8c29a33c5b5b041f5a40",
     "empty_root_leaf_level": "b88b1711c776ab193129f9ac08bf6492b257745225cd8c29a33c5b5b041f5a40",
     "empty_roots": [
       "b88b1711c776ab193129f9ac08bf6492b257745225cd8c29a33c5b5b041f5a40",
@@ -203,17 +204,16 @@
       "cb736bf4b5c245412b4bc1fa3739df7ea5a8da187633a8491a0b5303df3f5faf"
     ],
     "empty_tree_root": "cb736bf4b5c245412b4bc1fa3739df7ea5a8da187633a8491a0b5303df3f5faf",
-    "leaf_hash_of_first_commitment": "74264738c58ba75d3a96ec9bea72ccefecdc6039651122f656edd1e8b64cd4e8",
-    "node_hash_of_first_two_leaves": "a2b31eff805416e4de6b8d9bc1aac31bec70ffaee049eb050b94f295ba5344e8",
+    "node_hash_of_first_two_leaves": "85caff2018b20a67d7e7437c82140185e74e49e0d2758ca5055cf14e28750b87",
     "paths": [
       {
         "commitment": "9c5067130f437ee8394148c1ff3c65031a4f4a98213d17291ef528d6370f23a2",
         "position": 0,
-        "root": "ec26aa1808daaf4f203590b22892e8a9b559f463ff207a241be9f8040307fd0c",
+        "root": "a45e7ecc761a8be2c56658abb4907c9bcd00bfb3bd794bb201c57fa37fb80a0d",
         "siblings": [
-          "db154272ea7137ea832ba2d8c0719b05cb19aaf16b8e793421f6389a71f35d6a",
-          "5ae65789419e26c84b97d83ea8d1401ffc8d3a5f7f6fdda1ff5da17248c8f35d",
-          "67457a1ad332317dab76fea2aa012f036f36acad0a57be9f8d69842aa4c5e8c6",
+          "0775d65e9b83737426b96581a1b5a41ef73ffda6be4b2702c140ebe0917e91cf",
+          "a2fbb482551d0cff2ed44c8320e598c80d19cba1af74395552c3686de86b8166",
+          "27bfd871ef1c4e3329aa6b98fc345a3d6809642cb8ee9e35421d45b6ad0a3a33",
           "4aa86d188597ba699cd5e266522539eb4a7472cd92d824793e69b0f47c62051e",
           "61335a6aacfc10acd3fd117bb8825242198d44f0f927c1c73ecf16af4137b7c6",
           "b01aba45782fa4c03cd0129445acfe1aa2d0ae17e2327fd7ef8873a90e34cbb4",
@@ -248,11 +248,11 @@
       {
         "commitment": "0775d65e9b83737426b96581a1b5a41ef73ffda6be4b2702c140ebe0917e91cf",
         "position": 1,
-        "root": "ec26aa1808daaf4f203590b22892e8a9b559f463ff207a241be9f8040307fd0c",
+        "root": "a45e7ecc761a8be2c56658abb4907c9bcd00bfb3bd794bb201c57fa37fb80a0d",
         "siblings": [
-          "74264738c58ba75d3a96ec9bea72ccefecdc6039651122f656edd1e8b64cd4e8",
-          "5ae65789419e26c84b97d83ea8d1401ffc8d3a5f7f6fdda1ff5da17248c8f35d",
-          "67457a1ad332317dab76fea2aa012f036f36acad0a57be9f8d69842aa4c5e8c6",
+          "9c5067130f437ee8394148c1ff3c65031a4f4a98213d17291ef528d6370f23a2",
+          "a2fbb482551d0cff2ed44c8320e598c80d19cba1af74395552c3686de86b8166",
+          "27bfd871ef1c4e3329aa6b98fc345a3d6809642cb8ee9e35421d45b6ad0a3a33",
           "4aa86d188597ba699cd5e266522539eb4a7472cd92d824793e69b0f47c62051e",
           "61335a6aacfc10acd3fd117bb8825242198d44f0f927c1c73ecf16af4137b7c6",
           "b01aba45782fa4c03cd0129445acfe1aa2d0ae17e2327fd7ef8873a90e34cbb4",
@@ -287,11 +287,11 @@
       {
         "commitment": "721f293943c2e7a2a035374e9f61d5f9dc24dbe9c9b46889550dd10de716b966",
         "position": 2,
-        "root": "ec26aa1808daaf4f203590b22892e8a9b559f463ff207a241be9f8040307fd0c",
+        "root": "a45e7ecc761a8be2c56658abb4907c9bcd00bfb3bd794bb201c57fa37fb80a0d",
         "siblings": [
-          "8a9c2eabf1cfedf09b039bb39528197d8f281a888a86268d0e07c04bebc4308e",
-          "a2b31eff805416e4de6b8d9bc1aac31bec70ffaee049eb050b94f295ba5344e8",
-          "67457a1ad332317dab76fea2aa012f036f36acad0a57be9f8d69842aa4c5e8c6",
+          "e8ec86360e97174560e8b73db1d2a3adc0eb3b8590f9932a7f07bf4055081a18",
+          "85caff2018b20a67d7e7437c82140185e74e49e0d2758ca5055cf14e28750b87",
+          "27bfd871ef1c4e3329aa6b98fc345a3d6809642cb8ee9e35421d45b6ad0a3a33",
           "4aa86d188597ba699cd5e266522539eb4a7472cd92d824793e69b0f47c62051e",
           "61335a6aacfc10acd3fd117bb8825242198d44f0f927c1c73ecf16af4137b7c6",
           "b01aba45782fa4c03cd0129445acfe1aa2d0ae17e2327fd7ef8873a90e34cbb4",
@@ -326,11 +326,11 @@
       {
         "commitment": "e8ec86360e97174560e8b73db1d2a3adc0eb3b8590f9932a7f07bf4055081a18",
         "position": 3,
-        "root": "ec26aa1808daaf4f203590b22892e8a9b559f463ff207a241be9f8040307fd0c",
+        "root": "a45e7ecc761a8be2c56658abb4907c9bcd00bfb3bd794bb201c57fa37fb80a0d",
         "siblings": [
-          "2e60250d31d7ba8bd75510ccc49bc0bc58655581d8e4b227246c00ee44c5d0d1",
-          "a2b31eff805416e4de6b8d9bc1aac31bec70ffaee049eb050b94f295ba5344e8",
-          "67457a1ad332317dab76fea2aa012f036f36acad0a57be9f8d69842aa4c5e8c6",
+          "721f293943c2e7a2a035374e9f61d5f9dc24dbe9c9b46889550dd10de716b966",
+          "85caff2018b20a67d7e7437c82140185e74e49e0d2758ca5055cf14e28750b87",
+          "27bfd871ef1c4e3329aa6b98fc345a3d6809642cb8ee9e35421d45b6ad0a3a33",
           "4aa86d188597ba699cd5e266522539eb4a7472cd92d824793e69b0f47c62051e",
           "61335a6aacfc10acd3fd117bb8825242198d44f0f927c1c73ecf16af4137b7c6",
           "b01aba45782fa4c03cd0129445acfe1aa2d0ae17e2327fd7ef8873a90e34cbb4",
@@ -365,11 +365,11 @@
       {
         "commitment": "3069097aeb338d183a08ac3c6672137cc372321fd63a2d05d4cd2a29c0a48e6e",
         "position": 4,
-        "root": "ec26aa1808daaf4f203590b22892e8a9b559f463ff207a241be9f8040307fd0c",
+        "root": "a45e7ecc761a8be2c56658abb4907c9bcd00bfb3bd794bb201c57fa37fb80a0d",
         "siblings": [
-          "54b4e9e9cdd58b6566ce304f6df999336cca3c31a91216e31a0ed10fc72b16bb",
+          "e0451c07a31e84479ad419955596f81d6bd0a9972d5636e0f267238ddd608a51",
           "dccca50269fa31f81e9ad179ce52d25cc23737d7d5bc304eb02456a2070e84d5",
-          "c3325d4d5fc3573ef095d320670f619b7ae1d39eeef4b72c92442f7faf7afe07",
+          "58ccd1b79f5b76357f252ef5b20dd8f1fcce23a1b27429f205e4bd2bf8e43334",
           "4aa86d188597ba699cd5e266522539eb4a7472cd92d824793e69b0f47c62051e",
           "61335a6aacfc10acd3fd117bb8825242198d44f0f927c1c73ecf16af4137b7c6",
           "b01aba45782fa4c03cd0129445acfe1aa2d0ae17e2327fd7ef8873a90e34cbb4",
@@ -404,11 +404,11 @@
       {
         "commitment": "e0451c07a31e84479ad419955596f81d6bd0a9972d5636e0f267238ddd608a51",
         "position": 5,
-        "root": "ec26aa1808daaf4f203590b22892e8a9b559f463ff207a241be9f8040307fd0c",
+        "root": "a45e7ecc761a8be2c56658abb4907c9bcd00bfb3bd794bb201c57fa37fb80a0d",
         "siblings": [
-          "040b9e203e1f92197e64b24469e2125a5cc1bbf8b9ba975eefa6ce6d8e0b1a51",
+          "3069097aeb338d183a08ac3c6672137cc372321fd63a2d05d4cd2a29c0a48e6e",
           "dccca50269fa31f81e9ad179ce52d25cc23737d7d5bc304eb02456a2070e84d5",
-          "c3325d4d5fc3573ef095d320670f619b7ae1d39eeef4b72c92442f7faf7afe07",
+          "58ccd1b79f5b76357f252ef5b20dd8f1fcce23a1b27429f205e4bd2bf8e43334",
           "4aa86d188597ba699cd5e266522539eb4a7472cd92d824793e69b0f47c62051e",
           "61335a6aacfc10acd3fd117bb8825242198d44f0f927c1c73ecf16af4137b7c6",
           "b01aba45782fa4c03cd0129445acfe1aa2d0ae17e2327fd7ef8873a90e34cbb4",
@@ -441,7 +441,7 @@
         ]
       }
     ],
-    "root": "ec26aa1808daaf4f203590b22892e8a9b559f463ff207a241be9f8040307fd0c",
+    "root": "a45e7ecc761a8be2c56658abb4907c9bcd00bfb3bd794bb201c57fa37fb80a0d",
     "size": 6
   },
   "merkle_depth": 32,
