@@ -419,7 +419,12 @@ fn main() {
         .expect("parse golden");
     assert_eq!(j["algorithm"].as_str().unwrap(), "rescue-rp64-256");
 
-    let entry = &j["merkle"]["paths"][0];
+    // Index 5 rather than 0 deliberately: position 0 makes every direction bit
+    // zero, which collapses the bit column to the zero polynomial and drops the
+    // sibling-placement constraint from degree 2 to degree 1 -- so the b == 1
+    // (right child) branch is never exercised, and Winterfell's debug-only
+    // degree check fails on a correct AIR. Position 5 is 0b101.
+    let entry = &j["merkle"]["paths"][5];
     let position = entry["position"].as_u64().unwrap() as usize;
     let cm_bytes = unhex(entry["commitment"].as_str().unwrap());
     let golden_root = unhex(entry["root"].as_str().unwrap());

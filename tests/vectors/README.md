@@ -136,7 +136,7 @@ Three things a port has to get right:
 limbs(x)  = [le_u64(x[0..8]), le_u64(x[8..16]), le_u64(x[16..24]), le_u64(x[24..32])]
 
 nk    = H_dom(5, limbs(spending_key))                         // 4 elements, 1 permutation
-pk_d  = H_dom(6, limbs(spending_key) ‖ encode(diversifier))   // 6 elements, 1 permutation
+pk_d  = H_dom(6, limbs(spending_key) ‖ encode(diversifier))   // 7 elements, 1 permutation
 cm    = H_dom(3, [value] ‖ limbs(pk_d) ‖ limbs(rho) ‖ limbs(rcm))  // 13 elements, 2 permutations
 nf    = H_dom(4, limbs(nk) ‖ limbs(rho))                      // 8 elements, 1 permutation
 ```
@@ -144,7 +144,10 @@ nf    = H_dom(4, limbs(nk) ‖ limbs(rho))                      // 8 elements, 1
 `value` is one element: `MAX_NOTE_VALUE` is `2**63-1`, well under `p`. The
 diversifier is 11 bytes — not a whole number of limbs — and is a pure witness
 input that never feeds another hash, so it uses the 7-byte `encode()` above and
-costs the circuit nothing.
+costs the circuit nothing. That makes it **three** elements, not two:
+`encode(11 bytes) = [11, le_u64(d[0..7]), le_u64(d[7..11])]`, so `pk_d` absorbs
+`4 + 3 = 7`. Still one permutation, but a port that budgets 6 will pad the rate
+differently and get a different digest.
 
 **Merkle tree** — depth 32, append-only. **There is no leaf hash: the tree's
 leaves are the note commitments themselves.**

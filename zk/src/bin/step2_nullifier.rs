@@ -498,8 +498,10 @@ fn main() {
 
     // the same note supplies both halves, so the witness is coherent even though
     // the AIR does not yet enforce that it is the same note (step 2.3 does)
-    let entry = &j["merkle"]["paths"][0];
-    let note = &j["notes"][0];
+    // Index 5, not 0: position 0 leaves every direction bit zero, so the right
+    // child branch of the placement constraint is never exercised. 5 is 0b101.
+    let entry = &j["merkle"]["paths"][5];
+    let note = &j["notes"][5];
     let position = entry["position"].as_u64().unwrap() as usize;
     let cm = unhex(entry["commitment"].as_str().unwrap());
     assert_eq!(cm, unhex(note["commitment"].as_str().unwrap()), "note/path mismatch");
