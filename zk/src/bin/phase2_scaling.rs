@@ -185,6 +185,14 @@ fn main() {
         //              spend auth (~32 rows) + 64-bit range (~64 rows) ~= 512
         // per output : commitment (8 rows) + 64-bit range (~64 rows)   ~= 128
         // width      : 13 state + range bits + balance accumulator     ~= 32
+        // --- step 2.2 decision: more rows, or more columns? -----------------
+        // Merkle alone is 32 permutations = 256 rows, exactly full. Adding the
+        // nullifier hash sequentially is 264 rows -> 512. Running it in a second
+        // Rescue instance in parallel columns keeps 256 rows and costs width.
+        (13, 256),             // step 2.1 as built
+        (13, 512),             // sequential: one more permutation tips the trace
+        (26, 256),             // parallel: a second 12-wide state + its bit col
+        (40, 256),             // headroom for nk, pk_d, cm and nf all in parallel
         (32, 1024),            // 1 spend, 2 outputs  -> 768 rows, round to 1024
         (32, 2048),            // 2 spends, 2 outputs -> 1280 rows, round to 2048
         (32, 4096),            // headroom
