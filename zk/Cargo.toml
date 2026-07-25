@@ -47,3 +47,7 @@ path = "src/bin/dump_rescue_constants.rs"
 [[bin]]
 name = "poolhash"
 path = "src/bin/poolhash.rs"
+
+[[bin]]
+name = "phase3_jive"
+path = "src/bin/phase3_jive.rs"

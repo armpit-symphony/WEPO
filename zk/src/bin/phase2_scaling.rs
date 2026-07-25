@@ -188,6 +188,13 @@ fn main() {
         (32, 1024),            // 1 spend, 2 outputs  -> 768 rows, round to 1024
         (32, 2048),            // 2 spends, 2 outputs -> 1280 rows, round to 2048
         (32, 4096),            // headroom
+        // --- byte-faithful Merkle: matching the node's tagged_hash ----------
+        // Every tree level must byte-decompose 8 digest elements (512 bits),
+        // repack across misaligned 7-byte chunk boundaries, then run TWO
+        // permutations (16 elements > 8-wide rate). ~4 rows of bits at 128 bit
+        // columns + 16 permutation rows = ~20 rows/level, x32 levels = 640.
+        (150, 1024),
+        (200, 1024),
     ];
 
     for (w, len) in cases {
