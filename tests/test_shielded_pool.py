@@ -56,6 +56,76 @@ def test_hashing():
           S._leaf_hash(cm) != S._node_hash(cm, cm))
 
 
+def test_hash_agnostic():
+    print("\nSwappable pool hash:")
+    import hashlib
+
+    check("default algorithm is the consensus constant",
+          S.active_hash_algorithm().name == S.POOL_HASH_ALGORITHM == "sha3-256")
+
+    # Pin the wire encoding: tag and parts are length-prefixed, then hashed once.
+    expected = hashlib.sha3_256(
+        S._field(b"tag") + S._field(b"a") + S._field(b"bb")
+    ).digest()
+    check("tagged_hash encoding is pinned to length-prefixed SHA3-256",
+          S.tagged_hash(b"tag", b"a", b"bb") == expected)
+
+    check("wrong digest size rejected at registration",
+          raises(S.register_hash_algorithm,
+                 S.HashAlgorithm("too-short", 16, lambda d: b"\x00" * 16)))
+    check("non-HashAlgorithm rejected", raises(S.register_hash_algorithm, object()))
+    check("algorithm whose fn lies about its width rejected",
+          raises(S.register_hash_algorithm,
+                 S.HashAlgorithm("liar", 32, lambda d: b"\x00" * 8)))
+    check("unknown algorithm rejected", raises(S._activate_hash_algorithm, "nope"))
+
+    # Stand-in for a future ZK-friendly hash: proves the seam works end to end
+    # without waiting on the Rust side.
+    S.register_hash_algorithm(
+        S.HashAlgorithm("blake2b-256", 32,
+                        lambda d: hashlib.blake2b(d, digest_size=32).digest()))
+    check("registered algorithm is listed",
+          "blake2b-256" in S.available_hash_algorithms())
+
+    sk, note = make_note(1234)
+    baseline_cm = note.commitment()
+    baseline_empty = S.EMPTY_ROOTS[S.MERKLE_DEPTH]
+
+    tree = S.NoteCommitmentTree()
+    for i in range(3):
+        tree.append(S.Note(value=i, pk_d=note.pk_d, rho=bytes([i]) * 32,
+                           rcm=bytes([i + 1]) * 32).commitment())
+    baseline_root = tree.root()
+
+    with S.using_hash_algorithm("blake2b-256"):
+        check("commitment changes under a different hash",
+              note.commitment() != baseline_cm)
+        # The empty-subtree ladder is hash-derived; a swap that forgot to rebuild
+        # it would leave a tree that looks fine but computes wrong roots.
+        check("EMPTY_ROOTS rebuilt on swap",
+              S.EMPTY_ROOTS[S.MERKLE_DEPTH] != baseline_empty)
+
+        alt_tree = S.NoteCommitmentTree()
+        alt_commitments = []
+        for i in range(3):
+            cm = S.Note(value=i, pk_d=note.pk_d, rho=bytes([i]) * 32,
+                        rcm=bytes([i + 1]) * 32).commitment()
+            alt_commitments.append(cm)
+            alt_tree.append(cm)
+        check("tree root differs under a different hash",
+              alt_tree.root() != baseline_root)
+        check("paths still verify under the swapped hash",
+              all(alt_tree.path(i).compute_root(alt_commitments[i]) == alt_tree.root()
+                  for i in range(3)))
+
+    check("algorithm restored after the context exits",
+          S.active_hash_algorithm().name == "sha3-256")
+    check("commitment restored after the context exits",
+          note.commitment() == baseline_cm)
+    check("EMPTY_ROOTS restored after the context exits",
+          S.EMPTY_ROOTS[S.MERKLE_DEPTH] == baseline_empty)
+
+
 def test_note_commitment():
     print("\nNote commitments (binding + hiding):")
     sk, note = make_note(1000)
@@ -362,6 +432,7 @@ def test_end_to_end_flow():
 
 def main():
     test_hashing()
+    test_hash_agnostic()
     test_note_commitment()
     test_nullifier()
     test_merkle()

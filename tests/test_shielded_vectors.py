@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""
+Pins the shielded pool's wire encoding against committed golden vectors.
+
+Two jobs:
+  1. Catch an accidental encoding change in Python. Any drift in a tag, a length
+     prefix, an integer width or a hash input reorders or changes digests, and
+     every previously-created note becomes unspendable.
+  2. Give the Rust circuit something concrete to agree with. Rust reads the same
+     JSON and must reproduce every digest -- see tests/vectors/README.md.
+
+If this fails after a *deliberate* encoding change, regenerate the golden file:
+    python3 tests/shielded_vectors.py > tests/vectors/shielded_sha3-256.json
+and treat it as a consensus change, because it is one.
+
+Run: python3 tests/test_shielded_vectors.py
+"""
+import json
+import os
+import sys
+
+HERE = os.path.dirname(__file__)
+CORE = os.path.join(HERE, "..", "wepo-blockchain", "core")
+sys.path.insert(0, os.path.abspath(CORE))
+sys.path.insert(0, os.path.abspath(HERE))
+
+import shielded as S          # noqa: E402
+import shielded_vectors as V  # noqa: E402
+
+GOLDEN = os.path.join(HERE, "vectors", f"shielded_{S.POOL_HASH_ALGORITHM}.json")
+
+FAILURES = []
+
+
+def check(name, condition):
+    print(f"  [{'PASS' if condition else 'FAIL'}] {name}")
+    if not condition:
+        FAILURES.append(name)
+
+
+def diff(expected, actual, path=""):
+    """Yield human-readable paths where two JSON structures differ."""
+    if type(expected) is not type(actual):
+        yield f"{path or '<root>'}: type {type(expected).__name__} != {type(actual).__name__}"
+        return
+    if isinstance(expected, dict):
+        for key in sorted(set(expected) | set(actual)):
+            if key not in expected:
+                yield f"{path}.{key}: unexpected"
+            elif key not in actual:
+                yield f"{path}.{key}: missing"
+            else:
+                yield from diff(expected[key], actual[key], f"{path}.{key}")
+    elif isinstance(expected, list):
+        if len(expected) != len(actual):
+            yield f"{path}: length {len(expected)} != {len(actual)}"
+            return
+        for i, (e, a) in enumerate(zip(expected, actual)):
+            yield from diff(e, a, f"{path}[{i}]")
+    elif expected != actual:
+        yield f"{path}: {expected!r} != {actual!r}"
+
+
+def main():
+    print(f"Golden vectors ({os.path.basename(GOLDEN)}):")
+
+    if not os.path.exists(GOLDEN):
+        print(f"  [FAIL] golden file missing: {GOLDEN}")
+        return 1
+
+    with open(GOLDEN) as fh:
+        golden = json.load(fh)
+
+    check("golden matches the consensus hash algorithm",
+          golden.get("algorithm") == S.POOL_HASH_ALGORITHM)
+    check("golden matches consensus parameters",
+          golden.get("hash_len") == S.HASH_LEN
+          and golden.get("merkle_depth") == S.MERKLE_DEPTH
+          and golden.get("max_note_value") == S.MAX_NOTE_VALUE)
+
+    rebuilt = V.build_vectors(S.POOL_HASH_ALGORITHM)
+    mismatches = list(diff(golden, json.loads(json.dumps(rebuilt))))
+    if mismatches:
+        print(f"  [FAIL] {len(mismatches)} mismatch(es) vs golden:")
+        for line in mismatches[:15]:
+            print(f"         {line}")
+        if len(mismatches) > 15:
+            print(f"         ... and {len(mismatches) - 15} more")
+        FAILURES.append("golden vectors")
+    else:
+        check("every digest reproduces the golden file", True)
+
+    check("generation is deterministic",
+          V.build_vectors(S.POOL_HASH_ALGORITHM) == rebuilt)
+
+    print("\nGolden vectors are internally consistent:")
+    # Guards against a golden file regenerated while the code was broken --
+    # matching a wrong golden proves nothing on its own.
+    merkle = golden["merkle"]
+    check("every authentication path recomputes the stated root",
+          all(p["root"] == merkle["root"] for p in merkle["paths"]))
+
+    paths_ok = True
+    for entry in merkle["paths"]:
+        path = S.MerklePath(position=entry["position"],
+                            siblings=[bytes.fromhex(s) for s in entry["siblings"]])
+        computed = path.compute_root(bytes.fromhex(entry["commitment"]))
+        if computed.hex() != merkle["root"]:
+            paths_ok = False
+    check("paths recompute the root when replayed through shielded.py", paths_ok)
+
+    notes_ok = True
+    for entry in golden["notes"]:
+        note = S.Note(value=entry["value"], pk_d=bytes.fromhex(entry["pk_d"]),
+                      rho=bytes.fromhex(entry["rho"]), rcm=bytes.fromhex(entry["rcm"]))
+        if note.commitment().hex() != entry["commitment"]:
+            notes_ok = False
+        if note.nullifier(bytes.fromhex(entry["nullifier_key"])).hex() != entry["nullifier"]:
+            notes_ok = False
+    check("note commitments and nullifiers replay correctly", notes_ok)
+
+    check("distinct notes have distinct commitments",
+          len({n["commitment"] for n in golden["notes"]}) == len(golden["notes"]))
+    check("distinct notes have distinct nullifiers",
+          len({n["nullifier"] for n in golden["notes"]}) == len(golden["notes"]))
+    check("empty-tree root is the top empty root",
+          merkle["empty_tree_root"] == merkle["empty_roots"][S.MERKLE_DEPTH])
+    check("populated root differs from the empty root",
+          merkle["root"] != merkle["empty_tree_root"])
+
+    # The length-prefix rule is the whole reason these two differ; if a port
+    # drops it they collide and one committed value can be reread as another.
+    split_a = next(t for t in golden["tagged_hash"]
+                   if t["parts"] == ["3031", "32"])
+    split_b = next(t for t in golden["tagged_hash"]
+                   if t["parts"] == ["30", "3132"])
+    check("length-prefixed field splits do not collide",
+          split_a["digest"] != split_b["digest"])
+
+    check("bundle statement digest binds a different sighash to a different value",
+          golden["bundle"]["statement_digest"]
+          != golden["shielding_bundle"]["statement_digest"])
+
+    print()
+    if FAILURES:
+        print(f"RESULT: FAILED ({len(FAILURES)}): {FAILURES}")
+        return 1
+    print("RESULT: ALL CHECKS PASSED")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

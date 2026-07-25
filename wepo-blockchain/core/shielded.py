@@ -37,8 +37,9 @@ NOTE ON VALUE BALANCE
 import hashlib
 import secrets
 import struct
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Protocol, Sequence, Set, Tuple
+from typing import Callable, Dict, List, Optional, Protocol, Sequence, Set, Tuple
 
 # --- parameters ---------------------------------------------------------------
 
@@ -65,6 +66,105 @@ class ShieldedError(ValueError):
 
 
 # --- hashing ------------------------------------------------------------------
+#
+# Every digest in the pool goes through `tagged_hash`, and `tagged_hash` goes
+# through exactly one swappable algorithm. That single point exists because the
+# in-circuit hash is still undecided (see docs/GHOST_TRANSFER_PHASE2_HANDOFF.md):
+# SHA3-256 is standard, post-quantum and in the stdlib, which is what let this
+# substrate be built and tested before the proving system existed, but Keccak is
+# expensive inside an AIR and a ZK-friendly hash may replace it.
+#
+# Swapping the hash changes EVERY note commitment and EVERY Merkle root, so it
+# has to be atomic. Routing everything through one point is what makes it atomic
+# instead of a scattered edit where some tags move and some do not.
+
+
+@dataclass(frozen=True)
+class HashAlgorithm:
+    """A pool hash: a name and a one-shot digest function.
+
+    One-shot rather than streaming because a ZK-friendly replacement will most
+    likely arrive over an FFI or subprocess boundary, where a streaming API does
+    not survive the trip.
+    """
+
+    name: str
+    digest_size: int
+    fn: Callable[[bytes], bytes]
+
+
+_ALGORITHMS: Dict[str, HashAlgorithm] = {}
+
+
+def register_hash_algorithm(algorithm: HashAlgorithm) -> None:
+    """Make an algorithm available for selection.
+
+    Digest size is fixed at `HASH_LEN`: keys, nullifiers and commitments are all
+    sized to it, so an algorithm with a different width would silently break the
+    field-length checks rather than fail loudly here.
+    """
+    if not isinstance(algorithm, HashAlgorithm):
+        raise ShieldedError("expected a HashAlgorithm")
+    if algorithm.digest_size != HASH_LEN:
+        raise ShieldedError(
+            f"pool hash must produce {HASH_LEN} bytes, "
+            f"'{algorithm.name}' produces {algorithm.digest_size}"
+        )
+    probe = algorithm.fn(b"")
+    if not isinstance(probe, (bytes, bytearray)) or len(probe) != HASH_LEN:
+        raise ShieldedError(f"'{algorithm.name}' did not return {HASH_LEN} bytes")
+    _ALGORITHMS[algorithm.name] = algorithm
+
+
+def available_hash_algorithms() -> List[str]:
+    return sorted(_ALGORITHMS)
+
+
+register_hash_algorithm(
+    HashAlgorithm("sha3-256", 32, lambda data: hashlib.sha3_256(data).digest())
+)
+
+# Consensus constant, deliberately NOT environment-configurable: two nodes
+# running different pool hashes would compute different commitments and split the
+# chain. Changing it is a reviewed code change, not a deployment knob.
+POOL_HASH_ALGORITHM = "sha3-256"
+
+_active_hash: HashAlgorithm = _ALGORITHMS[POOL_HASH_ALGORITHM]
+
+
+def active_hash_algorithm() -> HashAlgorithm:
+    return _active_hash
+
+
+def _activate_hash_algorithm(name: str) -> None:
+    """Switch the pool hash and rebuild everything derived from it."""
+    global _active_hash, EMPTY_ROOTS
+    if name not in _ALGORITHMS:
+        raise ShieldedError(
+            f"unknown pool hash '{name}'; available: {available_hash_algorithms()}"
+        )
+    _active_hash = _ALGORITHMS[name]
+    # The empty-subtree ladder is hash-derived, so it is stale the moment the
+    # algorithm changes. Forgetting this is how a half-swapped tree still
+    # "works" while producing wrong roots.
+    EMPTY_ROOTS = _empty_roots(MERKLE_DEPTH)
+
+
+@contextmanager
+def using_hash_algorithm(name: str):
+    """Temporarily switch the pool hash.
+
+    For generating candidate-hash test vectors and benchmarking only. Never use
+    this on a live node: commitments made under one hash are meaningless under
+    another.
+    """
+    previous = _active_hash.name
+    _activate_hash_algorithm(name)
+    try:
+        yield _active_hash
+    finally:
+        _activate_hash_algorithm(previous)
+
 
 def _field(data: bytes) -> bytes:
     """Length-prefix a field so concatenation is unambiguous.
@@ -77,12 +177,11 @@ def _field(data: bytes) -> bytes:
 
 
 def tagged_hash(tag: bytes, *parts: bytes) -> bytes:
-    """SHA3-256 over a domain tag and length-prefixed fields."""
-    h = hashlib.sha3_256()
-    h.update(_field(tag))
+    """Pool hash over a domain tag and length-prefixed fields."""
+    buf = bytearray(_field(tag))
     for part in parts:
-        h.update(_field(part))
-    return h.digest()
+        buf += _field(part)
+    return _active_hash.fn(bytes(buf))
 
 
 def _require_len(name: str, value: bytes, expected: int) -> bytes:
