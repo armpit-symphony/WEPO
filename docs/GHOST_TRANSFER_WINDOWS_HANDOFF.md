@@ -55,10 +55,19 @@ bundle. That default is load-bearing — see the guardrails.
    genesis regardless of how well the circuit goes. It lifts after external audit.
 4. **Do not touch the messaging crypto** (`@noble/post-quantum`, `wepoMessaging.js`,
    `messaging_relay.py`). It is vetted, live, and unrelated.
-5. **Do not delete `privacy.py` yet.** `test_legacy_privacy_unsound.py` imports it
+5. **A verifier panic must never reach the node process.** Winterfell's
+   `Air::new` returns `Self`, not `Result`, so the only way to reject a malformed
+   trace descriptor is `assert!`/panic — and trace width is encoded in
+   **attacker-supplied proof bytes**. This is structural to the library, not
+   something careful circuit code avoids. In-process (PyO3) that is a remote
+   abort of the node reachable by anyone who can hand it a proof. Out-of-process
+   a panic is just a non-zero exit that maps cleanly to `False`. This is the
+   same rule as "never return `True` on an exception path", applied to the
+   exception path we now know exists.
+6. **Do not delete `privacy.py` yet.** `test_legacy_privacy_unsound.py` imports it
    as a standing guard. It gets deleted when the replacement path lands.
-6. **Keep `backend/.env` and `frontend/.env` unstaged.** Always.
-7. Commit messages end with:
+7. **Keep `backend/.env` and `frontend/.env` unstaged.** Always.
+8. Commit messages end with:
    `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`
 
 ---
@@ -84,7 +93,36 @@ Do not design anything until this passes.
 **Report back:** cargo/rustc versions, whether crates.io resolves, and the
 shielded-pool test result. Stop and report if any of the three fails.
 
-## Phase 1 — library spike (do this before the real circuit)
+## Phase 1 — library spike — **DONE 2026-07-25, Winterfell selected**
+
+Real 2-term Fibonacci AIR against Winterfell 0.13.1. Release build,
+single-threaded, f128 / Blake3_256 / 32 queries / blowup 8:
+
+| trace | proof bytes | prove ms | verify ms |
+|---:|---:|---:|---:|
+| 1,024 | 30,673 | 8.5 | 0.314 |
+| 4,096 | 42,964 | 36.3 | 0.412 |
+| 16,384 | 52,859 | 166.6 | 0.542 |
+| 65,536 | 69,927 | 727.7 | 0.668 |
+| 262,144 | 83,878 | 3,336.0 | 0.754 |
+
+**Verification is effectively free** — sub-millisecond, and near-flat as the trace
+grows 256×. Raw on-chain STARK verification is viable on CPU cost, so **no SNARK
+wrap**, and the post-quantum property stays intact.
+
+**Proof size is the binding constraint.** 30–84KB, growing polylogarithmically.
+At ~43KB a 1MB block holds roughly **20 shielded transactions** — that is the
+number to design block-size and shielded-fee policy around, and it should be
+priced so shielded transactions pay for the space they occupy. Caveat: these are
+~96-bit conjectured security with no field extension; 128-bit needs more queries
+and will push sizes up, so treat 20 tx/MB as an optimistic ceiling.
+
+**Soundness:** 256 single-bit flips across a proof — 0 wrongly accepted, 254
+rejected at verify, 1 at parse, 1 panicked (see guardrail 5). An honest proof
+against a wrong public input is also rejected.
+
+<details>
+<summary>Original Phase 1 instructions (kept for reference)</summary>
 
 Create a new crate at `zk/` in the repo. Pick a library:
 
@@ -104,7 +142,9 @@ we do **not** wrap in Groth16 — that reintroduces a trusted setup and elliptic
 curves, destroying the post-quantum property. If proofs come out unusably large,
 say so rather than reaching for a SNARK wrap.
 
-## Phase 2 — decide the in-circuit hash
+</details>
+
+## Phase 2 — decide the in-circuit hash — **NEXT**
 
 SHA3-256 is expensive inside an AIR. Benchmark it against a ZK-friendly
 post-quantum hash (Winterfell ships Rescue-Prime, `Rp64_256`).
@@ -143,17 +183,19 @@ another transaction.
 
 Implement `shielded.ShieldedVerifier` and install it with `register_verifier()`.
 
-Two boundary options — **start with the subprocess CLI**, it is far easier to get
-right and the perf work can come later:
+**Subprocess CLI — decided, not a preference.** The Rust binary takes
+`(statement_digest, proof)` on stdin and exits 0/1. Phase 1 found that a
+malformed proof can panic the Winterfell verifier (guardrail 5), and trace width
+comes from attacker-supplied bytes. Out-of-process that panic is a non-zero exit;
+in-process it can abort the node. PyO3 is off the table until there is a
+panic-proof boundary, and the performance argument for it is weak anyway — verify
+is already sub-millisecond, so process spawn dominates and the circuit is not
+verify-bound.
 
-- **Subprocess CLI:** the Rust binary takes `(statement_digest, proof)` on stdin
-  and exits 0/1. Simple, no build complexity, easy to sandbox.
-- **PyO3 native module:** faster, but adds a build step to every node install on
-  every platform. Only worth it once the circuit is settled.
-
-Whichever you pick, the verifier must fail **closed**: any error, timeout, missing
-binary, or malformed output means `verify()` returns `False`. Never `True` on an
-exception path.
+The verifier must fail **closed**: any error, non-zero exit, timeout, crash,
+missing binary, or malformed output means `verify()` returns `False`. Never
+`True` on an exception path. Give the subprocess a wall-clock timeout and a
+bounded stdin size so a hostile proof cannot hang or balloon a validating node.
 
 ## Phase 5 — tests
 
