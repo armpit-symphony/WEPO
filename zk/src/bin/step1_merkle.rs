@@ -419,12 +419,14 @@ fn main() {
         .expect("parse golden");
     assert_eq!(j["algorithm"].as_str().unwrap(), "rescue-rp64-256");
 
-    // Index 5 rather than 0 deliberately: position 0 makes every direction bit
-    // zero, which collapses the bit column to the zero polynomial and drops the
-    // sibling-placement constraint from degree 2 to degree 1 -- so the b == 1
-    // (right child) branch is never exercised, and Winterfell's debug-only
-    // degree check fails on a correct AIR. Position 5 is 0b101.
-    let entry = &j["merkle"]["paths"][5];
+    // The synthetic deep path, not one of the real ones. Position 0xA5A5A5A5 is
+    // 10100101 repeating, so both the left- and right-child branches of the
+    // sibling-placement constraint are exercised at all 32 levels, with no run
+    // longer than two in either direction. A witness with zero direction bits
+    // (position 0, or any small position) leaves the bit column identically zero,
+    // which collapses that constraint from degree 2 to degree 1 and silently
+    // skips the right-child branch entirely.
+    let entry = &j["merkle"]["synthetic_deep_path"];
     let position = entry["position"].as_u64().unwrap() as usize;
     let cm_bytes = unhex(entry["commitment"].as_str().unwrap());
     let golden_root = unhex(entry["root"].as_str().unwrap());

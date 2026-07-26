@@ -203,6 +203,15 @@ fn main() {
         // columns + 16 permutation rows = ~20 rows/level, x32 levels = 640.
         (150, 1024),
         (200, 1024),
+        // --- bundle projection, against the real step 2.4 circuit -----------
+        // 52 x 256 is measured for real by step2_range; the same geometry here
+        // gives the harness's under-read, which then corrects the wider cases.
+        (52, 256),   // 1 spend, calibration point
+        (96, 256),   // 1 spend + 2 outputs + balance
+        (148, 256),  // 2 spends + 2 outputs + balance
+        (252, 256),  // 4 spends + 2 outputs -- at the 254 cap
+        (52, 512),   // 1 spend, sequential layout headroom
+        (148, 512),  // 2 spends + 2 outputs at double length
     ];
 
     for (w, len) in cases {

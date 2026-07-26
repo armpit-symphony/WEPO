@@ -1,5 +1,41 @@
-//! Step 2.3 — spend authority, and the binding that makes 2.1 and 2.2 mean
-//! something together.
+//! Step 2.4 — value range, on top of the step 2.3 spend circuit.
+//!
+//! Adds the missing constraint that `value` lies in [0, 2^63-1]. Everything else
+//! is step 2.3 verbatim, so the delta in proof size is the price of the range.
+//!
+//! WHY IT IS NOT ALREADY IMPLIED. Step 2.3 binds `value` into the commitment, so
+//! a spender cannot restate the value of a note somebody else committed. What it
+//! does not stop is committing to an out-of-range value in the FIRST place and
+//! spending it later: `value` is a Goldilocks element, the field is about 2^64,
+//! and the node's MAX_NOTE_VALUE check lives in Python at note construction --
+//! which a prover is under no obligation to run. Without this step a note holding
+//! 2^63 is a fully consistent witness: correct commitment, correct path, correct
+//! nullifier. Step 2.5 would then balance inputs against outputs over a field
+//! that wraps, where a value just below p behaves as a small negative number and
+//! mints WEPO from nothing. The test at the bottom builds that note and confirms
+//! this step is what rejects it.
+//!
+//! HOW. 63-bit decomposition, most significant bit first, one bit per row over
+//! rows 0..62, with a running accumulator that must equal the carried value:
+//!
+//!     ACC[0]   = 0
+//!     ACC[r+1] = 2*ACC[r] + BIT[r]        r = 0..62,  BIT[r] boolean
+//!     ACC[63] == value
+//!
+//! 63 bits is exactly [0, 2^63-1], which is MAX_NOTE_VALUE, so there is no
+//! separate upper-bound comparison to get wrong -- the width IS the bound.
+//! Rows 63..255 hold the accumulator, so the rule needs no special case at the
+//! end of the trace.
+//!
+//! ONE BIT PER ROW, NOT EIGHT. Packing 8 bits per row finishes in 8 rows but
+//! costs 9 columns; one bit per row costs 2 columns and 64 rows. The Merkle path
+//! already fixes the trace at 256 rows and leaves every one of them idle in these
+//! columns, so rows are the resource in surplus and columns are the one rationed
+//! by Winterfell's 254-column cap. That trade is why the bundle projection
+//! printed at the end of this run is not hopeless.
+//!
+//! ---------------------------------------------------------------------------
+//! Inherited from step 2.3 — spend authority and binding.
 //!
 //! Steps 2.1 and 2.2 proved two true statements that were never connected:
 //! *some* commitment is under the anchor, and *some* (nk, rho) hash to the
@@ -26,8 +62,7 @@
 //!
 //! Public: anchor, nf. Private: ask, diversifier, value, rho, rcm, position, path.
 //!
-//! STILL NOT COMPLETE. `value` is unconstrained here beyond fitting an element:
-//! nothing yet forces it into [0, 2^63-1] (step 2.4) and nothing balances inputs
+//! STILL NOT COMPLETE. One spend, no outputs, and nothing balances inputs
 //! against outputs (step 2.5). Do not wire a verifier to this. See the guardrail.
 //!
 //! ---------------------------------------------------------------------------
@@ -59,8 +94,8 @@
 //! composition ratio of 3, well inside the blowup of 8 the Rescue rounds already
 //! require, so they are free in practice.
 //!
-//! GEOMETRY. 50 columns x 256 rows. Still 256 -- the whole point of the
-//! concurrent layout. Step 2.2 was 25 x 256.
+//! GEOMETRY. 52 columns x 256 rows. 13 -> 25 -> 50 -> 52 across the four steps;
+//! the range gadget costs 2 columns and no rows.
 
 use std::fs;
 use std::panic::{self, AssertUnwindSafe};
@@ -110,7 +145,14 @@ const CM_COL: usize = BIT_COL + 1; // carried, 4
 const RHO_COL: usize = CM_COL + DIG; // carried, 4
 const RCM_COL: usize = RHO_COL + DIG; // carried, 4
 const VAL_COL: usize = RCM_COL + DIG; // carried, 1
-const TRACE_WIDTH: usize = VAL_COL + 1; // 50
+const BIT2_COL: usize = VAL_COL + 1; // range: one value bit per row, MSB first
+const ACC_COL: usize = BIT2_COL + 1; // range: running recomposition
+const TRACE_WIDTH: usize = ACC_COL + 1; // 52
+
+/// MAX_NOTE_VALUE is 2^63-1, so 63 bits IS the bound. Widening this by one bit
+/// silently admits values the node would refuse to build a note for.
+const VALUE_BITS: usize = 63;
+const ACC_ROW: usize = VALUE_BITS; // 63 -- where the recomposition must match
 
 const TRACE_LEN: usize = DEPTH * CYCLE; // 256
 const ANCHOR_ROW: usize = TRACE_LEN - 1; // 255
@@ -125,6 +167,8 @@ const P_S0: usize = 1 + 2 * W;
 const P_S7: usize = P_S0 + 1;
 const P_S15: usize = P_S0 + 2;
 const P_S23: usize = P_S0 + 3;
+const P_RA: usize = P_S0 + 4; // 1 on rows 0..62 -- while bits are absorbed
+const P_S63: usize = P_S0 + 5; // 1 on row 63 -- where ACC must equal value
 
 // ---------------------------------------------------------------------------
 
@@ -209,7 +253,7 @@ pub struct SpendAir {
     nullifier: [BaseElement; DIG],
 }
 
-const NUM_ASSERTIONS: usize = 26;
+const NUM_ASSERTIONS: usize = 27;
 
 impl Air for SpendAir {
     type BaseField = BaseElement;
@@ -269,6 +313,18 @@ impl Air for SpendAir {
         for _ in 0..DIG {
             d.push(one1()); // row 0: A and B absorb the same spending key
         }
+        // Declared at the degree Winterfell MEASURES, not the degree the
+        // expressions could reach in isolation (510 / 765). Winterfell asserts
+        // declared == actual in debug builds, and the quotient C(x)/D(x) for all
+        // three of these comes out constant on any satisfying trace. Declaring
+        // the loose bound is sound but trips that assertion, which costs the
+        // check that caught two real bugs here. The value sweep in main() is the
+        // evidence: if any legal value ever produced a higher-degree quotient,
+        // that value would become unprovable and the sweep would show it as a
+        // legal value being rejected.
+        d.push(one1()); // range: absorb a bit, then hold
+        d.push(one2()); // range: that bit is boolean
+        d.push(one1()); // range: recomposition equals the carried value
 
         SpendAir {
             context: AirContext::new(trace_info, d, NUM_ASSERTIONS, options),
@@ -305,6 +361,15 @@ impl Air for SpendAir {
             c[row] = one;
             cols.push(c);
         }
+        // range: active while bits are absorbed, then the single check row
+        let mut ra = vec![zero; TRACE_LEN];
+        for slot in ra.iter_mut().take(VALUE_BITS) {
+            *slot = one;
+        }
+        cols.push(ra);
+        let mut s63 = vec![zero; TRACE_LEN];
+        s63[ACC_ROW] = one;
+        cols.push(s63);
         cols
     }
 
@@ -444,6 +509,21 @@ impl Air for SpendAir {
         for i in 0..DIG {
             result[idx + i] = s0 * (cur[A + RATE + i] - cur[B + RATE + i]);
         }
+        idx += DIG;
+
+        // ---- RANGE: value in [0, 2^63-1] ------------------------------------
+        let ra = periodic[P_RA];
+        let s63 = periodic[P_S63];
+        let bit = cur[BIT2_COL];
+        let two = F::from(BaseElement::new(2));
+        // absorb one bit per row, then hold, so the tail of the trace needs no
+        // special case and ACC is still readable at row 63
+        result[idx] = ra * (next[ACC_COL] - two * cur[ACC_COL] - bit)
+            + (F::ONE - ra) * (next[ACC_COL] - cur[ACC_COL]);
+        result[idx + 1] = ra * (bit * bit - bit);
+        // 63 boolean bits can only recompose to something in [0, 2^63-1], so
+        // pinning ACC to the carried value IS the range check.
+        result[idx + 2] = s63 * (cur[ACC_COL] - cur[VAL_COL]);
     }
 
     fn get_assertions(&self) -> Vec<Assertion<Self::BaseField>> {
@@ -483,6 +563,8 @@ impl Air for SpendAir {
         for i in 0..DIG {
             a.push(Assertion::single(A + RATE + i, NF_ROW, self.nullifier[i]));
         }
+        // the recomposition starts from nothing
+        a.push(Assertion::single(ACC_COL, 0, z));
         a
     }
 
@@ -505,6 +587,13 @@ struct Witness {
     leaf: [BaseElement; DIG],
     siblings: Vec<[BaseElement; DIG]>,
     bits: Vec<bool>,
+}
+
+/// Bit `i` of a value, as a field element. Reads the canonical integer, so a
+/// value at or above 2^63 simply has no 63-bit decomposition and the gadget
+/// cannot be satisfied -- which is the point.
+fn value_bit(v: BaseElement, i: usize) -> BaseElement {
+    BaseElement::new((v.as_int() >> i) & 1)
 }
 
 fn limbs(bytes: &[u8]) -> [BaseElement; DIG] {
@@ -640,8 +729,23 @@ fn build_trace(w: &Witness) -> TraceTable<BaseElement> {
                 state[RCM_COL + i] = w.rcm[i];
             }
             state[VAL_COL] = w.value;
+            // range: MSB first, so row r holds bit (VALUE_BITS - 1 - r)
+            state[ACC_COL] = BaseElement::ZERO;
+            state[BIT2_COL] = value_bit(w.value, VALUE_BITS - 1);
         },
         |step, state| {
+            // ---- range gadget, independent of the Rescue cycle ------------
+            if step < VALUE_BITS {
+                state[ACC_COL] = state[ACC_COL] + state[ACC_COL] + state[BIT2_COL];
+                state[BIT2_COL] = if step + 1 < VALUE_BITS {
+                    value_bit(w.value, VALUE_BITS - 2 - step)
+                } else {
+                    BaseElement::ZERO
+                };
+            } else {
+                state[BIT2_COL] = BaseElement::ZERO;
+            }
+
             let pos = step % CYCLE;
             if pos < ROUNDS {
                 for base in [A, B, E] {
@@ -790,6 +894,29 @@ fn verify_at(proof: Proof, pi: PublicInputs, bits: u32) -> bool {
 /// builds validate the trace) or by the proof failing verification; both are
 /// "rejected", and conflating them would hide the difference, so they are
 /// reported separately.
+fn accepts(w: &Witness, pi: PublicInputs) -> bool {
+    let built = panic::catch_unwind(AssertUnwindSafe(|| {
+        let prover = SpendProver { options: opts(43) };
+        prover.prove(build_trace(w))
+    }));
+    match built {
+        Err(_) | Ok(Err(_)) => false,
+        Ok(Ok(proof)) => verify_at(proof, pi, 95),
+    }
+}
+
+/// Report against an expectation, so an accepted-and-should-be case does not get
+/// stamped UNSOUND and a rejected-and-should-be case does not read as a pass.
+fn expect(w: &Witness, pi: PublicInputs, want_accept: bool) -> String {
+    let got = accepts(w, pi);
+    let verdict = if got { "accepted" } else { "rejected" };
+    if got == want_accept {
+        format!("{verdict:<8}  as expected")
+    } else {
+        format!("{verdict:<8}  *** WRONG ***")
+    }
+}
+
 fn attempt(w: &Witness, pi: PublicInputs) -> &'static str {
     let built = panic::catch_unwind(AssertUnwindSafe(|| {
         let prover = SpendProver { options: opts(43) };
@@ -809,7 +936,7 @@ fn attempt(w: &Witness, pi: PublicInputs) -> &'static str {
 }
 
 fn main() {
-    println!("Step 2.3 -- spend authority and binding\n");
+    println!("Step 2.4 -- value range on the spend circuit\n");
 
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.pop();
@@ -903,6 +1030,16 @@ witness from the node's published vectors (note {NOTE}):");
     println!("  anchor       {}", hex(&native_root(&cm, &siblings, &bits)));
     println!("  nullifier    {}", note["nullifier"].as_str().unwrap());
 
+    // A range gadget is exactly the thing that a lazy witness hides. Zero makes
+    // every bit zero (the bit column becomes the zero polynomial and booleanity
+    // stops meaning anything), 2^63-1 makes every bit one, and a power of two
+    // exercises a single bit. Refuse to measure against any of them.
+    let vi = value.as_int();
+    assert!(vi != 0, "value 0: every range bit would be zero");
+    assert!(vi != (1u64 << 63) - 1, "value 2^63-1: every range bit would be one");
+    assert!(vi & (vi - 1) != 0, "value is a power of two: one bit set");
+    println!("  value is non-degenerate for a range gadget ({} bits set)", vi.count_ones());
+
     let w = Witness {
         ask, div, value, rho, rcm,
         leaf: cm,
@@ -956,6 +1093,7 @@ witness from the node's published vectors (note {NOTE}):");
         "config", "proof bytes", "prove ms", "verify ms", "128-bit"
     );
     println!("{}", "-".repeat(78));
+    let mut measured_128 = 0usize;
     for (label, queries) in [
         ("96-bit  (32q, blowup 8, cubic)", 32usize),
         ("128-bit (43q, blowup 8, cubic)", 43),
@@ -965,6 +1103,9 @@ witness from the node's published vectors (note {NOTE}):");
         let proof = prover.prove(trace.clone()).expect("prove failed");
         let prove_ms = t.elapsed().as_secs_f64() * 1000.0;
         let size = proof.to_bytes().len();
+        if queries == 43 {
+            measured_128 = size;
+        }
 
         let t = Instant::now();
         for _ in 0..20 {
@@ -1063,6 +1204,119 @@ witness from the node's published vectors (note {NOTE}):");
          nullifier, so \"the same rho\" is structural: there is no second rho\n  \
          to disagree with, and no constraint that could be left out."
     );
+
+    // ---- range ------------------------------------------------------------
+    // Every witness below is INTERNALLY CONSISTENT: the commitment really does
+    // open to the stated value, the path really does fold to the stated anchor,
+    // the nullifier really is derived from the stated key. Step 2.3 accepts all
+    // of them. Only the range gadget separates them.
+    println!("\nrange (each witness is self-consistent -- 2.3 accepts them all):");
+    let consistent = |v: BaseElement| -> (Witness, PublicInputs) {
+        let mut e = vec![v];
+        e.extend_from_slice(&pkd);
+        e.extend_from_slice(&rho);
+        e.extend_from_slice(&rcm);
+        let leaf = h_dom(DOMAIN_NOTE, &e);
+        let w = Witness {
+            ask, div, value: v, rho, rcm, leaf,
+            siblings: siblings.clone(),
+            bits: bits.clone(),
+        };
+        let pi = PublicInputs {
+            anchor: native_root(&leaf, &siblings, &bits),
+            nullifier: nf,
+        };
+        (w, pi)
+    };
+
+    let max_legal = BaseElement::new((1u64 << 63) - 1);
+    // Doubles as the degree sweep. Under debug assertions Winterfell asserts that
+    // each constraint's measured degree equals the declared one, and a mismatch
+    // panics inside prove(), which surfaces here as a LEGAL value being rejected.
+    // So a clean run of this table in a debug build is the evidence for the
+    // degree declarations above -- across all-zero bits, all-one bits, single
+    // bits, alternating bits and dense mixed bits.
+    let cases: [(&str, BaseElement, bool); 10] = [
+        ("value = 0            all bits zero  legal", BaseElement::ZERO, true),
+        ("value = 1            one bit        legal", BaseElement::ONE, true),
+        ("value = 2^62         top bit only   legal", BaseElement::new(1u64 << 62), true),
+        ("value = 2^63-1       all bits one   legal", max_legal, true),
+        ("value = 2^63-2       all but LSB    legal", BaseElement::new((1u64 << 63) - 2), true),
+        ("value = 0x5555...    alternating    legal", BaseElement::new(0x5555_5555_5555_5555), true),
+        ("value = 0xDEADBEEFCAFE              legal", BaseElement::new(0xDEAD_BEEF_CAFE), true),
+        ("value = 2100000000000000            legal", value, true),
+        ("value = 2^63         one over       ILLEGAL", BaseElement::new(1u64 << 63), false),
+        // p-1 is the dangerous one: as a field element it behaves as -1, so the
+        // balance equation in step 2.5 would read this note as owing WEPO rather
+        // than holding it. Nothing outside the range check catches it.
+        ("value = p-1          acts as -1     ILLEGAL", -BaseElement::ONE, false),
+    ];
+    let mut wrong = 0;
+    for (label, v, want) in cases {
+        let (wc, pi) = consistent(v);
+        let r = expect(&wc, pi, want);
+        if r.contains("WRONG") {
+            wrong += 1;
+        }
+        println!("  {label:<43} : {r}");
+    }
+    assert_eq!(wrong, 0, "range gadget disagreed with expectation on {wrong} value(s)");
+
+    // ---- bundle column projection -----------------------------------------
+    // Measured per-piece costs from this circuit, not estimates.
+    const SPEND: usize = TRACE_WIDTH; // 52: A + B + E + bit + carried + range
+    const OUTPUT: usize = 20; // 12 Rescue + 5 carried (rho[3], rcm) + value + 2 range
+    const BALANCE: usize = 4; // step 2.5 accumulator, not yet built
+    const CAP: usize = 254; // Winterfell's trace width ceiling
+    println!("\nbundle column projection (256 rows, everything concurrent):");
+    println!("  per spend  {SPEND:>4}   (this circuit, measured)");
+    println!("  per output {OUTPUT:>4}   (commitment only: no path, no nullifier)");
+    println!("  balance    {BALANCE:>4}   (step 2.5, not yet built)");
+    for (sp, out) in [(1usize, 2usize), (2, 2), (2, 4), (4, 2)] {
+        let total = sp * SPEND + out * OUTPUT + BALANCE;
+        println!(
+            "  {sp} spend(s) + {out} outputs = {total:>4} columns  {}",
+            if total <= CAP { "fits" } else { "OVER THE 254 CAP" }
+        );
+    }
+    let max_spends = (CAP - 2 * OUTPUT - BALANCE) / SPEND;
+    println!(
+        "  ceiling: {max_spends} spends with 2 outputs before 254 is hit ({} columns)",
+        max_spends * SPEND + 2 * OUTPUT + BALANCE
+    );
+    println!(
+        "  beyond that, spends must go sequential: 2 paths in one column set is\n  \
+         512 rows, which is the trade step 2.5 has to make."
+    );
+    // Size projection. phase2_scaling measures the same geometries with degree-1
+    // constraints and no helper columns, so it under-reads. This circuit gives the
+    // correction at the EXACT shape rather than a rule of thumb: the harness reads
+    // 45,435 B at 52 x 256, and whatever this run just measured is the truth for
+    // the same geometry. Computed here rather than pinned, because a hard-coded
+    // factor goes stale the moment the witness or the constraint set moves -- it
+    // already did once, when the traversal position changed.
+    //
+    // PROVISIONAL, and a calibration rather than a constant: it measures how far
+    // the real constraint set (98 constraints, degree up to 7) sits above the
+    // harness's degree-1 stand-in, and it will drift again at step 2.5.
+    const HARNESS_AT_52X256: f64 = 45_435.0;
+    let k = measured_128 as f64 / HARNESS_AT_52X256;
+    println!(
+        "
+size projection (harness x{k:.3}, calibrated on this run: {measured_128} B at 52 x 256):"
+    );
+    for (label, cols, rows, harness) in [
+        ("1 spend  + 2 outputs", 96usize, 256usize, 64413.0f64),
+        ("2 spends + 2 outputs", 148, 256, 81660.0),
+        ("4 spends + 2 outputs (at the cap)", 252, 256, 125244.0),
+        ("2 spends + 2 outputs, sequential", 148, 512, 93724.0),
+    ] {
+        let bytes = harness * k;
+        println!(
+            "  {label:<34} {cols:>3} x {rows:<4} {bytes:>9.0} B   {:>4.1} tx/MB",
+            1048576.0 / bytes
+        );
+    }
 }
 
 fn hex(d: &[BaseElement; DIG]) -> String {

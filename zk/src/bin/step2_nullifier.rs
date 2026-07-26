@@ -498,10 +498,17 @@ fn main() {
 
     // the same note supplies both halves, so the witness is coherent even though
     // the AIR does not yet enforce that it is the same note (step 2.3 does)
-    // Index 5, not 0: position 0 leaves every direction bit zero, so the right
-    // child branch of the placement constraint is never exercised. 5 is 0b101.
-    let entry = &j["merkle"]["paths"][5];
-    let note = &j["notes"][5];
+    // The synthetic deep path, not one of the real ones. Position 0xA5A5A5A5 is
+    // 10100101 repeating, so both the left- and right-child branches of the
+    // sibling-placement constraint are exercised at all 32 levels, with no run
+    // longer than two in either direction. A witness with zero direction bits
+    // (position 0, or any small position) leaves the bit column identically zero,
+    // which collapses that constraint from degree 2 to degree 1 and silently
+    // skips the right-child branch entirely.
+    // The deep path's leaf is notes[0]'s commitment, so that note supplies the
+    // nullifier half. Step 2.2 does not bind the two halves anyway -- 2.3 does.
+    let entry = &j["merkle"]["synthetic_deep_path"];
+    let note = &j["notes"][0];
     let position = entry["position"].as_u64().unwrap() as usize;
     let cm = unhex(entry["commitment"].as_str().unwrap());
     assert_eq!(cm, unhex(note["commitment"].as_str().unwrap()), "note/path mismatch");
