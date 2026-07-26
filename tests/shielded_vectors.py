@@ -141,11 +141,21 @@ def build_vectors(algorithm: str = S.POOL_HASH_ALGORITHM) -> dict:
         # the right-child branch was never exercised at all -- while both steps
         # passed.
         #
-        # 0xA5A5A5A5 is 1010 0101 repeating, so it alternates from level 0 and
-        # sets bits across all 32 levels. This is not a path in the populated
-        # tree; siblings are taken from the empty ladder. It exists purely to
-        # pin traversal in both directions at every level, in both runtimes.
-        deep_position = 0xA5A5A5A5
+        # The position must be APERIODIC, which the first attempt here was not.
+        # 0xA5A5A5A5 is A5 repeated, giving the direction bits a period of 8
+        # levels = 64 rows -- an exact divisor of the 256-row trace. The bit
+        # column then interpolates to a polynomial in x**4 of degree 252 rather
+        # than 255, every constraint multiplying by it lands 3-6 below its
+        # declared degree, and Winterfell's debug degree assertion is disabled.
+        # It fixed the all-zeros degeneracy and introduced a subtler one aimed
+        # straight at the Rescue cycle.
+        #
+        # 0x9E3779B9 (the golden-ratio constant) has no period dividing 32 and
+        # both directions occur in every 8-level window. This is not a path in
+        # the populated tree; siblings are taken from the empty ladder. It exists
+        # purely to pin traversal in both directions at every level, in both
+        # runtimes, without perturbing constraint degrees.
+        deep_position = 0x9E3779B9
         deep_siblings = [S.EMPTY_ROOTS[level] for level in range(S.MERKLE_DEPTH)]
         deep_path = S.MerklePath(position=deep_position, siblings=deep_siblings)
         deep_commitment = commitments[0]

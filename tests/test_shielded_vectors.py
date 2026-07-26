@@ -247,8 +247,18 @@ def main():
     # collapses and the right-child branch is never taken.
     check("deep position is not degenerate (bits are mixed, not all-zero)",
           set(bits) == {"0", "1"})
-    check("bits alternate, so no run of levels shares a direction",
-          "0000" not in bits and "1111" not in bits)
+    # Aperiodicity matters as much as mixedness, and less obviously. A position
+    # whose bits repeat with a period dividing 32 makes the direction column
+    # interpolate to a lower-degree polynomial (0xA5A5A5A5 gave period 8 -> 64
+    # rows -> degree 252 not 255), which pushes every constraint that multiplies
+    # by it below its declared degree and disables Winterfell's debug degree
+    # assertion -- the check that caught two real bugs.
+    check("deep position has no period dividing 32",
+          not [p for p in (1, 2, 4, 8, 16)
+               if all(bits[i] == bits[i + p] for i in range(len(bits) - p))])
+    # 8 levels is the Rescue cycle: no stretch that long may share a direction.
+    check("both directions occur in every 8-level window",
+          all(set(bits[i:i + 8]) == {"0", "1"} for i in range(len(bits) - 7)))
     deep_path = S.MerklePath(position=deep["position"],
                              siblings=[bytes.fromhex(s) for s in deep["siblings"]])
     check("deep path replays through shielded.py to the stated root",

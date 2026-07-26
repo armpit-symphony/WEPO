@@ -446,9 +446,9 @@
     "synthetic_deep_path": {
       "commitment": "9c5067130f437ee8394148c1ff3c65031a4f4a98213d17291ef528d6370f23a2",
       "note": "not a path in the tree above; siblings are empty roots. Pins left/right traversal at all 32 levels -- a witness with zero direction bits collapses the placement constraint and silently skips the right-child branch.",
-      "position": 2779096485,
-      "position_bits": "10100101101001011010010110100101",
-      "root": "68eb8f26400053eb819f7bad3ccb53ab7ad942ea237bbe5fbfed9f5276985ab2",
+      "position": 2654435769,
+      "position_bits": "10011110001101110111100110111001",
+      "root": "b59d64a45b143f6ef50ad7c26ab70c3cc3bf2610f8ab6001a33e4e5dc894d0a0",
       "siblings": [
         "b88b1711c776ab193129f9ac08bf6492b257745225cd8c29a33c5b5b041f5a40",
         "dccca50269fa31f81e9ad179ce52d25cc23737d7d5bc304eb02456a2070e84d5",
