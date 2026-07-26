@@ -141,7 +141,11 @@ cm    = H_dom(3, [value] ‖ limbs(pk_d) ‖ limbs(rho) ‖ limbs(rcm))  // 13 e
 nf    = H_dom(4, limbs(nk) ‖ limbs(rho))                      // 8 elements, 1 permutation
 ```
 
-`value` is one element: `MAX_NOTE_VALUE` is `2**63-1`, well under `p`. The
+`value` is one element. `MAX_NOTE_VALUE` is **`2**58-1`**, not `2**63-1`: the
+old bound let two legal outputs sum past `p` and mint the modulus while every
+individual range check passed. The bound must satisfy
+`terms_per_side * 2**VALUE_BITS <= p`; 58 bits gives 63 terms, and the circuit's
+`VALUE_BITS` must equal it. See the note in `shielded.py`. The
 diversifier is 11 bytes — not a whole number of limbs — and is a pure witness
 input that never feeds another hash, so it uses the 7-byte `encode()` above and
 costs the circuit nothing. That makes it **three** elements, not two:
@@ -225,10 +229,16 @@ started from this sentinel rather than from a hashed commitment. So
 moves — a useful cross-check when regenerating.
 
 > The `tags` object and `TAG_*` byte strings still appear in the JSON and are
-> still live — but **only** for the bundle statement digest. The `shielded_sha3-256.json`
-> golden is a frozen historical artifact from before this change, when every
-> derivation went through `tagged_hash`; it is kept as the file the live golden
-> is diffed against for the hash-independent sections.
+> still live — but **only** for the bundle statement digest.
+>
+> `shielded_sha3-256.json` is regenerated from current code, not frozen. It was
+> a pre-field-native artifact, which made it stale in a way that mattered: it
+> disagreed with the live golden on `max_note_value`, a hash-independent
+> parameter. Regenerated, it isolates exactly the byte-hash seam — everything
+> field-native is byte-identical to the Rescue golden, and only `tagged_hash`,
+> `bundle` and `shielding_bundle` differ. `test_shielded_vectors.py` asserts
+> both halves of that, so a field-native derivation accidentally routed back
+> through the swappable seam fails immediately.
 
 **Bundle statement digest** — the circuit's public input:
 

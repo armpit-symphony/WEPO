@@ -95,18 +95,17 @@ def check_pinned_empty_ladder(golden):
           PINNED_EMPTY_LEAF not in {n["commitment"] for n in golden["notes"]})
 
 
-# Sections that do not depend on the pool hash. They must be byte-identical in
-# every golden file, whatever hash it was generated under.
-HASH_INDEPENDENT = (
-    "hash_len",
-    "merkle_depth",
-    "max_note_value",
-    "value_encoding",
-    "field_encoding",
-    "element_encoding",
-    "field",
-    "tags",
-)
+# After the field-native change, the swappable byte-hash seam governs ONLY
+# `tagged_hash` and the two bundle statement digests -- the public input, which
+# the verifier computes outside the circuit. Commitments, nullifiers, keys and
+# Merkle roots are computed by `field_hash`, pinned to Rescue because the
+# circuit is built against that permutation.
+#
+# So every other section must be byte-IDENTICAL across golden files, and these
+# three must DIFFER. Stating it as "everything except these" rather than an
+# allow-list means a new section is covered the day it is added, instead of
+# being silently unchecked until someone remembers to list it.
+SEAM_DEPENDENT = ("tagged_hash", "bundle", "shielding_bundle")
 
 
 def check_hash_independent_sections(golden):
@@ -123,9 +122,7 @@ def check_hash_independent_sections(golden):
     """
     import glob
 
-    print("\nHash-independent sections agree across golden files:")
-    for name in HASH_INDEPENDENT:
-        check(f"golden declares '{name}'", name in golden)
+    print("\nGolden files agree except where the byte-hash seam applies:")
 
     others = sorted(
         p for p in glob.glob(os.path.join(HERE, "vectors", "shielded_*.json"))
@@ -142,16 +139,20 @@ def check_hash_independent_sections(golden):
             other = json.load(fh)
         check(f"{label} was generated under a different hash",
               other.get("algorithm") != golden.get("algorithm"))
-        for name in HASH_INDEPENDENT:
-            mismatches = list(diff(golden.get(name), other.get(name), name))
-            check(f"{label}: '{name}' identical across hashes", not mismatches)
-            for line in mismatches[:3]:
-                print(f"         {line}")
-        # The hash-dependent parts must actually differ, or the "swap" did not
-        # take effect and one of the files was generated under the wrong hash.
-        check(f"{label}: merkle root differs under a different hash",
-              other.get("merkle", {}).get("root")
-              != golden.get("merkle", {}).get("root"))
+
+        for name in sorted(set(golden) | set(other)):
+            if name == "algorithm":
+                continue
+            if name in SEAM_DEPENDENT:
+                # Must differ, or the swap did not take effect and one file was
+                # generated under the wrong hash.
+                check(f"{label}: '{name}' differs (seam applies)",
+                      golden.get(name) != other.get(name))
+            else:
+                mismatches = list(diff(golden.get(name), other.get(name), name))
+                check(f"{label}: '{name}' identical across hashes", not mismatches)
+                for line in mismatches[:3]:
+                    print(f"         {line}")
 
 
 def main():

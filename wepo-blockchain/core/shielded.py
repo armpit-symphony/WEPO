@@ -45,7 +45,35 @@ from typing import Callable, Dict, List, Optional, Protocol, Sequence, Set, Tupl
 
 HASH_LEN = 32
 MERKLE_DEPTH = 32                      # 2**32 notes; matches Zcash Sapling depth
-MAX_NOTE_VALUE = (1 << 63) - 1         # fits a signed 64-bit accumulator
+# Note values are bounded so a bundle's balance equation cannot WRAP the field.
+#
+# Balance is checked in-circuit over Goldilocks (p = 2**64 - 2**32 + 1) because
+# hash commitments are not homomorphic. The old bound of 2**63-1 was chosen to
+# fit a signed 64-bit Python accumulator, not a field, and it is unsafe here:
+# two legal outputs sum to 2**64-2 = p + 4294967293. Each passes its own 63-bit
+# range check, the residue 4294967293 passes one too, and the field equation
+# balances exactly -- so the bundle mints p base units against a shielding of
+# 4.3e9. Demonstrated in zk/src/bin/step2_bundle.rs, which accepts that bundle
+# at 63 bits and rejects it at a safe width.
+#
+# The safe condition is `terms_per_side * 2**VALUE_BITS <= p`:
+#
+#     bits  63    62    61    60    59    58    57    56
+#     terms  1     3     7    15    31    63   127   255
+#
+# 58 bits gives 63 terms per side, against 7 for the largest bundle the 254
+# column cap can hold today (4 spends + value_balance). It is deliberately not
+# the tightest choice: the pending bundle-ceiling decision includes going
+# sequential to fit MORE spends, and a width that only just covers today's
+# ceiling would have to be revisited as a second consensus change. 58 decouples
+# the two.
+#
+# Headroom is ample in the other direction too: 2**58 is ~42x the entire
+# 69,000,003 WEPO supply (6.9e15 base units), so no legitimate note comes close.
+#
+# The circuit's VALUE_BITS must equal this width.
+VALUE_BITS = 58
+MAX_NOTE_VALUE = (1 << VALUE_BITS) - 1
 COMMITMENT_LEN = HASH_LEN
 NULLIFIER_LEN = HASH_LEN
 ANCHOR_LEN = HASH_LEN
