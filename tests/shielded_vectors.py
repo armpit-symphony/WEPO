@@ -131,8 +131,38 @@ def build_vectors(algorithm: str = S.POOL_HASH_ALGORITHM) -> dict:
                 "root": path.compute_root(commitments[position]).hex(),
             })
 
+        # A synthetic path at a deep, bit-alternating position.
+        #
+        # The populated tree only holds six notes, so every position in it has
+        # zero bits above level 2 and the right-child branch goes unexercised
+        # from there up. Steps 2.1 and 2.2 were originally witnessed at position
+        # 0, where EVERY direction bit is zero: the bit column became the zero
+        # polynomial, the placement constraint collapsed from degree 2 to 1, and
+        # the right-child branch was never exercised at all -- while both steps
+        # passed.
+        #
+        # 0xA5A5A5A5 is 1010 0101 repeating, so it alternates from level 0 and
+        # sets bits across all 32 levels. This is not a path in the populated
+        # tree; siblings are taken from the empty ladder. It exists purely to
+        # pin traversal in both directions at every level, in both runtimes.
+        deep_position = 0xA5A5A5A5
+        deep_siblings = [S.EMPTY_ROOTS[level] for level in range(S.MERKLE_DEPTH)]
+        deep_path = S.MerklePath(position=deep_position, siblings=deep_siblings)
+        deep_commitment = commitments[0]
+
         merkle = {
             "empty_root_leaf_level": S.EMPTY_ROOTS[0].hex(),
+            "synthetic_deep_path": {
+                "note": "not a path in the tree above; siblings are empty roots. "
+                        "Pins left/right traversal at all 32 levels -- a witness "
+                        "with zero direction bits collapses the placement "
+                        "constraint and silently skips the right-child branch.",
+                "position": deep_position,
+                "position_bits": format(deep_position, "032b"),
+                "commitment": deep_commitment.hex(),
+                "siblings": [s.hex() for s in deep_siblings],
+                "root": deep_path.compute_root(deep_commitment).hex(),
+            },
             "empty_roots": [r.hex() for r in S.EMPTY_ROOTS],
             # There is no leaf hash: the tree's leaves ARE the commitments,
             # which are already domain-separated digests. The empty-slot

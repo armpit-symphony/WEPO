@@ -236,6 +236,27 @@ def main():
           golden["bundle"]["statement_digest"]
           != golden["shielding_bundle"]["statement_digest"])
 
+    print("\nSynthetic deep path exercises both branches at every level:")
+    deep = golden["merkle"]["synthetic_deep_path"]
+    bits = deep["position_bits"]
+    check("deep position sets bits at all 32 levels", len(bits) == 32)
+    check("deep position exercises the right-child branch", "1" in bits)
+    check("deep position exercises the left-child branch", "0" in bits)
+    # The degeneracy that hid the bug: a position whose bits are all zero makes
+    # the direction column the zero polynomial, so the placement constraint
+    # collapses and the right-child branch is never taken.
+    check("deep position is not degenerate (bits are mixed, not all-zero)",
+          set(bits) == {"0", "1"})
+    check("bits alternate, so no run of levels shares a direction",
+          "0000" not in bits and "1111" not in bits)
+    deep_path = S.MerklePath(position=deep["position"],
+                             siblings=[bytes.fromhex(s) for s in deep["siblings"]])
+    check("deep path replays through shielded.py to the stated root",
+          deep_path.compute_root(bytes.fromhex(deep["commitment"])).hex()
+          == deep["root"])
+    check("deep root differs from the populated root",
+          deep["root"] != golden["merkle"]["root"])
+
     check_pinned_empty_ladder(golden)
     check_hash_independent_sections(golden)
 
