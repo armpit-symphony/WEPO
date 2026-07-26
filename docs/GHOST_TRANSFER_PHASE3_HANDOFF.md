@@ -121,6 +121,62 @@ If a common bundle does not fit, the parallel layout has to partially invert for
 multi-spend — trading rows back for columns, the same tradeoff measured at 2.2.
 That is a cheap decision at 2.4 and an expensive one at 2.5.
 
+### Measured bundle ceiling (from 2.4) — needs a decision at 2.5
+
+Per spend 52 columns (measured), per output ~20 (commitment only — no path, no
+nullifier), balance ~4.
+
+| bundle | columns | proof | capacity |
+|---|---|---|---|
+| 2 spends + 2 outputs | 148 | ~94 KB | ~11 tx/MB |
+| 4 spends + 2 outputs | 252 | ~145 KB | ~7 tx/MB |
+
+**4 spends is the hard ceiling with 2 outputs** — 252 against the 254 cap. Past
+that the parallel layout dies and spends go sequential at 512 rows.
+
+Two consequences that are protocol decisions, not implementation details:
+
+- **A 4-input cap is a real UX limit.** A wallet holding many small notes cannot
+  consolidate more than four in one transaction. Dust consolidation becomes
+  multi-transaction, which costs fees and leaks timing.
+- **Splitting into multiple proofs is not free.** One aggregate proof per
+  transaction exists *because* hash commitments are not homomorphic, so balance
+  must be proven in-circuit across all spends and outputs at once. Two proofs
+  means two balance statements, and nothing binds them together without a
+  second-level construction.
+
+So the choice at 2.5 is: accept a 4-spend cap, go sequential for larger bundles
+(512 rows, more proof), or design a two-level aggregation. Decide it with the
+2.5 numbers in hand.
+
+### The tx/MB figure keeps falling — track it deliberately
+
+20 → 17–19 → 14–16 → **~11 for a realistic 2-in/2-out bundle**. Each drop came
+from the circuit getting more complete or the measurement getting more honest,
+not from anything going wrong. But the trend is monotonic and block/fee policy
+is downstream of it, so treat every figure as provisional until 2.5 and expect
+the final number to be lower again.
+
+### Declared constraint degree: derive it, do not measure it
+
+Winterfell's debug degree assertion cannot arbitrate its own question here.
+Declaring 510/765 for the range constraints reports actual 0; declaring 255
+reports 510/765 — same trace, same expressions.
+
+The reason is that the assertion interpolates `C(x)/D(x)` **on one satisfying
+trace**. On a valid trace the constraint evaluates to zero everywhere, so the
+numerator vanishes on the whole domain and the quotient's degree reflects that
+particular trace, not the constraint's bound. The bound has to hold for *all*
+traces, including invalid ones — which is exactly the case the measurement never
+sees.
+
+So: derive the declared degree from the algebra (a degree-1/2 trace expression
+times a length-256 periodic column), and treat the debug assertion as a smoke
+detector rather than an oracle. **When in doubt, over-declare** — that costs a
+larger composition polynomial and nothing else, while under-declaring is
+unsound. Behaviour is the real check: out-of-range rejected, legal values
+accepted.
+
 ### Test witnesses must not be structurally degenerate
 
 Steps 2.1 and 2.2 were originally witnessed with `paths[0]`. Position 0 makes
@@ -134,6 +190,20 @@ would have hidden the `encode()` element-count bug; `value = 0` would zero the
 value column at 2.4. Choose witnesses that are structurally generic — non-zero,
 mixed bits, nothing aligned — and prefer covering both branches of any binary
 choice in every step.
+
+**Mixedness is not enough — aperiodicity matters too, and less obviously.** The
+first fix for the position-0 bug was `0xA5A5A5A5`, which alternates from level 0
+and looks maximally generic. But `A5` repeated gives the direction bits a period
+of 8 levels = 64 rows, an exact divisor of the 256-row trace, so the bit column
+interpolates to a polynomial in `x**4` of degree 252 rather than 255. Every
+constraint multiplying by it lands 3–6 below its declared degree, disabling the
+debug degree assertion — the check that had caught two real bugs. A degeneracy
+aimed straight at the Rescue cycle.
+
+The vector now uses `0x9E3779B9` and asserts the property, not the constant: no
+period dividing 32, and both directions present in every 8-level window. For
+range values, the same rule says the headline witness must not be `0`,
+`2^63−1`, or a power of two.
 
 ## Step 3 — the verifier boundary
 
