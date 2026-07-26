@@ -992,18 +992,18 @@ fn main() {
     let golden_pos = entry["position"].as_u64().unwrap() as usize;
     let golden_bits: Vec<bool> = (0..DEPTH).map(|l| (golden_pos >> l) & 1 == 1).collect();
 
-    // The PROVED witness uses a different position, and the reason is specific.
-    // 0xA5A5A5A5 is the byte A5 repeated four times, so its direction bits have
-    // period 8 LEVELS -- which is 64 rows, an exact divisor of the 256-row trace.
-    // The bit column then interpolates to a polynomial in x^4 of degree 252
-    // rather than 255, and every constraint that multiplies by that bit comes out
-    // 3 to 6 below its declared degree. Winterfell's debug-only degree assertion
-    // fails, which costs the check that caught both real bugs in this circuit.
-    // 0x9E3779B9 has no period dividing 32 and no run longer than 3, so the bit
-    // column is a generic degree-255 polynomial. The golden root is still pinned,
-    // just below and natively, using the golden position.
-    const PROVE_POS: usize = 0x9E37_79B9;
-    let position = PROVE_POS;
+    // The golden position is now aperiodic, so the proved witness shares it.
+    // Asserted rather than assumed: a position whose direction bits repeat with
+    // any period dividing 32 makes the bit column a polynomial in x^(32/period)
+    // of degree below 255, which drops every constraint that multiplies by it
+    // below its declared degree and disables Winterfell's debug degree check.
+    for period in [1usize, 2, 4, 8, 16] {
+        assert!(
+            !(0..DEPTH).all(|l| golden_bits[l] == golden_bits[l % period]),
+            "deep path position has period {period}, which divides 32"
+        );
+    }
+    let position = golden_pos;
     let bits: Vec<bool> = (0..DEPTH).map(|l| (position >> l) & 1 == 1).collect();
 
     // Pin the traversal against the node: the deep path's own leaf must fold to
