@@ -13,8 +13,10 @@ import os
 import secrets
 import sys
 
-CORE = os.path.join(os.path.dirname(__file__), "..", "wepo-blockchain", "core")
+HERE = os.path.dirname(os.path.abspath(__file__))
+CORE = os.path.join(HERE, "..", "wepo-blockchain", "core")
 sys.path.insert(0, os.path.abspath(CORE))
+sys.path.insert(0, HERE)
 
 import _backend_shim  # noqa: F401,E402  (must precede `import shielded`)
 import shielded as S  # noqa: E402
@@ -492,6 +494,8 @@ def test_end_to_end_flow():
 
 
 def main():
+    global FAILURES
+    FAILURES = []
     test_hashing()
     test_hash_agnostic()
     test_field_element_encoding()
@@ -510,6 +514,22 @@ def main():
         return 1
     print("RESULT: ALL CHECKS PASSED")
     return 0
+
+
+# --- pytest entry point -------------------------------------------------------
+#
+# These suites are scripts: `check()` records a failure and returns, so the run
+# can report every problem at once instead of stopping at the first. That design
+# is invisible to pytest, which sees plain functions that never raise and marks
+# them passed. Collected directly, `pytest tests/` reported "28 passed" with the
+# vector suite contributing zero tests and the rest passing vacuously -- absence
+# of failure looking like success, the same shape as the stale-binary problem.
+#
+# This is the one collectable test, and it fails when the suite fails.
+
+
+def test_suite():
+    assert main() == 0, "suite reported failures; run the script directly for detail"
 
 
 if __name__ == "__main__":

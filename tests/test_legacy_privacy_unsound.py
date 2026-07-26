@@ -34,6 +34,8 @@ def check(name, condition):
 
 
 def main():
+    global FAILURES
+    FAILURES = []
     import privacy
 
     ct = privacy.ConfidentialTransactions()
@@ -126,6 +128,22 @@ def main():
         return 1
     print("RESULT: ALL CHECKS PASSED -- legacy privacy.py is confirmed unsound")
     return 0
+
+
+# --- pytest entry point -------------------------------------------------------
+#
+# These suites are scripts: `check()` records a failure and returns, so the run
+# can report every problem at once instead of stopping at the first. That design
+# is invisible to pytest, which sees plain functions that never raise and marks
+# them passed. Collected directly, `pytest tests/` reported "28 passed" with the
+# vector suite contributing zero tests and the rest passing vacuously -- absence
+# of failure looking like success, the same shape as the stale-binary problem.
+#
+# This is the one collectable test, and it fails when the suite fails.
+
+
+def test_suite():
+    assert main() == 0, "suite reported failures; run the script directly for detail"
 
 
 if __name__ == "__main__":
