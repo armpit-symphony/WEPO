@@ -200,6 +200,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.87.0
         with:
           targets: wasm32-unknown-unknown
+      - name: Build Ghost artifacts before dependency installation
+        working-directory: wepo-desktop-wallet
+        shell: pwsh
+        run: npm run build-ghost-artifacts
       - name: Install pinned frontend dependencies
         working-directory: frontend
         run: npm ci
@@ -212,10 +216,6 @@ jobs:
       - name: Install pinned desktop dependencies
         working-directory: wepo-desktop-wallet
         run: npm ci
-      - name: Build Ghost artifacts before canonical verification
-        working-directory: wepo-desktop-wallet
-        shell: pwsh
-        run: npm run build-ghost-artifacts
       - name: Audit shipped desktop dependencies
         working-directory: wepo-desktop-wallet
         run: npm audit --omit=dev --audit-level=low

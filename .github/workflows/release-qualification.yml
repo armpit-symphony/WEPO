@@ -158,10 +158,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.87.0
         with:
           targets: wasm32-unknown-unknown
-      - name: Install frontend and desktop dependencies
-        run: |
-          npm ci --prefix frontend
-          npm ci --prefix wepo-desktop-wallet
       - name: Build Ghost artifacts on the Windows release runner
         working-directory: wepo-desktop-wallet
         shell: pwsh
@@ -169,6 +165,10 @@ jobs:
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\release-evidence\logs" | Out-Null
           npm run build-ghost-artifacts 2>&1 | Tee-Object "$env:RUNNER_TEMP\release-evidence\logs\ghost-windows-build.log"
+      - name: Install frontend and desktop dependencies
+        run: |
+          npm ci --prefix frontend
+          npm ci --prefix wepo-desktop-wallet
       - name: Build frontend and verify package boundary
         working-directory: wepo-desktop-wallet
         shell: pwsh
