@@ -34,6 +34,11 @@ jobs:
             requirements-test.txt
             backend/requirements.txt
             wepo-blockchain/requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.17.0"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
       - uses: dtolnay/rust-toolchain@1.87.0
       - name: Install product and test dependencies
         run: |
@@ -42,9 +47,11 @@ jobs:
             -r wepo-blockchain/requirements.txt \
             -r backend/requirements.txt \
             -r requirements-test.txt
+      - name: Install pinned frontend dependencies
+        run: npm ci --prefix frontend
       - name: Build rescue hashing binary
         working-directory: zk
-        run: cargo build --release --locked --bin poolhash --bin fieldhash
+        run: cargo build --release --locked --bin poolhash --bin fieldhash --bin ghost_verifier --bin ghost_fixture
       - name: Compile consensus and boundary modules
         run: |
           python -m py_compile \

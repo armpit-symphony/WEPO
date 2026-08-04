@@ -1670,10 +1670,10 @@ def main() -> int:
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     fixture = generate()
-    output.write_text(
-        json.dumps(fixture, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    with output.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(
+            json.dumps(fixture, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+        )
     print(output.resolve())
     return 0
 

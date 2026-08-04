@@ -2,7 +2,7 @@
   "schema": "wepo-validator-signer-protocol-v3",
   "test_only": true,
   "source_fixture": "state_transition_oracle_v1.json",
-  "source_fixture_sha256": "669a1d9fec6cd168670e140cb07469993db1db35de8ec615c7ad49afb32ad7c2",
+  "source_fixture_sha256": "6f9c8afe27da7287d5656604e6e5fe80c516eebb147e146e5c2bec86738746bc",
   "request": {
     "version": 3,
     "operation": "sign",

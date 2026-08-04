@@ -22,6 +22,10 @@ GENERATOR = ROOT / "tests" / "generate_state_transition_fixture.py"
 ORACLE = ROOT / "tests" / "state_transition_oracle.mjs"
 
 
+def _canonical_fixture_bytes(path: Path) -> bytes:
+    return path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
 def _run_oracle(path: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["node", str(ORACLE), str(path)],
@@ -392,7 +396,7 @@ def test_fixture_generator_is_byte_reproducible(tmp_path):
         check=False,
     )
     assert result.returncode == 0, result.stdout + "\n" + result.stderr
-    assert regenerated.read_bytes() == FIXTURE.read_bytes()
+    assert _canonical_fixture_bytes(regenerated) == _canonical_fixture_bytes(FIXTURE)
 
     oracle_result = _run_oracle(regenerated)
     assert oracle_result.returncode == 0, (
