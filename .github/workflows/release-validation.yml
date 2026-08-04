@@ -44,7 +44,7 @@ jobs:
             -r requirements-test.txt
       - name: Build rescue hashing binary
         working-directory: zk
-        run: cargo build --release --locked --bin poolhash
+        run: cargo build --release --locked --bin poolhash --bin fieldhash
       - name: Compile consensus and boundary modules
         run: |
           python -m py_compile \
