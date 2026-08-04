@@ -100,7 +100,11 @@ def main() -> int:
             logs.append({"command": command, "status": "pass", "output": output[-4000:]})
         except subprocess.CalledProcessError as exc:
             logs.append({"command": command, "status": "fail", "returncode": exc.returncode})
-            raise RuntimeError(f"Ghost artifact build failed: {' '.join(command)}") from exc
+            detail = (exc.stdout or "").strip()
+            suffix = f"\n{detail[-8000:]}" if detail else ""
+            raise RuntimeError(
+                f"Ghost artifact build failed: {' '.join(command)}{suffix}"
+            ) from exc
 
     for source in (native_source, wasm_source):
         if not source.is_file() or source.stat().st_size == 0:
