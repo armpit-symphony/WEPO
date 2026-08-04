@@ -80,10 +80,10 @@ fn main() {
         match unhex(&line) {
             Some(bytes) => {
                 let _ = writeln!(out, "{}", hex(&pool_hash(&bytes)));
-            },
+            }
             None => {
                 let _ = writeln!(out, "ERR");
-            },
+            }
         }
         // flush per line: this runs as a live request/response service
         let _ = out.flush();

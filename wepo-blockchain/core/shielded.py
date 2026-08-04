@@ -45,7 +45,16 @@ from typing import Callable, Dict, List, Optional, Protocol, Sequence, Set, Tupl
 
 HASH_LEN = 32
 MERKLE_DEPTH = 32                      # 2**32 notes; matches Zcash Sapling depth
-MAX_NOTE_VALUE = (1 << 63) - 1         # fits a signed 64-bit accumulator
+# The complete Goldilocks-field bundle circuit proves 61-bit note values. With
+# the v1 bundle limits below, either side of the balance equation contains at
+# most five terms (four spends plus value_balance), so its integer sum cannot
+# wrap the field modulus. These are consensus constants, not deployment knobs.
+SHIELDED_VALUE_BITS = 61
+MAX_NOTE_VALUE = (1 << SHIELDED_VALUE_BITS) - 1
+MAX_SHIELDED_SPENDS = 4
+MAX_SHIELDED_OUTPUTS = 2
+MAX_SHIELDED_PROOF_BYTES = 1024 * 1024
+MAX_ENCRYPTED_NOTE_BYTES = 16 * 1024
 COMMITMENT_LEN = HASH_LEN
 NULLIFIER_LEN = HASH_LEN
 ANCHOR_LEN = HASH_LEN
@@ -553,7 +562,9 @@ class NoteCommitmentTree:
             raise ShieldedError("only the consensus depth is supported")
         self.depth = depth
         self._leaves: List[bytes] = []
-        self._layers: List[List[bytes]] = [[]]
+        # Sparse occupied-prefix nodes by level. Appending touches one node per
+        # level instead of rebuilding every historical layer.
+        self._nodes: List[Dict[int, bytes]] = [dict() for _ in range(depth + 1)]
 
     @property
     def size(self) -> int:
@@ -565,31 +576,26 @@ class NoteCommitmentTree:
         if self.size >= (1 << self.depth):
             raise ShieldedError("note commitment tree is full")
         position = len(self._leaves)
-        self._leaves.append(commitment)
-        self._rebuild()
+        value = bytes(commitment)
+        self._leaves.append(value)
+        self._nodes[0][position] = value
+
+        index = position
+        for level in range(self.depth):
+            parent = index >> 1
+            left_index = parent << 1
+            left = self._nodes[level].get(left_index, EMPTY_ROOTS[level])
+            right = self._nodes[level].get(left_index + 1, EMPTY_ROOTS[level])
+            self._nodes[level + 1][parent] = _node_hash(left, right)
+            index = parent
         return position
 
-    def _rebuild(self) -> None:
-        # Recomputes the layers over the occupied prefix. The tree is small during
-        # tests and early chain life; a production node keeps incremental frontier
-        # state instead of rebuilding (see design doc, "frontier" section).
-        layer = list(self._leaves)  # leaves are the commitments themselves
-        self._layers = [layer]
-        for level in range(self.depth):
-            empty = EMPTY_ROOTS[level]
-            nxt = []
-            for i in range(0, max(len(layer), 1), 2):
-                left = layer[i] if i < len(layer) else empty
-                right = layer[i + 1] if i + 1 < len(layer) else empty
-                nxt.append(_node_hash(left, right))
-            layer = nxt
-            self._layers.append(layer)
 
     def root(self) -> bytes:
         """Current anchor."""
         if not self._leaves:
             return EMPTY_ROOTS[self.depth]
-        return self._layers[self.depth][0]
+        return self._nodes[self.depth][0]
 
     def path(self, position: int) -> MerklePath:
         """Authentication path for the note at `position`."""
@@ -598,11 +604,10 @@ class NoteCommitmentTree:
         siblings: List[bytes] = []
         index = position
         for level in range(self.depth):
-            layer = self._layers[level]
             empty = EMPTY_ROOTS[level]
             sibling_index = index ^ 1
             siblings.append(
-                layer[sibling_index] if sibling_index < len(layer) else empty
+                self._nodes[level].get(sibling_index, empty)
             )
             index >>= 1
         return MerklePath(position=position, siblings=siblings)
@@ -719,6 +724,10 @@ class OutputDescription:
         _require_len("commitment", self.commitment, COMMITMENT_LEN)
         if not isinstance(self.enc_note, (bytes, bytearray)):
             raise ShieldedError("enc_note must be bytes")
+        if len(self.enc_note) > MAX_ENCRYPTED_NOTE_BYTES:
+            raise ShieldedError(
+                f"enc_note exceeds {MAX_ENCRYPTED_NOTE_BYTES} bytes"
+            )
 
 
 @dataclass
@@ -746,10 +755,24 @@ class ShieldedBundle:
         """Structural checks that hold regardless of the proof system."""
         if not self.spends and not self.outputs:
             raise ShieldedError("bundle must contain at least one spend or output")
+        if len(self.spends) > MAX_SHIELDED_SPENDS:
+            raise ShieldedError(
+                f"bundle has too many spends: {len(self.spends)} > "
+                f"{MAX_SHIELDED_SPENDS}"
+            )
+        if len(self.outputs) > MAX_SHIELDED_OUTPUTS:
+            raise ShieldedError(
+                f"bundle has too many outputs: {len(self.outputs)} > "
+                f"{MAX_SHIELDED_OUTPUTS}"
+            )
         if type(self.value_balance) is not int or isinstance(self.value_balance, bool):
             raise ShieldedError("value_balance must be an int")
         if abs(self.value_balance) > MAX_NOTE_VALUE:
             raise ShieldedError("value_balance out of range")
+        if not isinstance(self.proof, (bytes, bytearray)):
+            raise ShieldedError("proof must be bytes")
+        if len(self.proof) > MAX_SHIELDED_PROOF_BYTES:
+            raise ShieldedError("shielded proof exceeds consensus size limit")
 
         seen: Set[bytes] = set()
         for nf in self.nullifiers():
@@ -799,8 +822,8 @@ class ShieldedVerifier(Protocol):
       1. every spent note's commitment is in the tree under the bundle's anchor;
       2. every nullifier is `H(nk, rho)` for the note it spends;
       3. the prover holds the spending key authorising each `pk_d`;
-      4. every output note's value is in `[0, MAX_NOTE_VALUE]` (no negatives, no
-         wraparound);
+      4. every spent and output note's value is in `[0, MAX_NOTE_VALUE]` (no
+         negatives, no wraparound);
       5. `sum(spent values) + max(value_balance, 0)`
            `== sum(output values) + max(-value_balance, 0)`.
 
@@ -829,9 +852,12 @@ class RejectAllVerifier:
 
 
 _VERIFIER: ShieldedVerifier = RejectAllVerifier()
+_VERIFIER_AUDIT_APPROVED = False
 
 
-def register_verifier(verifier: ShieldedVerifier) -> None:
+def register_verifier(
+    verifier: ShieldedVerifier, *, audit_approved: bool = False
+) -> None:
     """Install the proof verifier used by consensus.
 
     Call this only with an implementation backed by a vetted proving system.
@@ -839,8 +865,13 @@ def register_verifier(verifier: ShieldedVerifier) -> None:
     """
     if not hasattr(verifier, "verify"):
         raise ShieldedError("verifier must expose verify(statement_digest, proof)")
-    global _VERIFIER
+    if type(audit_approved) is not bool:
+        raise ShieldedError("audit_approved must be a boolean")
+    global _VERIFIER, _VERIFIER_AUDIT_APPROVED
     _VERIFIER = verifier
+    _VERIFIER_AUDIT_APPROVED = (
+        audit_approved and not isinstance(verifier, RejectAllVerifier)
+    )
 
 
 def active_verifier() -> ShieldedVerifier:
@@ -848,8 +879,11 @@ def active_verifier() -> ShieldedVerifier:
 
 
 def verifier_is_audited() -> bool:
-    """False while the reject-all default is installed."""
-    return not isinstance(_VERIFIER, RejectAllVerifier)
+    """Return the explicit external-audit approval state.
+
+    Registering executable code alone never implies that it was audited.
+    """
+    return _VERIFIER_AUDIT_APPROVED
 
 
 # --- consensus entry point ----------------------------------------------------
@@ -885,6 +919,9 @@ def verify_bundle(
         digest = bundle.statement_digest(sighash)
     except ShieldedError as exc:
         return False, str(exc)
+
+    if not verifier_is_audited():
+        return False, "invalid shielded proof"
 
     if not active_verifier().verify(digest, bundle.proof):
         return False, "invalid shielded proof"

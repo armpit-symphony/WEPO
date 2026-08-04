@@ -1,0 +1,48 @@
+{
+  "format": "wepo-monitoring-evidence-v1",
+  "network_profile": "release-candidate",
+  "mainnet_live_network": false,
+  "release_commit": "REPLACE_WITH_RELEASE_COMMIT",
+  "release_artifact_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+  "observation_window": {
+    "started_at_utc": "REPLACE_WITH_UTC_TIMESTAMP",
+    "ended_at_utc": "REPLACE_WITH_UTC_TIMESTAMP",
+    "duration_minutes": 0
+  },
+  "metrics": {
+    "chain_height_and_tip": false,
+    "peer_count": false,
+    "mempool_size_and_bytes": false,
+    "consensus_rejections": false,
+    "redis_health": false,
+    "certificate_expiry": false
+  },
+  "node_observations": [
+    {
+      "role": "seed-a",
+      "fqdn": "seed-a.wepocoin.org",
+      "p2p_port": 22567,
+      "p2p_reachable": false,
+      "dependency_health_passed": false,
+      "chain_height": 0,
+      "latest_block_hash": "REPLACE_WITH_LOWERCASE_SHA256",
+      "peer_count": 0,
+      "observed_at_utc": "REPLACE_WITH_UTC_TIMESTAMP"
+    }
+  ],
+  "alert_tests": [
+    {
+      "name": "node_unreachable",
+      "status": "REPLACE_WITH_pass",
+      "notification_received": false,
+      "observed_at_utc": "REPLACE_WITH_UTC_TIMESTAMP",
+      "evidence_ref": "REPLACE_WITH_REDACTED_REFERENCE"
+    }
+  ],
+  "retention": {
+    "days": 0,
+    "dashboard_snapshot_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+    "alert_test_log_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+    "logs_redacted": false
+  }
+}

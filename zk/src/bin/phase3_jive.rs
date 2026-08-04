@@ -25,15 +25,16 @@
 use std::time::Instant;
 
 use winterfell::{
-    crypto::{hashers::Blake3_256, hashers::Rp64_256, hashers::RpJive64_256, DefaultRandomCoin,
-             Digest as _, Hasher, MerkleTree},
+    crypto::{
+        hashers::Blake3_256, hashers::Rp64_256, hashers::RpJive64_256, DefaultRandomCoin,
+        Digest as _, Hasher, MerkleTree,
+    },
     math::{fields::f64::BaseElement, FieldElement, ToElements},
     matrix::ColMatrix,
     AcceptableOptions, Air, AirContext, Assertion, AuxRandElements, BatchingMethod,
-    CompositionPoly, CompositionPolyTrace, DefaultConstraintCommitment,
-    DefaultConstraintEvaluator, DefaultTraceLde, EvaluationFrame, FieldExtension,
-    PartitionOptions, Proof, ProofOptions, Prover, StarkDomain, Trace, TraceInfo,
-    TracePolyTable, TraceTable, TransitionConstraintDegree,
+    CompositionPoly, CompositionPolyTrace, DefaultConstraintCommitment, DefaultConstraintEvaluator,
+    DefaultTraceLde, EvaluationFrame, FieldExtension, PartitionOptions, Proof, ProofOptions,
+    Prover, StarkDomain, Trace, TraceInfo, TracePolyTable, TraceTable, TransitionConstraintDegree,
 };
 
 type Blake3 = Blake3_256<BaseElement>;
@@ -44,9 +45,9 @@ const NUM_ROUNDS: usize = 7;
 const CYCLE_LEN: usize = 8;
 const MERKLE_DEPTH: usize = 32;
 const CARRY_START: usize = W; // columns 8..12 hold the folded initial state
-// Columns 12..16 hold the running Jive summation, carry[i] + s[i] + s[4+i].
-// It is redundant during the rounds, but the final level has no carry row to
-// compute it on, so without it the anchor is never materialised in the trace.
+                              // Columns 12..16 hold the running Jive summation, carry[i] + s[i] + s[4+i].
+                              // It is redundant during the rounds, but the final level has no carry row to
+                              // compute it on, so without it the anchor is never materialised in the trace.
 const OUT_START: usize = W + DIGEST_LEN;
 const BIT_COL: usize = W + 2 * DIGEST_LEN; // column 16
 const TRACE_WIDTH: usize = W + 2 * DIGEST_LEN + 1; // 17
@@ -115,10 +116,12 @@ impl Air for JiveMerkleAir {
         }
         degrees.push(TransitionConstraintDegree::with_cycles(2, vec![CYCLE_LEN])); // bit
         for _ in 0..DIGEST_LEN {
-            degrees.push(TransitionConstraintDegree::with_cycles(2, vec![CYCLE_LEN])); // placement
+            degrees.push(TransitionConstraintDegree::with_cycles(2, vec![CYCLE_LEN]));
+            // placement
         }
         for _ in 0..DIGEST_LEN {
-            degrees.push(TransitionConstraintDegree::with_cycles(1, vec![CYCLE_LEN])); // new carry
+            degrees.push(TransitionConstraintDegree::with_cycles(1, vec![CYCLE_LEN]));
+            // new carry
         }
         for _ in 0..DIGEST_LEN {
             degrees.push(TransitionConstraintDegree::new(1)); // running Jive summation
@@ -248,7 +251,11 @@ fn sample_witness() -> Witness {
         })
         .collect();
     let bits = (0..MERKLE_DEPTH).map(|i| i % 3 == 0).collect();
-    Witness { leaf, siblings, bits }
+    Witness {
+        leaf,
+        siblings,
+        bits,
+    }
 }
 
 fn arrange(
@@ -257,7 +264,11 @@ fn arrange(
     bit: bool,
     state: &mut [BaseElement],
 ) {
-    let (l, r) = if bit { (sibling, digest) } else { (digest, sibling) };
+    let (l, r) = if bit {
+        (sibling, digest)
+    } else {
+        (digest, sibling)
+    };
     for i in 0..DIGEST_LEN {
         state[i] = l[i];
         state[DIGEST_LEN + i] = r[i];
@@ -281,7 +292,11 @@ fn build_trace(w: &Witness) -> TraceTable<BaseElement> {
     trace.fill(
         |state| {
             arrange(&w.leaf, &w.siblings[0], w.bits[0], state);
-            state[BIT_COL] = if w.bits[0] { BaseElement::ONE } else { BaseElement::ZERO };
+            state[BIT_COL] = if w.bits[0] {
+                BaseElement::ONE
+            } else {
+                BaseElement::ZERO
+            };
         },
         |step, state| {
             let pos = step % CYCLE_LEN;
@@ -298,7 +313,11 @@ fn build_trace(w: &Witness) -> TraceTable<BaseElement> {
                 }
                 let bit = w.bits[level];
                 arrange(&digest, &w.siblings[level], bit, state);
-                state[BIT_COL] = if bit { BaseElement::ONE } else { BaseElement::ZERO };
+                state[BIT_COL] = if bit {
+                    BaseElement::ONE
+                } else {
+                    BaseElement::ZERO
+                };
             }
         },
     );
@@ -404,7 +423,10 @@ fn main() {
     let jive = bench_native("RpJive64_256::merge  (state  8)", 200_000, || {
         std::hint::black_box(RpJive64_256::merge(&[ja, jb]));
     });
-    println!("  -> Jive is {:.2}x the speed of the sponge natively\n", sponge / jive);
+    println!(
+        "  -> Jive is {:.2}x the speed of the sponge natively\n",
+        sponge / jive
+    );
 
     // -- in circuit --------------------------------------------------------
     let w = sample_witness();
@@ -418,7 +440,11 @@ fn main() {
     }
     let mut expect = w.leaf;
     for lvl in 0..MERKLE_DEPTH {
-        let (l, r) = if w.bits[lvl] { (w.siblings[lvl], expect) } else { (expect, w.siblings[lvl]) };
+        let (l, r) = if w.bits[lvl] {
+            (w.siblings[lvl], expect)
+        } else {
+            (expect, w.siblings[lvl])
+        };
         let mut init = [BaseElement::ZERO; W];
         init[..DIGEST_LEN].copy_from_slice(&l);
         init[DIGEST_LEN..].copy_from_slice(&r);
@@ -441,13 +467,29 @@ fn main() {
     for (label, opts) in [
         (
             "96-bit  (32q, blowup 8, cubic)",
-            ProofOptions::new(32, 8, 0, FieldExtension::Cubic, 8, 31,
-                              BatchingMethod::Linear, BatchingMethod::Linear),
+            ProofOptions::new(
+                32,
+                8,
+                0,
+                FieldExtension::Cubic,
+                8,
+                31,
+                BatchingMethod::Linear,
+                BatchingMethod::Linear,
+            ),
         ),
         (
             "128-bit (43q, blowup 8, cubic)",
-            ProofOptions::new(43, 8, 0, FieldExtension::Cubic, 8, 31,
-                              BatchingMethod::Linear, BatchingMethod::Linear),
+            ProofOptions::new(
+                43,
+                8,
+                0,
+                FieldExtension::Cubic,
+                8,
+                31,
+                BatchingMethod::Linear,
+                BatchingMethod::Linear,
+            ),
         ),
     ] {
         let prover = JiveProver { options: opts };
@@ -471,12 +513,27 @@ fn main() {
 
     // soundness spot check
     let prover = JiveProver {
-        options: ProofOptions::new(43, 8, 0, FieldExtension::Cubic, 8, 31,
-                                   BatchingMethod::Linear, BatchingMethod::Linear),
+        options: ProofOptions::new(
+            43,
+            8,
+            0,
+            FieldExtension::Cubic,
+            8,
+            31,
+            BatchingMethod::Linear,
+            BatchingMethod::Linear,
+        ),
     };
     let proof = prover.prove(trace.clone()).unwrap();
     let mut bad = root;
     bad[0] += BaseElement::ONE;
-    println!("\nwrong anchor rejected: {}", if verify_at(proof, bad, 95) { "NO -- UNSOUND" } else { "yes" });
+    println!(
+        "\nwrong anchor rejected: {}",
+        if verify_at(proof, bad, 95) {
+            "NO -- UNSOUND"
+        } else {
+            "yes"
+        }
+    );
     println!("\nbaseline to beat: Rp64_256 sponge = 35,049 B / 5.7 ms at 128-bit");
 }

@@ -265,6 +265,9 @@ def build_vectors(algorithm: str = S.POOL_HASH_ALGORITHM) -> dict:
             "hash_len": S.HASH_LEN,
             "merkle_depth": S.MERKLE_DEPTH,
             "max_note_value": S.MAX_NOTE_VALUE,
+            "max_shielded_spends": S.MAX_SHIELDED_SPENDS,
+            "max_shielded_outputs": S.MAX_SHIELDED_OUTPUTS,
+            "shielded_value_bits": S.SHIELDED_VALUE_BITS,
             "field_encoding": {
                 "note": "little-endian uint32 length prefix, then the bytes",
                 "empty": S._field(b"").hex(),

@@ -5,6 +5,8 @@ Complete blockchain node with P2P networking, mining, and API
 """
 
 import time
+import re
+from decimal import Decimal, InvalidOperation
 import threading
 import signal
 import sys
@@ -19,9 +21,14 @@ import os
 import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+import blockchain as blockchain_core
+import shielded as shielded_consensus
+import shielded_verifier as shielded_verifier_boundary
 from blockchain import (
     WepoBlockchain,
     COIN,
+    SUPPLY_CAP,
+    DEFAULT_TRANSACTION_FEE,
     TX_TYPE_STAKE_CREATE,
     TX_TYPE_MASTERNODE_CREATE,
     RWA_CREATION_MIN_FEE,
@@ -31,20 +38,13 @@ from network_profile import (
     describe_reward_schedule,
     format_block_time,
     get_network_profile,
+    mainnet_release_blockers,
     get_pow_block_time_seconds,
     get_reward_phase_label,
 )
 from p2p_network import WepoP2PNode
-from privacy import (
-    privacy_engine,
-    create_privacy_proof,
-    create_ring_signature_proof,
-    generate_real_private_key,
-    verify_privacy_proof,
-    ZK_STARK_PROOF_SIZE,
-    RING_SIGNATURE_SIZE,
-    CONFIDENTIAL_PROOF_SIZE,
-)
+from address_utils import is_quantum_address
+from validator_signer import ValidatorSigner, load_validator_signer_from_env
 try:
     from atomic_swaps import atomic_swap_engine, SwapType, validate_btc_address, validate_wepo_address
     ATOMIC_SWAPS_AVAILABLE = True
@@ -53,7 +53,61 @@ except Exception:
     ATOMIC_SWAPS_AVAILABLE = False
 
 # Import quantum-resistant components
-from dilithium import generate_wepo_address, get_dilithium_info as get_dilithium_info_impl
+from dilithium import get_dilithium_info as get_dilithium_info_impl, require_real_mldsa
+
+
+def parse_wepo_amount_to_atomic(
+    value: Any,
+    field_name: str,
+    *,
+    allow_zero: bool = False,
+) -> int:
+    """Parse a WEPO API amount exactly, rejecting sub-atomic rounding."""
+    if type(value) is bool or not isinstance(value, (str, int, float, Decimal)):
+        raise ValueError(f"{field_name} must be a decimal WEPO amount")
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError(f"{field_name} must not be empty")
+    else:
+        normalized = str(value)
+
+    try:
+        decimal_value = Decimal(normalized)
+    except (InvalidOperation, ValueError):
+        raise ValueError(f"{field_name} must be a valid decimal WEPO amount")
+    if not decimal_value.is_finite():
+        raise ValueError(f"{field_name} must be finite")
+
+    atomic_value = decimal_value * COIN
+    integral_value = atomic_value.to_integral_value()
+    if atomic_value != integral_value:
+        raise ValueError(f"{field_name} supports at most 8 decimal places")
+
+    result = int(integral_value)
+    if result < 0 or (result == 0 and not allow_zero):
+        qualifier = "non-negative" if allow_zero else "positive"
+        raise ValueError(f"{field_name} must be {qualifier}")
+    if result > SUPPLY_CAP:
+        raise ValueError(f"{field_name} exceeds the WEPO supply cap")
+    return result
+
+
+def configure_release_shielded_verifier() -> bool:
+    """Install the exact audited verifier before constructing an enabled chain."""
+    if not blockchain_core.PRIVACY_CONSENSUS_ENABLED:
+        return False
+    verifier = shielded_verifier_boundary.load_release_shielded_verifier_from_env(
+        audit_approved=(
+            shielded_verifier_boundary.SHIELDED_VERIFIER_RELEASE_AUDIT_APPROVED
+        ),
+        expected_sha256=(
+            shielded_verifier_boundary.SHIELDED_VERIFIER_RELEASE_SHA256
+        ),
+    )
+    shielded_consensus.register_verifier(verifier, audit_approved=True)
+    return True
+
 
 class WepoFullNode:
     """WEPO Full Blockchain Node"""
@@ -63,7 +117,26 @@ class WepoFullNode:
                  background_mining_enabled: Optional[bool] = None,
                  difficulty_override: Optional[int] = None,
                  network_profile: str = "mainnet",
-                 api_host: Optional[str] = None):
+                 api_host: Optional[str] = None,
+                 miner_address: Optional[str] = None,
+                 validator_signer: Optional[ValidatorSigner] = None):
+        configure_release_shielded_verifier()
+        profile = get_network_profile(network_profile)
+        if profile.name == "mainnet":
+            release_blockers = mainnet_release_blockers(profile)
+            if release_blockers:
+                raise RuntimeError(
+                    "Mainnet release gate is closed: "
+                    + ", ".join(release_blockers)
+                    + ". Use the test profile until one reviewed parameter manifest "
+                    "finalizes the complete release decision set."
+                )
+            require_real_mldsa()
+            if not is_quantum_address(profile.genesis_address):
+                raise RuntimeError("Mainnet genesis reward address must be quantum-resistant")
+            if difficulty_override is not None:
+                raise RuntimeError("A difficulty override is not permitted on mainnet")
+
         self.data_dir = data_dir
         self.p2p_port = p2p_port
         self.api_port = api_port
@@ -72,26 +145,42 @@ class WepoFullNode:
         self.api_allowed_origins = [
             origin.strip() for origin in allowed_origins.split(",") if origin.strip()
         ]
-        self.network_profile = network_profile
+        self.network_profile = profile.name
         self.mining_api_enabled = enable_mining
         self.background_mining_enabled = (
             enable_mining if background_mining_enabled is None else background_mining_enabled
         )
+        self.miner_address = miner_address
+        self.validator_signer = (
+            validator_signer if validator_signer is not None else load_validator_signer_from_env()
+        )
+        if self.background_mining_enabled and not is_quantum_address(self.miner_address or ""):
+            raise RuntimeError(
+                "Background mining requires an explicit quantum-resistant miner address"
+            )
         
         # Initialize blockchain
-        self.blockchain = WepoBlockchain(data_dir, network_profile=network_profile)
-        if difficulty_override is not None:
-            self.blockchain.fixed_difficulty = max(1, int(difficulty_override))
-            self.blockchain.current_difficulty = self.blockchain.fixed_difficulty
+        self.blockchain = WepoBlockchain(
+            data_dir,
+            network_profile=self.network_profile,
+            fixed_difficulty=difficulty_override,
+        )
         
         # Initialize P2P network
-        self.p2p_node = WepoP2PNode(port=p2p_port, network_profile=network_profile)
+        self.p2p_node = WepoP2PNode(port=p2p_port, network_profile=self.network_profile)
         
+        self.process_started_at = int(time.time())
+        self._operational_metrics_lock = threading.Lock()
+        self.p2p_block_rejections_total = 0
+        self.p2p_transaction_rejections_total = 0
+
         # Connect blockchain and P2P
         self.p2p_node.on_new_block = self.handle_new_block
         self.p2p_node.on_new_transaction = self.handle_new_transaction
         self.p2p_node.get_block_callback = self.get_block_data
         self.p2p_node.get_headers_callback = self.get_headers_data
+        self.p2p_node.get_transaction_callback = self.get_transaction_data
+        self.p2p_node.has_transaction_callback = self.blockchain.has_transaction
         self.p2p_node.get_block_hashes_callback = self.get_block_hashes
         self.p2p_node.get_height_callback = self.blockchain.get_block_height
         self.p2p_node.get_locator_callback = self.get_block_locator
@@ -102,7 +191,6 @@ class WepoFullNode:
         
         # Mining state
         self.mining_thread: Optional[threading.Thread] = None
-        self.miner_address = generate_wepo_address("wepo-node-miner", address_type="regular")
         self.active_mining_jobs: Dict[str, Dict[str, Any]] = {}
         self.mining_job_ttl_seconds = 300
         
@@ -147,6 +235,8 @@ class WepoFullNode:
         # enabled. Legacy node quantum wallet routes are retired below; canonical
         # Dilithium signing stays client-side.
         def _node_feature_enabled(env_name: str) -> bool:
+            if self.network_profile == "mainnet":
+                return False
             return os.environ.get(env_name, "").strip().lower() in ("1", "true", "yes", "on")
 
         _NODE_GATED_PREFIXES = [
@@ -195,6 +285,7 @@ class WepoFullNode:
                 "node_id": p2p_info['node_id'],
                 "mining_enabled": self.mining_api_enabled,
                 "background_mining_enabled": self.background_mining_enabled,
+                "operational": self.get_operational_metrics(),
             }
         
         # Blockchain info
@@ -270,31 +361,50 @@ class WepoFullNode:
                 from_address = request.get('from_address')
                 to_address = request.get('to_address')
                 amount = request.get('amount')
-                fee = request.get('fee', 0.0001)
                 allow_fee_only = request.get('fee_mode') == 'canonical_settlement'
 
                 if from_address is None or to_address is None or amount is None:
                     raise HTTPException(status_code=400, detail="Missing required fields: from_address, to_address, amount")
-                if not isinstance(amount, (int, float)) or amount < 0:
-                    raise HTTPException(status_code=400, detail="Amount must be a non-negative number")
-                if not isinstance(fee, (int, float)) or fee <= 0:
-                    raise HTTPException(status_code=400, detail="Fee must be a positive number")
-
-                tx = self.blockchain.create_transaction(
-                    from_address,
-                    to_address,
-                    int(round(amount * COIN)),
-                    int(round(fee * COIN)),
-                    allow_fee_only=allow_fee_only,
+                amount_atomic = parse_wepo_amount_to_atomic(
+                    amount, "amount", allow_zero=True
                 )
+                quoted_size = None
+                if request.get('fee') is None and not allow_fee_only:
+                    tx, quoted_size = self.blockchain.create_relay_fee_transaction(
+                        from_address, to_address, amount_atomic
+                    )
+                    fee_atomic = tx.fee
+                else:
+                    fee = request.get(
+                        'fee', str(Decimal(DEFAULT_TRANSACTION_FEE) / COIN)
+                    )
+                    fee_atomic = parse_wepo_amount_to_atomic(fee, "fee")
+                    tx = self.blockchain.create_transaction(
+                        from_address,
+                        to_address,
+                        amount_atomic,
+                        fee_atomic,
+                        allow_fee_only=allow_fee_only,
+                    )
                 if not tx:
                     raise HTTPException(status_code=400, detail="Failed to build transaction (insufficient funds or no UTXOs)")
 
                 return {
                     'unsigned_tx': tx.to_dict(),
-                    'sighash': tx.get_canonical_sighash().hex(),
+                    'network': self.blockchain.network_profile.network_label,
+                    'sighash': tx.get_canonical_sighash(
+                        self.blockchain.network_profile.network_label
+                    ).hex(),
+                    'fee_atomic': fee_atomic,
+                    'fee': str(Decimal(fee_atomic) / COIN),
+                    'total_atomic': amount_atomic + fee_atomic,
+                    'total': str(Decimal(amount_atomic + fee_atomic) / COIN),
+                    'signed_canonical_size': quoted_size,
+                    'minimum_relay_fee_per_kb_atomic': self.blockchain.minimum_relay_fee_per_kb,
                     'message': 'Sign sighash with your Dilithium key, then POST the completed tx to /api/transaction/send as {"signed_tx": ...}',
                 }
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
             except HTTPException:
                 raise
             except Exception as e:
@@ -323,7 +433,10 @@ class WepoFullNode:
 
                     if self.blockchain.add_transaction_to_mempool(tx):
                         txid = tx.calculate_txid()
-                        self.p2p_node.broadcast_transaction({'txid': txid, 'tx_data': 'transaction_data'})
+                        self.p2p_node.broadcast_transaction({
+                            'txid': txid,
+                            'tx_data': tx.to_dict(),
+                        })
                         return {
                             'transaction_id': txid,
                             'tx_hash': txid,
@@ -370,12 +483,16 @@ class WepoFullNode:
                     raise HTTPException(status_code=400, detail="Invalid address format")
                 
                 balance = self.blockchain.get_balance_wepo(address)
+                immature_balance = self.blockchain.get_immature_balance_wepo(address)
                 utxos = self.blockchain.get_utxos_for_address(address)
                 _, total_received_atomic, total_sent_atomic = build_wallet_activity(address, limit=None)
                 
                 return {
                     'address': address,
                     'balance': balance,
+                    'spendable_balance': balance,
+                    'immature_balance': immature_balance,
+                    'total_unlocked_balance': balance + immature_balance,
                     'utxo_count': len(utxos),
                     'total_received': total_received_atomic / COIN,
                     'total_received_atomic': total_received_atomic,
@@ -421,13 +538,32 @@ class WepoFullNode:
                 if not all([staker_address, amount]):
                     raise HTTPException(status_code=400, detail="Missing required fields: staker_address, amount")
 
-                if not isinstance(amount, (int, float)) or amount <= 0:
-                    raise HTTPException(status_code=400, detail="Stake amount must be a positive WEPO value")
-
-                amount_atomic = int(round(float(amount) * COIN))
-
-                tx = self.blockchain.create_stake(staker_address, amount_atomic, return_unsigned=True)
+                amount_atomic = parse_wepo_amount_to_atomic(amount, "amount")
+                fee_atomic = parse_wepo_amount_to_atomic(
+                    request.get(
+                        'fee', str(Decimal(DEFAULT_TRANSACTION_FEE) / COIN)
+                    ),
+                    "fee",
+                    allow_zero=True,
+                )
+                tx = self.blockchain.create_stake(
+                    staker_address, amount_atomic, return_unsigned=True,
+                    fee=fee_atomic,
+                )
                 stake_id = (getattr(tx, 'extra_data', {}) or {}).get('stake_id')
+                network = self.blockchain.network_profile.network_label
+                unsigned_tx = tx.to_dict()
+                sighash = tx.get_canonical_sighash(network).hex()
+                signer_authorization = {
+                    'format': 'wepo-validator-stake-authorization-v1',
+                    'network': network,
+                    'validator_address': staker_address,
+                    'unsigned_tx': unsigned_tx,
+                    'input_utxos': self.blockchain.get_transaction_input_utxo_context(
+                        tx, staker_address
+                    ),
+                    'sighash': sighash,
+                }
                 return {
                     'success': True,
                     'status': 'unsigned',
@@ -435,8 +571,12 @@ class WepoFullNode:
                     'staker_address': staker_address,
                     'amount': amount_atomic / COIN,
                     'amount_atomic': amount_atomic,
-                    'unsigned_tx': tx.to_dict(),
-                    'sighash': tx.get_canonical_sighash().hex(),
+                    'fee': fee_atomic / COIN,
+                    'fee_atomic': fee_atomic,
+                    'unsigned_tx': unsigned_tx,
+                    'network': network,
+                    'sighash': sighash,
+                    'validator_signer_authorization': signer_authorization,
                     'message': 'Sign sighash with your Dilithium key, then POST to /api/transaction/send as {"signed_tx": ...}',
                 }
             except ValueError as e:
@@ -445,6 +585,173 @@ class WepoFullNode:
                 raise
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))
+        @self.app.post("/api/shielded/witness")
+        async def get_shielded_witness(request: dict):
+            """Return a public Merkle witness for a known commitment."""
+            try:
+                commitment_hex = request.get("commitment")
+                if not isinstance(commitment_hex, str) or not re.fullmatch(
+                    r"[0-9a-f]{64}", commitment_hex
+                ):
+                    raise HTTPException(status_code=400, detail="Invalid shielded commitment")
+                tree = getattr(self.blockchain, "shielded_tree", None)
+                if tree is None:
+                    raise HTTPException(status_code=503, detail="Shielded commitment tree unavailable")
+                row = self.blockchain.conn.execute(
+                    "SELECT position, block_height FROM shielded_commitments WHERE commitment = ?",
+                    (bytes.fromhex(commitment_hex),),
+                ).fetchone()
+                if row is None:
+                    raise HTTPException(status_code=404, detail="Shielded commitment not found")
+                position, commitment_height = int(row[0]), int(row[1])
+                path = tree.path(position)
+                latest = self.blockchain.get_latest_block()
+                if latest is None:
+                    raise HTTPException(status_code=503, detail="Canonical chain tip unavailable")
+                anchor = tree.root()
+                anchors = getattr(self.blockchain, "shielded_anchors", None)
+                if anchors is None or not anchors.is_valid(anchor):
+                    raise HTTPException(status_code=503, detail="Current shielded anchor is unavailable")
+                chain_hash = latest.get_block_hash()
+                if isinstance(chain_hash, bytes):
+                    chain_hash = chain_hash.hex()
+                return {
+                    "format": "wepo-ghost-witness-v1",
+                    "commitment": commitment_hex,
+                    "position": path.position,
+                    "siblings": [sibling.hex() for sibling in path.siblings],
+                    "anchor": anchor.hex(),
+                    "commitment_height": commitment_height,
+                    "chain_tip": {
+                        "height": self.blockchain.get_block_height(),
+                        "hash": str(chain_hash).lower(),
+                    },
+                }
+            except HTTPException:
+                raise
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
+        @self.app.post("/api/transaction/build-ghost-unsigned")
+        async def build_ghost_unsigned_transaction(request: dict):
+            """Validate a client-supplied unsigned Ghost skeleton.
+
+            The node verifies transparent ownership and public value
+            conservation. Note secrets, witnesses, and proofs remain local.
+            """
+            try:
+                flow = request.get("flow")
+                if flow not in {"shielding", "shielded", "unshielding"}:
+                    raise HTTPException(status_code=400, detail="Invalid Ghost transaction flow")
+                unsigned_data = request.get("unsigned_tx")
+                if not isinstance(unsigned_data, dict):
+                    raise HTTPException(status_code=400, detail="Missing unsigned_tx object")
+                parse_data = dict(unsigned_data)
+                bundle_data = parse_data.get("shielded_bundle")
+                if isinstance(bundle_data, dict) and bundle_data.get("proof") is None:
+                    parse_data["shielded_bundle"] = dict(bundle_data)
+                    parse_data["shielded_bundle"].pop("proof", None)
+                try:
+                    tx = blockchain_core.Transaction.from_dict(parse_data)
+                except Exception as exc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Malformed unsigned Ghost transaction: {exc}",
+                    ) from exc
+                bundle = tx.shielded_bundle
+                if (
+                    tx.version != 1 or tx.lock_time != 0 or tx.tx_type != "transfer"
+                    or tx.privacy_proof is not None or tx.ring_signature is not None
+                    or bundle is None
+                ):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Ghost transactions require a canonical transfer with a shielded bundle",
+                    )
+                if any(
+                    item.quantum_signature is not None or item.quantum_public_key is not None
+                    for item in tx.inputs
+                ) or bundle.proof:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Ghost unsigned transactions cannot contain signatures or proofs",
+                    )
+                try:
+                    bundle.check_shape()
+                except Exception as exc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Malformed shielded bundle: {exc}",
+                    ) from exc
+
+                has_inputs = bool(tx.inputs)
+                has_outputs = bool(tx.outputs)
+                has_spends = bool(bundle.spends)
+                has_shielded_outputs = bool(bundle.outputs)
+                value_balance = bundle.value_balance
+                if flow == "shielding" and (
+                    not has_inputs or has_spends or not has_shielded_outputs
+                    or value_balance <= 0
+                ):
+                    raise HTTPException(status_code=400, detail="Invalid shielding flow shape")
+                if flow == "shielded" and (
+                    has_inputs or not has_spends or not has_shielded_outputs
+                    or value_balance != 0 or tx.fee != 0
+                ):
+                    raise HTTPException(status_code=400, detail="Invalid shielded flow shape")
+                if flow == "unshielding" and (
+                    has_inputs or not has_spends or not has_outputs or value_balance >= 0
+                ):
+                    raise HTTPException(status_code=400, detail="Invalid unshielding flow shape")
+                if any(output.value <= 0 for output in tx.outputs):
+                    raise HTTPException(status_code=400, detail="Ghost outputs must be positive")
+
+                input_utxos = []
+                if tx.inputs:
+                    owner_address = request.get("owner_address")
+                    if not isinstance(owner_address, str) or not owner_address:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="owner_address is required for transparent Ghost inputs",
+                        )
+                    try:
+                        input_utxos = self.blockchain.get_transaction_input_utxo_context(
+                            tx, owner_address
+                        )
+                    except ValueError as exc:
+                        raise HTTPException(status_code=400, detail=str(exc)) from exc
+                expected_fee = (
+                    sum(item["amount"] for item in input_utxos)
+                    - sum(output.value for output in tx.outputs)
+                    - value_balance
+                )
+                if expected_fee != tx.fee:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Ghost value conservation failed: expected fee {expected_fee}, got {tx.fee}",
+                    )
+
+                network = self.blockchain.network_profile.network_label
+                unsigned_tx = tx.to_dict()
+                unsigned_tx["shielded_bundle"]["proof"] = None
+                return {
+                    "success": True,
+                    "status": "unsigned",
+                    "flow": flow,
+                    "unsigned_tx": unsigned_tx,
+                    "network": network,
+                    "sighash": tx.get_canonical_sighash(network).hex(),
+                    "fee_atomic": tx.fee,
+                    "input_utxos": input_utxos,
+                    "minimum_relay_fee_per_kb_atomic": self.blockchain.minimum_relay_fee_per_kb,
+                }
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            except HTTPException:
+                raise
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=f"Internal server error: {exc}") from exc
 
         @self.app.post("/api/rwa/build-unsigned-create")
         async def build_unsigned_rwa_create(request: dict):
@@ -461,8 +768,13 @@ class WepoFullNode:
                 if not owner_address or not asset_hash:
                     raise HTTPException(status_code=400, detail="Missing required fields: owner_address, asset_hash")
 
-                fee = request.get('fee', RWA_CREATION_MIN_FEE / COIN)
-                fee_atomic = int(round(float(fee) * COIN))
+                fee_atomic = parse_wepo_amount_to_atomic(
+                    request.get(
+                        'fee', str(Decimal(RWA_CREATION_MIN_FEE) / COIN)
+                    ),
+                    "fee",
+                    allow_zero=True,
+                )
 
                 tx = self.blockchain.create_rwa_creation(
                     owner_address=owner_address,
@@ -480,7 +792,10 @@ class WepoFullNode:
                     'asset_id': (getattr(tx, 'extra_data', {}) or {}).get('asset_id'),
                     'owner_address': owner_address,
                     'unsigned_tx': tx.to_dict(),
-                    'sighash': tx.get_canonical_sighash().hex(),
+                    'network': self.blockchain.network_profile.network_label,
+                    'sighash': tx.get_canonical_sighash(
+                        self.blockchain.network_profile.network_label
+                    ).hex(),
                     'message': 'Sign sighash with your Dilithium key, then POST to /api/transaction/send as {"signed_tx": ...}',
                 }
             except ValueError as e:
@@ -504,8 +819,13 @@ class WepoFullNode:
                 sig_pub = request.get('sig_pub')
                 if not owner_address or not kem_pub or not sig_pub:
                     raise HTTPException(status_code=400, detail="owner_address, kem_pub and sig_pub are required")
-                fee = request.get('fee', MSG_KEY_REGISTER_MIN_FEE / COIN)
-                fee_atomic = int(round(float(fee) * COIN))
+                fee_atomic = parse_wepo_amount_to_atomic(
+                    request.get(
+                        'fee', str(Decimal(MSG_KEY_REGISTER_MIN_FEE) / COIN)
+                    ),
+                    "fee",
+                    allow_zero=True,
+                )
                 tx = self.blockchain.create_key_registration(
                     owner_address=owner_address, kem_pub=kem_pub, sig_pub=sig_pub,
                     fee=fee_atomic, return_unsigned=True,
@@ -515,7 +835,10 @@ class WepoFullNode:
                     'status': 'unsigned',
                     'owner_address': owner_address,
                     'unsigned_tx': tx.to_dict(),
-                    'sighash': tx.get_canonical_sighash().hex(),
+                    'network': self.blockchain.network_profile.network_label,
+                    'sighash': tx.get_canonical_sighash(
+                        self.blockchain.network_profile.network_label
+                    ).hex(),
                     'message': 'Sign sighash with your Dilithium key, then POST to /api/transaction/send as {"signed_tx": ...}',
                 }
             except ValueError as e:
@@ -549,11 +872,10 @@ class WepoFullNode:
 
         @self.app.post("/api/stake/deactivate")
         async def deactivate_stake(request: dict):
-            """Build an UNSIGNED stake deactivation (canonical) or complete legacy unlock.
+            """Build an UNSIGNED canonical stake deactivation.
 
-            Canonical stakes spend the stake-lock UTXO, so the staker must sign:
-            this returns the unsigned tx + sighash for /api/transaction/send.
-            Legacy side-state stakes have no on-chain UTXO and complete here.
+            The stake-lock UTXO is spent only by a client-signed transaction.
+            Legacy side-state value synthesis is deliberately unavailable.
             """
             try:
                 stake_id = request.get('stake_id')
@@ -562,40 +884,45 @@ class WepoFullNode:
                 if not all([stake_id, staker_address]):
                     raise HTTPException(status_code=400, detail="Missing required fields: stake_id, staker_address")
 
-                result = self.blockchain.deactivate_stake(
+                fee_atomic = parse_wepo_amount_to_atomic(
+                    request.get(
+                        'fee', str(Decimal(DEFAULT_TRANSACTION_FEE) / COIN)
+                    ),
+                    "fee",
+                    allow_zero=True,
+                )
+                tx = self.blockchain.deactivate_stake(
                     stake_id=stake_id,
                     staker_address=staker_address,
                     return_unsigned=True,
+                    fee=fee_atomic,
                 )
-
-                # Canonical path returns an unsigned Transaction to be signed client-side.
-                if not isinstance(result, dict):
-                    tx = result
-                    return {
-                        'success': True,
-                        'status': 'unsigned',
-                        'stake_id': stake_id,
-                        'staker_address': staker_address,
-                        'unsigned_tx': tx.to_dict(),
-                        'sighash': tx.get_canonical_sighash().hex(),
-                        'source': 'canonical_transaction',
-                        'message': 'Sign sighash with your Dilithium key, then POST to /api/transaction/send as {"signed_tx": ...}',
-                    }
-
-                # Legacy side-state path completed server-side (no UTXO to spend).
+                network = self.blockchain.network_profile.network_label
+                unsigned_tx = tx.to_dict()
+                sighash = tx.get_canonical_sighash(network).hex()
+                signer_authorization = {
+                    'format': 'wepo-validator-stake-authorization-v1',
+                    'network': network,
+                    'validator_address': staker_address,
+                    'unsigned_tx': unsigned_tx,
+                    'input_utxos': self.blockchain.get_transaction_input_utxo_context(
+                        tx, staker_address
+                    ),
+                    'sighash': sighash,
+                }
                 return {
                     'success': True,
-                    'status': result['status'],
-                    'stake_id': result['stake_id'],
-                    'staker_address': result['staker_address'],
-                    'amount': result['amount'] / COIN,
-                    'amount_atomic': result['amount'],
-                    'total_rewards': result['total_rewards'] / COIN,
-                    'unlock_height': result.get('unlock_height'),
-                    'unlock_txid': result['unlock_txid'],
-                    'txid': result.get('txid', result['unlock_txid']),
-                    'source': result.get('source'),
-                    'message': 'Stake deactivated successfully',
+                    'status': 'unsigned',
+                    'stake_id': stake_id,
+                    'staker_address': staker_address,
+                    'fee': fee_atomic / COIN,
+                    'fee_atomic': fee_atomic,
+                    'unsigned_tx': unsigned_tx,
+                    'network': network,
+                    'sighash': sighash,
+                    'validator_signer_authorization': signer_authorization,
+                    'source': 'canonical_transaction',
+                    'message': 'Sign sighash with your Dilithium key, then POST to /api/transaction/send as {"signed_tx": ...}',
                 }
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
@@ -683,6 +1010,13 @@ class WepoFullNode:
                 collateral_vout = request.get('collateral_vout')
                 ip_address = request.get('ip_address')
                 port = request.get('port', 22567)
+                fee_atomic = parse_wepo_amount_to_atomic(
+                    request.get(
+                        'fee', str(Decimal(DEFAULT_TRANSACTION_FEE) / COIN)
+                    ),
+                    "fee",
+                    allow_zero=True,
+                )
                 
                 if not all([operator_address, collateral_txid, collateral_vout is not None]):
                     raise HTTPException(status_code=400, detail="Missing required fields: operator_address, collateral_txid, collateral_vout")
@@ -695,6 +1029,7 @@ class WepoFullNode:
                     ip_address=ip_address,
                     port=port,
                     return_unsigned=True,
+                    fee=fee_atomic,
                 )
                 masternode_id = (getattr(tx, 'extra_data', {}) or {}).get('masternode_id')
                 return {
@@ -706,8 +1041,13 @@ class WepoFullNode:
                     'collateral_vout': collateral_vout,
                     'ip_address': ip_address,
                     'port': port,
+                    'fee': fee_atomic / COIN,
+                    'fee_atomic': fee_atomic,
                     'unsigned_tx': tx.to_dict(),
-                    'sighash': tx.get_canonical_sighash().hex(),
+                    'network': self.blockchain.network_profile.network_label,
+                    'sighash': tx.get_canonical_sighash(
+                        self.blockchain.network_profile.network_label
+                    ).hex(),
                     'message': 'Sign sighash with your Dilithium key, then POST to /api/transaction/send as {"signed_tx": ...}',
                 }
             except ValueError as e:
@@ -731,10 +1071,18 @@ class WepoFullNode:
                 if not all([masternode_id, operator_address]):
                     raise HTTPException(status_code=400, detail="Missing required fields: masternode_id, operator_address")
 
+                fee_atomic = parse_wepo_amount_to_atomic(
+                    request.get(
+                        'fee', str(Decimal(DEFAULT_TRANSACTION_FEE) / COIN)
+                    ),
+                    "fee",
+                    allow_zero=True,
+                )
                 tx = self.blockchain.deactivate_masternode(
                     masternode_id=masternode_id,
                     operator_address=operator_address,
                     return_unsigned=True,
+                    fee=fee_atomic,
                 )
 
                 return {
@@ -742,8 +1090,13 @@ class WepoFullNode:
                     'status': 'unsigned',
                     'masternode_id': masternode_id,
                     'operator_address': operator_address,
+                    'fee': fee_atomic / COIN,
+                    'fee_atomic': fee_atomic,
                     'unsigned_tx': tx.to_dict(),
-                    'sighash': tx.get_canonical_sighash().hex(),
+                    'network': self.blockchain.network_profile.network_label,
+                    'sighash': tx.get_canonical_sighash(
+                        self.blockchain.network_profile.network_label
+                    ).hex(),
                     'message': 'Sign sighash with your Dilithium key, then POST to /api/transaction/send as {"signed_tx": ...}',
                 }
             except ValueError as e:
@@ -780,121 +1133,19 @@ class WepoFullNode:
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))
         
-        # Privacy operations
-        @self.app.post("/api/privacy/create-proof")
-        async def create_privacy_proof_endpoint(request: dict):
-            """Create privacy proof for transaction"""
-            try:
-                raw_transaction_data = request.get('transaction_data')
-                if raw_transaction_data is None:
-                    raise HTTPException(status_code=400, detail="Missing transaction_data")
+        # Retired pre-Ghost demo API. It is intentionally unavailable on every
+        # network and must never be confused with the consensus-bound Ghost
+        # bundle verifier or a production wallet prover.
+        async def retired_privacy_api():
+            raise HTTPException(
+                status_code=410,
+                detail="Legacy privacy API retired; use the audited Ghost wallet and signed-transaction flow",
+            )
 
-                if isinstance(raw_transaction_data, dict):
-                    transaction_data = dict(raw_transaction_data)
-                else:
-                    serialized_input = str(raw_transaction_data).strip()
-                    if not serialized_input:
-                        raise HTTPException(status_code=400, detail="transaction_data must not be empty")
-                    transaction_data = {
-                        'recipient_address': 'wepo1privacyprooflab000000000000000',
-                        'amount': 0,
-                        'memo': serialized_input,
-                    }
-
-                proof = create_privacy_proof(transaction_data)
-                if not proof:
-                    raise HTTPException(status_code=500, detail="Privacy proof generation returned empty result")
-
-                return {
-                    'success': True,
-                    'privacy_proof': proof.hex(),
-                    'proof_size': len(proof),
-                    'privacy_level': 'maximum'
-                }
-
-            except HTTPException:
-                raise
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=str(e))
-        
-        @self.app.post("/api/privacy/verify-proof")
-        async def verify_privacy_proof_endpoint(request: dict):
-            """Verify privacy proof"""
-            try:
-                proof_data = request.get('proof_data')
-                message = request.get('message')
-
-                if not proof_data:
-                    raise HTTPException(status_code=400, detail="Missing proof_data")
-
-                verification_message = message.encode() if isinstance(message, str) and message else b''
-                is_valid = verify_privacy_proof(
-                    bytes.fromhex(proof_data),
-                    verification_message
-                )
-
-                return {
-                    'valid': is_valid,
-                    'proof_verified': is_valid,
-                    'privacy_level': 'maximum' if is_valid else 'none'
-                }
-
-            except HTTPException:
-                raise
-            except ValueError as e:
-                raise HTTPException(status_code=400, detail=str(e))
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=str(e))
-        
-        @self.app.post("/api/privacy/stealth-address")
-        async def generate_stealth_address(request: dict):
-            """Generate stealth address for privacy"""
-            try:
-                recipient_public_key = request.get('recipient_public_key')
-                if not recipient_public_key:
-                    raise HTTPException(status_code=400, detail="Missing recipient_public_key")
-                
-                # Generate stealth address
-                stealth_addr, shared_secret = privacy_engine.generate_stealth_address(
-                    recipient_public_key.encode()
-                )
-                
-                return {
-                    'stealth_address': stealth_addr,
-                    'shared_secret': shared_secret.hex(),
-                    'privacy_level': 'maximum'
-                }
-                
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=str(e))
-        
-        @self.app.get("/api/privacy/info")
-        async def get_privacy_info():
-            """Get privacy feature information"""
-            try:
-                return {
-                    'privacy_enabled': True,
-                    'supported_features': [
-                        'zk-STARK proofs',
-                        'Ring signatures',
-                        'Confidential transactions',
-                        'Stealth addresses'
-                    ],
-                    'privacy_levels': {
-                        'standard': 'Basic transaction privacy',
-                        'high': 'Enhanced privacy with ring signatures',
-                        'maximum': 'Full privacy with all features'
-                    },
-                    'proof_sizes': {
-                        'zk_stark': ZK_STARK_PROOF_SIZE,
-                        'ring_signature': RING_SIGNATURE_SIZE,
-                        'confidential': CONFIDENTIAL_PROOF_SIZE
-                    },
-                    'implementation': 'Real cryptographic privacy implementation',
-                    'features_status': 'Production ready'
-                }
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=str(e))
+        self.app.add_api_route("/api/privacy/create-proof", retired_privacy_api, methods=["POST"])
+        self.app.add_api_route("/api/privacy/verify-proof", retired_privacy_api, methods=["POST"])
+        self.app.add_api_route("/api/privacy/stealth-address", retired_privacy_api, methods=["POST"])
+        self.app.add_api_route("/api/privacy/info", retired_privacy_api, methods=["GET"])
         
         # Mining operations
         @self.app.get("/api/mining/info")
@@ -917,6 +1168,7 @@ class WepoFullNode:
                 'mining_enabled': self.mining_api_enabled,
                 'background_mining_enabled': self.background_mining_enabled,
                 'mempool_size': len(self.blockchain.mempool),
+                'mempool_bytes': self.blockchain.mempool_bytes,
                 'reward_schedule': describe_reward_schedule(profile),
                 'network': profile.network_label,
                 'network_profile': profile.name,
@@ -929,11 +1181,22 @@ class WepoFullNode:
                 raise HTTPException(status_code=503, detail="Mining API disabled")
 
             reward_address = miner_address or self.miner_address
-            if not reward_address.startswith("wepo1") or len(reward_address) < 30:
-                raise HTTPException(status_code=400, detail="Invalid miner address format")
+            if not reward_address:
+                raise HTTPException(
+                    status_code=400,
+                    detail="A quantum-resistant miner address is required",
+                )
+            if not is_quantum_address(reward_address):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Miner reward address must be quantum-resistant",
+                )
             
             # Create new block template
-            new_block = self.blockchain.create_new_block(reward_address)
+            try:
+                new_block = self.blockchain.create_new_block(reward_address)
+            except RuntimeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
             job_id = f"job_{new_block.height}_{int(time.time())}_{secrets.token_hex(4)}"
             prune_expired_mining_jobs()
             self.active_mining_jobs[job_id] = {
@@ -1301,20 +1564,100 @@ class WepoFullNode:
             """Retired parallel quantum-chain status endpoint."""
             _retired_quantum_wallet_endpoint()
 
-    def handle_new_block(self, block_data: dict):
-        """Handle new block from P2P network"""
+    def _record_p2p_rejection(self, kind: str) -> None:
+        # Wire-boundary tests sometimes create a shell node without __init__.
+        # Production nodes always initialize these fields before P2P starts.
+        lock = getattr(self, "_operational_metrics_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._operational_metrics_lock = lock
+        with lock:
+            if kind == "block":
+                self.p2p_block_rejections_total = getattr(
+                    self, "p2p_block_rejections_total", 0
+                ) + 1
+            elif kind == "transaction":
+                self.p2p_transaction_rejections_total = getattr(
+                    self, "p2p_transaction_rejections_total", 0
+                ) + 1
+            else:
+                raise ValueError(f"unsupported P2P rejection kind: {kind}")
+
+    def get_operational_metrics(self) -> dict:
+        """Combine node, consensus, and transport process counters."""
+        with self._operational_metrics_lock:
+            node_metrics = {
+                "scope": "process",
+                "process_started_at": self.process_started_at,
+                "uptime_seconds": max(0, int(time.time()) - self.process_started_at),
+                "p2p_block_rejections_total": self.p2p_block_rejections_total,
+                "p2p_transaction_rejections_total": (
+                    self.p2p_transaction_rejections_total
+                ),
+            }
+        return {
+            **node_metrics,
+            "consensus": self.blockchain.get_operational_metrics(),
+            "p2p": self.p2p_node.get_network_info()["operational"],
+        }
+
+    def handle_new_block(self, block_data: dict) -> bool:
+        """Handle a P2P block and report whether it was accepted or retained."""
         try:
             incoming_block = self.blockchain.deserialize_block(block_data)
             block_hash = incoming_block.get_block_hash()
             print(f"Received new block from network: {block_hash}")
-            self.blockchain.add_block_with_priority(incoming_block)
+            accepted = self.blockchain.add_block_with_priority(incoming_block)
+            # Valid competing branches and bounded orphans are retained even
+            # when they do not immediately replace the canonical tip.
+            accepted_or_retained = accepted or block_hash in self.blockchain.block_index
+            if not accepted_or_retained:
+                self._record_p2p_rejection("block")
+            return accepted_or_retained
         except Exception as e:
+            self._record_p2p_rejection("block")
             print(f"Failed to process incoming network block: {e}")
+            return False
     
-    def handle_new_transaction(self, tx_data: dict):
-        """Handle new transaction from P2P network"""
-        print(f"Received new transaction from network: {tx_data.get('txid', 'unknown')}")
-        # TODO: Validate and add to mempool
+    def handle_new_transaction(self, tx_data: dict) -> bool:
+        """Validate a complete P2P transaction envelope and add it to the mempool."""
+        try:
+            if not isinstance(tx_data, dict) or set(tx_data) != {"txid", "tx_data"}:
+                self._record_p2p_rejection("transaction")
+                return False
+            claimed_txid = tx_data.get('txid')
+            serialized = tx_data.get('tx_data')
+            if (
+                not isinstance(claimed_txid, str)
+                or len(claimed_txid) != 64
+                or not isinstance(serialized, dict)
+            ):
+                self._record_p2p_rejection("transaction")
+                return False
+
+            try:
+                from blockchain import Transaction as _Tx
+            except ImportError:
+                from core.blockchain import Transaction as _Tx
+            transaction = _Tx.from_dict(serialized)
+            actual_txid = transaction.calculate_txid()
+            if actual_txid != claimed_txid:
+                print("Rejected P2P transaction: claimed txid does not match payload")
+                self._record_p2p_rejection("transaction")
+                return False
+            if not self.blockchain.add_transaction_to_mempool(transaction):
+                self._record_p2p_rejection("transaction")
+                return False
+            print(f"Accepted new transaction from network: {actual_txid}")
+            return True
+        except Exception as exc:
+            self._record_p2p_rejection("transaction")
+            print(f"Rejected malformed P2P transaction: {type(exc).__name__}")
+            return False
+
+    def get_transaction_data(self, txid: str) -> Optional[dict]:
+        """Return a full mempool/confirmed transaction envelope for P2P getdata."""
+        return self.blockchain.get_transaction_payload(txid)
     
     def get_block_data(self, block_hash: str) -> Optional[dict]:
         """Get block data for P2P requests"""
@@ -1351,7 +1694,10 @@ class WepoFullNode:
             print("Starting WEPO mining...")
             while self.running and self.background_mining_enabled:
                 try:
-                    mined_block = self.blockchain.mine_next_block(self.miner_address)
+                    mined_block = self.blockchain.mine_next_block(
+                        self.miner_address,
+                        pos_signer=self.validator_signer,
+                    )
                     if mined_block:
                         print(f"Mined new block {mined_block.height}: {mined_block.get_block_hash()}")
                         
@@ -1477,10 +1823,8 @@ def main():
         background_mining_enabled=False if args.no_mining else not args.no_background_mining,
         difficulty_override=args.difficulty_override,
         network_profile=args.network_profile,
+        miner_address=args.miner_address,
     )
-    
-    if args.miner_address:
-        node.miner_address = args.miner_address
     
     try:
         node.start()

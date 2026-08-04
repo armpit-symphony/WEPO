@@ -1,0 +1,66 @@
+{
+  "format": "wepo-seven-day-rehearsal-evidence-v1",
+  "network_profile": "release-candidate",
+  "mainnet_live_network": false,
+  "release_commit": "REPLACE_WITH_RELEASE_COMMIT",
+  "release_artifact_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+  "parameter_manifest_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+  "observation_window": {
+    "started_at_utc": "REPLACE_WITH_UTC_TIMESTAMP",
+    "ended_at_utc": "REPLACE_WITH_UTC_TIMESTAMP",
+    "duration_hours": 0,
+    "continuous_observation": false
+  },
+  "summary": {
+    "candidate_network_remained_available": false,
+    "unexplained_consensus_divergence_count": 0,
+    "unexplained_supply_mismatch_count": 0,
+    "unresolved_critical_incident_count": 0,
+    "irreversible_data_loss_count": 0
+  },
+  "node_observations": [
+    {
+      "role": "seed-a",
+      "fqdn": "seed-a.wepocoin.org",
+      "failure_domain": "REPLACE_WITH_PROVIDER_AND_REGION",
+      "p2p_reachable_at_end": false,
+      "start_height": 0,
+      "final_height": 0,
+      "final_block_hash": "REPLACE_WITH_LOWERCASE_SHA256",
+      "availability_percent": 0
+    }
+  ],
+  "drills": {
+    "alert_delivery_passed": false,
+    "backup_restore_passed": false,
+    "redis_outage_passed": false,
+    "hostile_traffic_passed": false,
+    "restart_recovery_passed": false,
+    "ghost_valid_transfer_passed": false,
+    "ghost_invalid_proof_refused": false,
+    "ghost_verifier_timeout_crash_refused": false,
+    "ghost_wallet_backup_restore_recovery_passed": false,
+    "pos_live_signing_passed": false,
+    "pos_partition_reorg_passed": false,
+    "validator_anti_equivocation_refused": false,
+    "validator_signer_fencing_failover_passed": false
+  },
+  "supporting_evidence": {
+    "seed_node_inventory_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+    "redis_outage_evidence_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+    "monitoring_evidence_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+    "backup_restore_evidence_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+    "ghost_wallet_acceptance_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+    "ghost_verifier_host_qualification_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+    "pos_multinode_rehearsal_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+    "validator_signer_host_qualification_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+    "validator_fencing_failover_sha256": "REPLACE_WITH_LOWERCASE_SHA256"
+  },
+  "retained_evidence": {
+    "continuous_monitoring_log_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+    "chain_sample_log_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+    "incident_log_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+    "drill_log_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+    "logs_redacted": false
+  }
+}

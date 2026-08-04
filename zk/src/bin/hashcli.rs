@@ -68,10 +68,10 @@ fn main() {
                     hex.push_str(&format!("{b:02x}"));
                 }
                 let _ = writeln!(out, "{hex}");
-            },
+            }
             None => {
                 let _ = writeln!(out, "ERR");
-            },
+            }
         }
     }
     let _ = out.flush();

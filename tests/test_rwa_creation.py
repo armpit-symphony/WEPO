@@ -61,7 +61,7 @@ def asset_hash_of(blob: bytes) -> str:
 def main():
     tmp = tempfile.mkdtemp(prefix="wepo-rwa-test-")
     try:
-        bc = WepoBlockchain(data_dir=tmp)
+        bc = WepoBlockchain(data_dir=tmp, network_profile="test")
         owner_kp, owner_addr = make_owner()
         attacker_kp, attacker_addr = make_owner()
         _, miner_addr = make_owner()
@@ -102,6 +102,22 @@ def main():
         bc._rebuild_canonical_state_from_blocks(list(bc.chain))
         check("asset survives a derived-state rebuild (reorg-safe)",
               bc.get_rwa_asset("asset-001") is not None)
+
+        # Exact-fee inputs legitimately produce no change output. The metadata
+        # commitment is the transaction's effect; all transparent value is fee.
+        exact_kp, exact_addr = make_owner()
+        fund(bc, "d" * 64, 0, exact_addr, RWA_CREATION_MIN_FEE)
+        exact_fee = bc.create_rwa_creation(
+            owner_address=exact_addr, asset_hash=a_hash,
+            fee=RWA_CREATION_MIN_FEE, asset_id="asset-exact-fee",
+            return_unsigned=True,
+        )
+        check("exact-fee RWA builder emits no zero-value change", exact_fee.outputs == [])
+        exact_fee.sign_all_inputs(exact_kp.private_key, exact_kp.public_key)
+        check(
+            "signed exact-fee RWA transaction is accepted",
+            bc.add_transaction_to_mempool(exact_fee) is True,
+        )
 
         # Direct-insert UTXOs for the rejection cases (these only exercise mempool
         # validation, not a rebuild, so they need not live in a block).
@@ -174,6 +190,10 @@ def main():
         return 0
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_regression_suite():
+    assert main() == 0
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ import re
 import time
 import logging
 from typing import Dict, Any
+from decimal import Decimal, InvalidOperation
 from fastapi import HTTPException, Request
 import redis
 import json
@@ -158,32 +159,55 @@ class SecurityManager:
     
     @staticmethod
     def validate_wepo_address(address: str) -> bool:
-        """Validate WEPO address format"""
+        """Validate the canonical address format for the active profile."""
         if not address or not isinstance(address, str):
             return False
-        
-        # WEPO addresses should start with 'wepo1' followed by 32 hex characters
-        pattern = r'^wepo1[a-f0-9]{32}$'
-        return bool(re.match(pattern, address.lower()))
-    
+
+        profile = os.environ.get("WEPO_NETWORK_PROFILE", "mainnet").strip().lower()
+        if re.fullmatch(r"wepo1q[a-f0-9]{39}", address):
+            return True
+        if profile == "test" and re.fullmatch(r"wepo1[a-f0-9]{32}", address):
+            return True
+        return False
+
     @staticmethod
-    def validate_transaction_amount(amount: float) -> Dict[str, Any]:
-        """Validate transaction amount"""
+    def validate_transaction_amount(amount: Any) -> Dict[str, Any]:
+        """Validate a plain decimal and preserve it without float conversion."""
         issues = []
-        
-        if not isinstance(amount, (int, float)):
-            issues.append("Amount must be a number")
-        elif amount <= 0:
-            issues.append("Amount must be greater than 0")
-        elif amount > 1000000:  # Max transaction limit
-            issues.append("Amount exceeds maximum transaction limit (1,000,000 WEPO)")
-        elif str(amount).count('.') > 1:
-            issues.append("Invalid amount format")
-        
+        sanitized_amount = ""
+
+        if isinstance(amount, bool):
+            issues.append("Amount must be a decimal value")
+        elif not isinstance(amount, (str, int, Decimal)):
+            issues.append("Amount must be a decimal value")
+        else:
+            text = str(amount).strip()
+            if not re.fullmatch(r"(?:0|[1-9][0-9]*)(?:\.[0-9]{1,8})?", text):
+                issues.append("Amount must be a plain decimal with at most 8 fractional digits")
+            else:
+                try:
+                    value = Decimal(text)
+                except InvalidOperation:
+                    issues.append("Amount must be a valid decimal")
+                else:
+                    if value <= 0:
+                        issues.append("Amount must be greater than 0")
+                    elif value > Decimal("1000000"):
+                        issues.append("Amount exceeds maximum transaction limit (1,000,000 WEPO)")
+                    elif value.as_tuple().exponent < -8:
+                        issues.append("Amount cannot have more than 8 decimal places")
+                    else:
+                        normalized_amount = format(value, "f")
+                        sanitized_amount = (
+                            normalized_amount.rstrip("0").rstrip(".")
+                            if "." in normalized_amount
+                            else normalized_amount
+                        )
+
         return {
             "is_valid": len(issues) == 0,
             "issues": issues,
-            "sanitized_amount": max(0, float(amount)) if not issues else 0
+            "sanitized_amount": sanitized_amount,
         }
     
     @staticmethod

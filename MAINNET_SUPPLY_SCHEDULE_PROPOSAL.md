@@ -1,10 +1,28 @@
-# WEPO Emission Schedule Correction — Proposal
+# WEPO Emission Schedule Correction — Decision Record
 
-Status: PROPOSAL — awaiting owner approval before any consensus constant changes
-Date: 2026-06-20
+Status: D1–D3 implemented; independent recomputation and formal parameter freeze pending
+Original decision date: 2026-06-20
+Truthfulness update: 2026-07-28
 Decision context: owner fixed the cap at **69,000,003 WEPO** (2026-06-20) and asked
 that the emission schedule be corrected to match it.
 Source: `wepo-blockchain/core/blockchain.py`, `wepo-blockchain/core/network_profile.py`
+
+## Superseding independent recomputation (2026-08-01)
+
+The cross-runtime oracle in `tests/emission_schedule_oracle.mjs` proves that
+D3 enforces an upper bound but does not make the cap reachable. The complete
+implemented schedule, including every paid PoS pool through its integer-zero
+tail, can issue at most **26,006,468.86718600 WEPO**. It therefore falls
+**42,993,534.13281400 WEPO** short of the advertised cap and never triggers the
+clamp. If PoS pools have no eligible recipient, actual issuance is lower.
+
+**D4 is open:** approve a ceiling-only policy, redesign emission and unpaid-pool
+semantics to target the cap, or lower the advertised cap with truthful
+path-dependent-supply language. No replacement economics are approved. See
+`docs/EMISSION_SCHEDULE_AUDIT.md` for exact phase totals, terminal heights,
+scenarios, and tamper evidence. Sections below retain the original decision
+history; any statement that the clamp alone guarantees exact terminal issuance
+is superseded by this finding.
 
 ## 1. Goal
 
@@ -12,7 +30,7 @@ Total WEPO ever issued must equal **exactly 69,000,003** — guaranteed, not
 approximately — across genesis + pre-PoS + PoW phases 2A–2D + the PoS/masternode
 era.
 
-## 2. Current model (as coded)
+## 2. Original audit-baseline model
 
 - One shared block-height counter; every block is `pow`, `pos`, or `hybrid`.
 - `calculate_block_reward(height)` pays the PoW curve by height:
@@ -24,7 +42,7 @@ era.
 - Intended split (code comment): pre-PoS 6.9M (10%) + PoW 2A–2D 13.8M (20%) +
   PoS/MN 48.3M (70%) = 69.0M.
 
-## 3. Findings (why it does not reconcile)
+## 3. Original findings (closed in code by D1–D3; independent review remains)
 
 1. **Blocks/year is 58,440, not 58,400** (the code comment is wrong), so every
    long-term phase is larger than documented.
@@ -79,7 +97,8 @@ reward    = min(scheduled_reward, remaining)   # truncate the final rewards
 # PoS rewards clamped the same way; once remaining == 0, only fees are paid
 ```
 
-This makes 69,000,003 exact by construction regardless of the PoW/PoS block mix.
+This makes 69,000,003 an exact ceiling regardless of the block mix; it reaches
+that ceiling only if qualifying scheduled issuance is large enough.
 Add a persisted `issued_supply` accumulator (or derive it from the UTXO/coinbase
 ledger) so the clamp is deterministic across restarts and reorgs.
 

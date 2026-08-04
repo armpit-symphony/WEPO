@@ -65,12 +65,14 @@ def test_genesis_inside_cap():
 def test_clamp_exact_and_never_exceeds():
     bc, tmp = new_chain()
     orig_cap = bc_mod.SUPPLY_CAP
+    orig_genesis = bc_mod.GENESIS_BOOTSTRAP_REWARD
     try:
         reward = bc.calculate_block_reward(1)  # pre-PoS per-block reward
         # Cap sits at 3.5 rewards: blocks 1-3 pay in full, block 4 truncates to 0.5r,
         # block 5+ pays nothing.
         bc_mod.SUPPLY_CAP = reward * 3 + reward // 2
-        bc.chain = [fake_block(h, pos=False) for h in range(1, 6)]
+        bc_mod.GENESIS_BOOTSTRAP_REWARD = 0
+        bc.chain = [fake_block(h, pos=False) for h in range(0, 6)]
 
         # Cumulative issuance over every prefix must stay <= cap and end == cap.
         prefixes = [bc.get_issued_supply(up_to_height=h) for h in range(1, 6)]
@@ -87,6 +89,7 @@ def test_clamp_exact_and_never_exceeds():
         check("post-exhaustion reward is zero (fees only)",
               bc.clamped_base_reward(6, "pow") == 0)
     finally:
+        bc_mod.GENESIS_BOOTSTRAP_REWARD = orig_genesis
         bc_mod.SUPPLY_CAP = orig_cap
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -94,25 +97,29 @@ def test_clamp_exact_and_never_exceeds():
 def test_reorg_deterministic_and_bounded():
     bc, tmp = new_chain()
     orig_cap = bc_mod.SUPPLY_CAP
+    orig_genesis = bc_mod.GENESIS_BOOTSTRAP_REWARD
     try:
         reward = bc.calculate_block_reward(1)
         bc_mod.SUPPLY_CAP = reward * 10  # generous; mixes stay under it
+        bc_mod.GENESIS_BOOTSTRAP_REWARD = 0
 
         # Two competing branches of equal height, different PoW/PoS mix.
-        bc.chain = [fake_block(h, pos=(h % 2 == 0)) for h in range(1, 6)]
+        bc.chain = [fake_block(h, pos=(h > 0 and h % 2 == 0)) for h in range(0, 6)]
         issued_a1 = bc.get_issued_supply()
         issued_a2 = bc.get_issued_supply()
         check("issuance recompute is deterministic (pure function of the chain)",
               issued_a1 == issued_a2)
 
         # Simulate a reorg: swap to a different branch, recompute from scratch.
-        bc.chain = [fake_block(h, pos=(h % 3 == 0)) for h in range(1, 6)]
+        bc.chain = [fake_block(h, pos=(h > 0 and h % 3 == 0)) for h in range(0, 6)]
+        bc.issued_supply_by_height.clear()
         issued_b = bc.get_issued_supply()
         check("reorged branch issuance is still bounded by the cap",
               issued_b <= bc_mod.SUPPLY_CAP)
         check("reorged branch recompute is deterministic",
               issued_b == bc.get_issued_supply())
     finally:
+        bc_mod.GENESIS_BOOTSTRAP_REWARD = orig_genesis
         bc_mod.SUPPLY_CAP = orig_cap
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -120,10 +127,12 @@ def test_reorg_deterministic_and_bounded():
 def test_coinbase_creation_respects_cap():
     bc, tmp = new_chain()
     orig_cap = bc_mod.SUPPLY_CAP
+    orig_genesis = bc_mod.GENESIS_BOOTSTRAP_REWARD
     try:
         reward = bc.calculate_block_reward(1)
         bc_mod.SUPPLY_CAP = reward * 3 + reward // 2
-        bc.chain = [fake_block(h, pos=False) for h in range(1, 4)]  # 3 full rewards issued
+        bc_mod.GENESIS_BOOTSTRAP_REWARD = 0
+        bc.chain = [fake_block(h, pos=False) for h in range(0, 4)]  # 3 full rewards issued
 
         # Next pow block (height 4) should mint only the remaining 0.5r as base.
         cb = bc.create_coinbase_transaction(4, RECIPIENT, "pow", [])
@@ -132,11 +141,12 @@ def test_coinbase_creation_respects_cap():
               base_out == reward // 2)
 
         # A block after the cap is exhausted mints zero base reward.
-        bc.chain = [fake_block(h, pos=False) for h in range(1, 6)]
+        bc.chain = [fake_block(h, pos=False) for h in range(0, 6)]
         cb2 = bc.create_coinbase_transaction(6, RECIPIENT, "pow", [])
         check("created coinbase mints zero base reward once cap is exhausted",
               cb2.outputs[0].value == 0)
     finally:
+        bc_mod.GENESIS_BOOTSTRAP_REWARD = orig_genesis
         bc_mod.SUPPLY_CAP = orig_cap
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -180,7 +190,9 @@ def test_pos_distribution_single_count_and_capped():
     it is clamped to the cap (no double-mint, no cap bypass)."""
     bc, tmp = new_chain()
     orig_cap = bc_mod.SUPPLY_CAP
+    orig_genesis = bc_mod.GENESIS_BOOTSTRAP_REWARD
     try:
+        bc_mod.GENESIS_BOOTSTRAP_REWARD = 0
         h = bc_mod.POS_ACTIVATION_HEIGHT + 1
         pool = bc.calculate_pos_reward(h)
 
@@ -190,20 +202,49 @@ def test_pos_distribution_single_count_and_capped():
         check("PoS pool is the single PoS issuance (full pool far from cap)",
               bc.clamped_pos_pool(h, "pos") == pool and pool > 0)
 
-        # get_issued_supply must account for the distribution pool, not just coinbase.
-        bc.chain = [fake_block(h, pos=True)]
-        check("issued supply counts the PoS distribution pool",
+        # With no eligible recipient, issuance pauses rather than consuming cap
+        # headroom for coins that were never created.
+        bc.chain = [fake_block(i, pos=True) for i in range(0, h + 1)]
+        check("unpaid PoS pool is not reported as issued",
+              bc.get_issued_supply() == 0)
+
+        # The synthetic chain is not persisted in this unit fixture, so disable
+        # its foreign-key check only while inserting representative canonical
+        # reward ledger rows.
+        bc.conn.commit()
+        bc.conn.execute("PRAGMA foreign_keys = OFF")
+        bc.conn.execute(
+            "INSERT INTO staking_rewards "
+            "(reward_id, recipient_address, recipient_type, amount, "
+            "block_height, block_hash, timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("reward_staker_test", RECIPIENT, "staker", pool, h, "1" * 64, 1),
+        )
+        bc.conn.execute(
+            "INSERT INTO staking_rewards "
+            "(reward_id, recipient_address, recipient_type, amount, "
+            "block_height, block_hash, timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("fee_reward_staker_test", RECIPIENT, "staker", 123, h, "1" * 64, 1),
+        )
+        bc.conn.commit()
+        bc.conn.execute("PRAGMA foreign_keys = ON")
+        bc.issued_supply_by_height.clear()
+        check("issued supply counts only actually minted PoS pool rewards",
               bc.get_issued_supply() == pool)
+        check("fee redistribution is excluded from newly issued supply",
+              bc.get_issued_supply() != pool + 123)
         # A PoS block mints the pool exactly ONCE (base 0 + one pool), not twice.
         check("PoS block mints the reward once, not double",
               bc.clamped_coinbase_base(h, "pos") + pool == pool)
 
         # Cap bypass closed: once exhausted, the distribution pool clamps to 0 too.
         bc_mod.SUPPLY_CAP = pool  # exactly one pool fits
-        bc.chain = [fake_block(h, pos=True)]
+        bc.chain = [fake_block(i, pos=True) for i in range(0, h + 1)]
         check("PoS pool clamps to zero once the cap is exhausted (no bypass)",
               bc.clamped_pos_pool(h + 1, "pos") == 0)
     finally:
+        bc_mod.GENESIS_BOOTSTRAP_REWARD = orig_genesis
         bc_mod.SUPPLY_CAP = orig_cap
         shutil.rmtree(tmp, ignore_errors=True)
 

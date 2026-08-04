@@ -25,10 +25,9 @@ use winterfell::{
     math::{fields::f64::BaseElement, FieldElement, ToElements},
     matrix::ColMatrix,
     AcceptableOptions, Air, AirContext, Assertion, AuxRandElements, BatchingMethod,
-    CompositionPoly, CompositionPolyTrace, DefaultConstraintCommitment,
-    DefaultConstraintEvaluator, DefaultTraceLde, EvaluationFrame, FieldExtension,
-    PartitionOptions, Proof, ProofOptions, Prover, StarkDomain, Trace, TraceInfo,
-    TracePolyTable, TraceTable, TransitionConstraintDegree,
+    CompositionPoly, CompositionPolyTrace, DefaultConstraintCommitment, DefaultConstraintEvaluator,
+    DefaultTraceLde, EvaluationFrame, FieldExtension, PartitionOptions, Proof, ProofOptions,
+    Prover, StarkDomain, Trace, TraceInfo, TracePolyTable, TraceTable, TransitionConstraintDegree,
 };
 
 type Blake3 = Blake3_256<BaseElement>;
@@ -55,7 +54,9 @@ impl Air for WideAir {
     fn new(trace_info: TraceInfo, _pub_inputs: PublicInputs, options: ProofOptions) -> Self {
         let w = trace_info.width();
         let degrees = vec![TransitionConstraintDegree::new(1); w];
-        WideAir { context: AirContext::new(trace_info, degrees, 1, options) }
+        WideAir {
+            context: AirContext::new(trace_info, degrees, 1, options),
+        }
     }
 
     fn evaluate_transition<E: FieldElement + From<Self::BaseField>>(
@@ -116,7 +117,9 @@ impl Prover for WideProver {
         DefaultConstraintEvaluator<'a, Self::Air, E>;
 
     fn get_pub_inputs(&self, trace: &Self::Trace) -> PublicInputs {
-        PublicInputs { width: trace.width() }
+        PublicInputs {
+            width: trace.width(),
+        }
     }
     fn options(&self) -> &ProofOptions {
         &self.options
@@ -164,8 +167,14 @@ fn main() {
     println!("{}", "-".repeat(56));
 
     let opts = ProofOptions::new(
-        43, 8, 0, FieldExtension::Cubic, 8, 31,
-        BatchingMethod::Linear, BatchingMethod::Linear,
+        43,
+        8,
+        0,
+        FieldExtension::Cubic,
+        8,
+        31,
+        BatchingMethod::Linear,
+        BatchingMethod::Linear,
     );
 
     // Rescue's measured geometry first, then the geometry Keccak needs.
@@ -174,11 +183,11 @@ fn main() {
     // all -- it must be spread across rows, trading width for length. These
     // cases bound both directions.
     let cases = [
-        (13usize, 256usize),   // Rescue, depth 32 -- the real measured geometry
+        (13usize, 256usize), // Rescue, depth 32 -- the real measured geometry
         (13, 1024),
         (100, 1024),
-        (250, 1024),           // ~widest Winterfell allows in practice
-        (250, 8192),           // Keccak-shaped under the width cap (see below)
+        (250, 1024), // ~widest Winterfell allows in practice
+        (250, 8192), // Keccak-shaped under the width cap (see below)
         (250, 32768),
         // --- projected ShieldedBundle geometries (Rescue) -------------------
         // per spend  : 32-level Merkle (256 rows) + nullifier + commitment +
@@ -189,13 +198,13 @@ fn main() {
         // Merkle alone is 32 permutations = 256 rows, exactly full. Adding the
         // nullifier hash sequentially is 264 rows -> 512. Running it in a second
         // Rescue instance in parallel columns keeps 256 rows and costs width.
-        (13, 256),             // step 2.1 as built
-        (13, 512),             // sequential: one more permutation tips the trace
-        (26, 256),             // parallel: a second 12-wide state + its bit col
-        (40, 256),             // headroom for nk, pk_d, cm and nf all in parallel
-        (32, 1024),            // 1 spend, 2 outputs  -> 768 rows, round to 1024
-        (32, 2048),            // 2 spends, 2 outputs -> 1280 rows, round to 2048
-        (32, 4096),            // headroom
+        (13, 256),  // step 2.1 as built
+        (13, 512),  // sequential: one more permutation tips the trace
+        (26, 256),  // parallel: a second 12-wide state + its bit col
+        (40, 256),  // headroom for nk, pk_d, cm and nf all in parallel
+        (32, 1024), // 1 spend, 2 outputs  -> 768 rows, round to 1024
+        (32, 2048), // 2 spends, 2 outputs -> 1280 rows, round to 2048
+        (32, 4096), // headroom
         // --- byte-faithful Merkle: matching the node's tagged_hash ----------
         // Every tree level must byte-decompose 8 digest elements (512 bits),
         // repack across misaligned 7-byte chunk boundaries, then run TWO
@@ -206,17 +215,19 @@ fn main() {
         // --- bundle projection, against the real step 2.4 circuit -----------
         // 52 x 256 is measured for real by step2_range; the same geometry here
         // gives the harness's under-read, which then corrects the wider cases.
-        (52, 256),   // 1 spend, calibration point
-        (96, 256),   // 1 spend + 2 outputs + balance
-        (148, 256),  // 2 spends + 2 outputs + balance
-        (252, 256),  // 4 spends + 2 outputs -- at the 254 cap
-        (52, 512),   // 1 spend, sequential layout headroom
-        (148, 512),  // 2 spends + 2 outputs at double length
+        (52, 256),  // 1 spend, calibration point
+        (96, 256),  // 1 spend + 2 outputs + balance
+        (148, 256), // 2 spends + 2 outputs + balance
+        (252, 256), // 4 spends + 2 outputs -- at the 254 cap
+        (52, 512),  // 1 spend, sequential layout headroom
+        (148, 512), // 2 spends + 2 outputs at double length
     ];
 
     for (w, len) in cases {
         let trace = build(w, len);
-        let prover = WideProver { options: opts.clone() };
+        let prover = WideProver {
+            options: opts.clone(),
+        };
         let t = Instant::now();
         let proof = prover.prove(trace).expect("prove failed");
         let prove_ms = t.elapsed().as_secs_f64() * 1000.0;
@@ -224,12 +235,13 @@ fn main() {
 
         let pi = PublicInputs { width: w };
         let t = Instant::now();
-        let ok = winterfell::verify::<WideAir, Blake3, DefaultRandomCoin<Blake3>, MerkleTree<Blake3>>(
-            proof,
-            pi,
-            &AcceptableOptions::MinConjecturedSecurity(128),
-        )
-        .is_ok();
+        let ok =
+            winterfell::verify::<WideAir, Blake3, DefaultRandomCoin<Blake3>, MerkleTree<Blake3>>(
+                proof,
+                pi,
+                &AcceptableOptions::MinConjecturedSecurity(128),
+            )
+            .is_ok();
         let verify_ms = t.elapsed().as_secs_f64() * 1000.0;
         assert!(ok, "proof rejected at 128-bit for width {w}");
 

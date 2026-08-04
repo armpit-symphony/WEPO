@@ -7,6 +7,8 @@ import hashlib
 import json
 import time
 import struct
+import threading
+from functools import wraps
 from typing import Any, List, Dict, Optional, Set, Tuple, Union
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -18,6 +20,22 @@ try:
 except ImportError:
     from address_utils import generate_wepo_address, validate_wepo_address, is_quantum_address, addresses_equal
 try:
+    from .dilithium import (
+        DILITHIUM_PUBKEY_SIZE,
+        DILITHIUM_SIGNATURE_SIZE,
+        verify_dilithium_signature,
+    )
+except ImportError:
+    from dilithium import (
+        DILITHIUM_PUBKEY_SIZE,
+        DILITHIUM_SIGNATURE_SIZE,
+        verify_dilithium_signature,
+    )
+try:
+    from .validator_signer import PosSigningContext, ValidatorSigner
+except ImportError:
+    from validator_signer import PosSigningContext, ValidatorSigner
+try:
     from .network_profile import (
         format_block_time,
         MAINNET_GENESIS_TIMESTAMP as PROFILE_MAINNET_GENESIS_TIMESTAMP,
@@ -26,6 +44,8 @@ try:
         PHASE_2B_REWARD as PROFILE_PHASE_2B_REWARD,
         PHASE_2C_REWARD as PROFILE_PHASE_2C_REWARD,
         PHASE_2D_REWARD as PROFILE_PHASE_2D_REWARD,
+        MAINNET_GHOST_CONSENSUS_READY as PROFILE_MAINNET_GHOST_CONSENSUS_READY,
+        MAINNET_GHOST_ACTIVATION_HEIGHT as PROFILE_MAINNET_GHOST_ACTIVATION_HEIGHT,
         get_network_profile,
     )
 except ImportError:
@@ -37,6 +57,8 @@ except ImportError:
         PHASE_2B_REWARD as PROFILE_PHASE_2B_REWARD,
         PHASE_2C_REWARD as PROFILE_PHASE_2C_REWARD,
         PHASE_2D_REWARD as PROFILE_PHASE_2D_REWARD,
+        MAINNET_GHOST_CONSENSUS_READY as PROFILE_MAINNET_GHOST_CONSENSUS_READY,
+        MAINNET_GHOST_ACTIVATION_HEIGHT as PROFILE_MAINNET_GHOST_ACTIVATION_HEIGHT,
         get_network_profile,
     )
 
@@ -45,8 +67,34 @@ WEPO_VERSION = 70001
 NETWORK_MAGIC = b'WEPO'
 DEFAULT_PORT = 22567
 COIN = 100000000  # 1 WEPO = 100,000,000 satoshis
+DEFAULT_TRANSACTION_FEE = 10000
 MAX_BLOCK_SIZE = 2 * 1024 * 1024  # 2MB
+MAX_BLOCK_TRANSACTIONS = 4096
+MAX_PENDING_BLOCKS = 2048
+MAX_PENDING_CHILDREN_PER_PARENT = 16
+MAX_ORPHAN_HEIGHT_AHEAD = 2048
+MAX_MEMPOOL_TRANSACTIONS = 10000
+MAX_MEMPOOL_BYTES = 64 * 1024 * 1024
+MAX_TRANSACTION_WIRE_SIZE = 1024 * 1024
+MAX_TRANSACTION_INPUTS = 32
+MAX_TRANSACTION_OUTPUTS = 256
+MAX_TRANSACTION_EXTRA_DATA_BYTES = 64 * 1024
+MAX_TRANSACTION_SCRIPT_BYTES = 4096
 MAX_FUTURE_BLOCK_TIME_DRIFT = 2 * 60 * 60  # 2 hours
+
+
+def _chain_state_locked(method):
+    """Serialize canonical-chain mutations across P2P and node threads."""
+    @wraps(method)
+    def locked(self, *args, **kwargs):
+        with self.chain_lock:
+            return method(self, *args, **kwargs)
+    return locked
+TRANSACTION_VERSION = 1
+MAX_LOCK_TIME = 0xFFFFFFFF
+MAX_SEQUENCE = 0xFFFFFFFF
+MAX_OUTPUT_INDEX = 0xFFFFFFFF
+MAX_SAFE_JSON_INTEGER = (1 << 53) - 1
 
 # WEPO 20-YEAR MINING SCHEDULE - SUSTAINABLE LONG-TERM POW
 # Genesis timing is controlled by the configured mainnet timestamp.
@@ -72,10 +120,10 @@ BLOCK_TIME_POW_HYBRID = 540        # 9 minutes per PoW block (in hybrid mode)
 # PHASE 1: Pre-PoS Mining (Months 1-18) - 10% of total supply
 PRE_POS_DURATION_BLOCKS = 131400    # 18 months in 6-minute blocks
 PRE_POS_REWARD = PROFILE_PRE_POS_REWARD  # 52.51 WEPO per block
-PRE_POS_TOTAL_SUPPLY = 6900000 * COIN  # 6.9M WEPO (10% of total)
+PRE_POS_TOTAL_SUPPLY = PRE_POS_REWARD * PRE_POS_DURATION_BLOCKS
 
 # Long-term PoW phases (alongside PoS/Masternodes) - 20% of total supply
-BLOCKS_PER_YEAR_LONGTERM = int(365.25 * 24 * 60 / 9)  # 58,440 blocks per year (9-min blocks)
+BLOCKS_PER_YEAR_LONGTERM = 36_525 * 24 * 60 // (100 * 9)  # 58,440 blocks/year
 # NOTE (owner decision D2, 2026-06-20): emission phases are bounded by BLOCK HEIGHT,
 # not wall-clock time. With hybrid PoW/PoS the real calendar duration of each phase
 # differs from the "3yr/6yr" labels below (PoS blocks arrive faster than PoW), so
@@ -83,30 +131,36 @@ BLOCKS_PER_YEAR_LONGTERM = int(365.25 * 24 * 60 / 9)  # 58,440 blocks per year (
 # exact total is guaranteed by SUPPLY_CAP, not by the phase math summing precisely.
 
 # PHASE 2A: Post-PoS Years 1-3 (Months 19-54)
-PHASE_2A_BLOCKS = 3 * BLOCKS_PER_YEAR_LONGTERM  # 175,200 blocks
+PHASE_2A_BLOCKS = 3 * BLOCKS_PER_YEAR_LONGTERM  # 175,320 blocks
 PHASE_2A_REWARD = PROFILE_PHASE_2A_REWARD  # 33.17 WEPO per block
 PHASE_2A_END_HEIGHT = PRE_POS_DURATION_BLOCKS + PHASE_2A_BLOCKS
 
 # PHASE 2B: Post-PoS Years 4-9 (Months 55-126) - First Halving
-PHASE_2B_BLOCKS = 6 * BLOCKS_PER_YEAR_LONGTERM  # 350,400 blocks
+PHASE_2B_BLOCKS = 6 * BLOCKS_PER_YEAR_LONGTERM  # 350,640 blocks
 PHASE_2B_REWARD = PROFILE_PHASE_2B_REWARD  # 16.58 WEPO per block (halved)
 PHASE_2B_END_HEIGHT = PHASE_2A_END_HEIGHT + PHASE_2B_BLOCKS
 
 # PHASE 2C: Post-PoS Years 10-12 (Months 127-162) - Second Halving
-PHASE_2C_BLOCKS = 3 * BLOCKS_PER_YEAR_LONGTERM  # 175,200 blocks
+PHASE_2C_BLOCKS = 3 * BLOCKS_PER_YEAR_LONGTERM  # 175,320 blocks
 PHASE_2C_REWARD = PROFILE_PHASE_2C_REWARD  # 8.29 WEPO per block (halved)
 PHASE_2C_END_HEIGHT = PHASE_2B_END_HEIGHT + PHASE_2C_BLOCKS
 
 # PHASE 2D: Post-PoS Years 13-15 (Months 163-198) - Final Halving
-PHASE_2D_BLOCKS = 3 * BLOCKS_PER_YEAR_LONGTERM  # 175,200 blocks
+PHASE_2D_BLOCKS = 3 * BLOCKS_PER_YEAR_LONGTERM  # 175,320 blocks
 PHASE_2D_REWARD = PROFILE_PHASE_2D_REWARD  # 4.15 WEPO per block (final halving)
 PHASE_2D_END_HEIGHT = PHASE_2C_END_HEIGHT + PHASE_2D_BLOCKS
 
-# Total PoW ends at block 1,007,400 (16.5 years after PoS activation)
+# Total PoW ends at block 1,008,000 (16.5 nominal years after PoS activation)
 POW_END_HEIGHT = PHASE_2D_END_HEIGHT
 
-# Total mining allocation: 20,702,037 WEPO over 198 months (30% of total supply)
-TOTAL_POW_SUPPLY = 20702037 * COIN
+# Exact scheduled PoW subsidies, excluding the separate genesis bootstrap.
+TOTAL_POW_SUPPLY = (
+    PRE_POS_TOTAL_SUPPLY
+    + PHASE_2A_REWARD * PHASE_2A_BLOCKS
+    + PHASE_2B_REWARD * PHASE_2B_BLOCKS
+    + PHASE_2C_REWARD * PHASE_2C_BLOCKS
+    + PHASE_2D_REWARD * PHASE_2D_BLOCKS
+)
 
 # Explicit genesis bootstrap allocation
 GENESIS_BOOTSTRAP_REWARD = 400 * COIN
@@ -142,10 +196,119 @@ TX_TYPE_MASTERNODE_CREATE = "masternode_create"
 TX_TYPE_MASTERNODE_DEACTIVATE = "masternode_deactivate"
 TX_TYPE_RWA_CREATE = "rwa_create"
 
-# Privacy fields are not active consensus until a separately specified and
-# audited activation path exists. Keep this hardcoded; environment flags may
-# gate services, but they must not change mainnet consensus behavior.
-PRIVACY_CONSENSUS_ENABLED = False
+# Ghost is activated only by a reviewed consensus height in released code.
+# Environment flags may gate services, but they must never change consensus.
+SHIELDED_ACTIVATION_HEIGHT: Optional[int] = PROFILE_MAINNET_GHOST_ACTIVATION_HEIGHT
+PRIVACY_CONSENSUS_ENABLED = PROFILE_MAINNET_GHOST_CONSENSUS_READY
+
+
+def _shielded_active_at(height: int) -> bool:
+    return (
+        PRIVACY_CONSENSUS_ENABLED
+        and SHIELDED_ACTIVATION_HEIGHT is not None
+        and height >= SHIELDED_ACTIVATION_HEIGHT
+    )
+
+
+def _shielded_bundle_to_dict(bundle: Any, *, include_proof: bool = True) -> Optional[Dict[str, Any]]:
+    if bundle is None:
+        return None
+    result = {
+        "spends": [
+            {"anchor": spend.anchor.hex(), "nullifier": spend.nullifier.hex()}
+            for spend in bundle.spends
+        ],
+        "outputs": [
+            {
+                "commitment": output.commitment.hex(),
+                "enc_note": bytes(output.enc_note).hex(),
+            }
+            for output in bundle.outputs
+        ],
+        "value_balance": bundle.value_balance,
+    }
+    if include_proof:
+        result["proof"] = bytes(bundle.proof).hex()
+    return result
+
+
+def _shielded_bundle_from_dict(data: Optional[Dict[str, Any]]) -> Any:
+    if data is None:
+        return None
+    if not isinstance(data, dict) or set(data) - {
+        "spends",
+        "outputs",
+        "value_balance",
+        "proof",
+    }:
+        raise ValueError("Shielded bundle has an invalid wire schema")
+    try:
+        from .shielded import (
+            MAX_SHIELDED_OUTPUTS,
+            MAX_SHIELDED_PROOF_BYTES,
+            MAX_SHIELDED_SPENDS,
+            OutputDescription,
+            ShieldedBundle,
+            SpendDescription,
+        )
+    except ImportError:
+        from shielded import (
+            MAX_SHIELDED_OUTPUTS,
+            MAX_SHIELDED_PROOF_BYTES,
+            MAX_SHIELDED_SPENDS,
+            OutputDescription,
+            ShieldedBundle,
+            SpendDescription,
+        )
+
+    spends = data.get("spends", [])
+    outputs = data.get("outputs", [])
+    proof = data.get("proof", "")
+    if (
+        not isinstance(spends, list)
+        or len(spends) > MAX_SHIELDED_SPENDS
+        or not isinstance(outputs, list)
+        or len(outputs) > MAX_SHIELDED_OUTPUTS
+        or not isinstance(proof, str)
+        or len(proof) > MAX_SHIELDED_PROOF_BYTES * 2
+        or type(data.get("value_balance", 0)) is not int
+    ):
+        raise ValueError("Shielded bundle exceeds wire resource limits")
+
+    for item in spends:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"anchor", "nullifier"}
+            or not all(isinstance(item[field], str) for field in item)
+        ):
+            raise ValueError("Shielded spend has an invalid wire schema")
+    for item in outputs:
+        if (
+            not isinstance(item, dict)
+            or set(item) - {"commitment", "enc_note"}
+            or "commitment" not in item
+            or not all(isinstance(item[field], str) for field in item)
+        ):
+            raise ValueError("Shielded output has an invalid wire schema")
+
+    return ShieldedBundle(
+        spends=[
+            SpendDescription(
+                anchor=bytes.fromhex(item["anchor"]),
+                nullifier=bytes.fromhex(item["nullifier"]),
+            )
+            for item in spends
+        ],
+        outputs=[
+            OutputDescription(
+                commitment=bytes.fromhex(item["commitment"]),
+                enc_note=bytes.fromhex(item.get("enc_note", "")),
+            )
+            for item in outputs
+        ],
+        value_balance=int(data.get("value_balance", 0)),
+        proof=bytes.fromhex(proof),
+    )
 
 # Real-world-asset on-chain issuance. An rwa_create tx is an ordinary
 # self-custody (Dilithium-signed) transaction that pays an anti-spam fee and
@@ -171,6 +334,56 @@ PROTOCOL_LIFECYCLE_TX_TYPES = {
     TX_TYPE_MASTERNODE_CREATE,
     TX_TYPE_MASTERNODE_DEACTIVATE,
 }
+VALID_TRANSACTION_TYPES = {
+    TX_TYPE_TRANSFER,
+    TX_TYPE_STAKE_CREATE,
+    TX_TYPE_STAKE_DEACTIVATE,
+    TX_TYPE_MASTERNODE_CREATE,
+    TX_TYPE_MASTERNODE_DEACTIVATE,
+    TX_TYPE_RWA_CREATE,
+    TX_TYPE_KEY_REGISTER,
+}
+# These metadata-only transactions may spend an exact-fee input and therefore
+# legitimately have no transparent outputs. Their fees are still canonically
+# redistributed through the block coinbase; they are not burned.
+FEE_ONLY_METADATA_TX_TYPES = {
+    TX_TYPE_RWA_CREATE,
+    TX_TYPE_KEY_REGISTER,
+}
+MAX_CONSENSUS_JSON_DEPTH = 16
+
+
+def _is_consensus_json_value(value: Any, depth: int = 0) -> bool:
+    """Accept only JSON values with deterministic Python/JavaScript encoding.
+
+    Floats and integers outside JavaScript's exact range are excluded because
+    the browser wallet must reproduce the node's canonical sighash byte-for-byte.
+    Lone Unicode surrogates are excluded because they have no valid UTF-8 encoding.
+    """
+    if depth > MAX_CONSENSUS_JSON_DEPTH:
+        return False
+    if value is None or type(value) is bool:
+        return True
+    if type(value) is int:
+        return -MAX_SAFE_JSON_INTEGER <= value <= MAX_SAFE_JSON_INTEGER
+    if isinstance(value, str):
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            return False
+        return True
+    if isinstance(value, list):
+        return all(_is_consensus_json_value(item, depth + 1) for item in value)
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str) or not _is_consensus_json_value(
+                key, depth + 1
+            ):
+                return False
+            if not _is_consensus_json_value(item, depth + 1):
+                return False
+        return True
+    return False
 
 
 def apply_network_profile(profile_name: str = "mainnet") -> None:
@@ -220,12 +433,12 @@ def apply_network_profile(profile_name: str = "mainnet") -> None:
 
     if profile.name == "test":
         print(
-            f"🧪 TEST MODE CONFIGURED: PoS activates at block {POS_ACTIVATION_HEIGHT} "
+            f"TEST MODE CONFIGURED: PoS activates at block {POS_ACTIVATION_HEIGHT} "
             f"on accelerated '{NETWORK_NAME}' profile"
         )
     else:
         print(f"MAINNET CONFIGURED: Staking activates at block {POS_ACTIVATION_HEIGHT} (18 months post-genesis)")
-        print("🔄 PoW CONTINUES: Mining continues for 198 months total alongside PoS/Masternodes")
+        print("PoW CONTINUES: Mining continues for 198 months total alongside PoS/Masternodes")
 
 
 apply_network_profile(os.getenv("WEPO_NETWORK_PROFILE", "mainnet"))
@@ -322,6 +535,7 @@ class Transaction:
     fee: int = 0
     privacy_proof: Optional[bytes] = None
     ring_signature: Optional[bytes] = None
+    shielded_bundle: Optional[Any] = None
     tx_type: str = TX_TYPE_TRANSFER
     extra_data: Optional[Dict[str, Any]] = None
     timestamp: int = 0
@@ -343,42 +557,66 @@ class Transaction:
         signature_types = set(inp.signature_type for inp in self.inputs)
         return len(signature_types) > 1
     
-    def get_canonical_sighash(self) -> bytes:
-        """Deterministic digest committing to the ENTIRE transaction.
+    def get_canonical_sighash(self, network: str = NETWORK_NAME) -> bytes:
+        """Return a network-bound digest committing to the unsigned transaction.
 
         Every input signs this same digest (SIGHASH_ALL style). It commits to
-        the version, lock_time, fee, tx_type, every input outpoint (and
-        sequence), every output (value, address, script marker), and the
+        the version, lock_time, timestamp, fee, tx_type, every input outpoint
+        (and sequence), every output (value, address, script marker), and the
         canonicalized extra_data. Signature fields themselves are excluded so
-        the digest is stable before and after signing. Because the digest binds
-        all inputs and outputs, a valid signature cannot be replayed against a
-        different transaction or a re-pointed output.
+        the digest is stable before and after signing. The versioned,
+        length-prefixed canonical JSON encoding avoids delimiter and field-
+        boundary collisions.
+        The network domain is consensus-critical. It prevents a signature made
+        for a test chain from authorizing the same outpoint and value flow on
+        mainnet (or any other WEPO network).
         """
-        parts = [
-            "WEPO-SIGHASH-v1",
-            str(self.version),
-            str(self.lock_time),
-            str(self.fee),
-            str(self.tx_type),
-        ]
-        for inp in self.inputs:
-            parts.extend([str(inp.prev_txid), str(inp.prev_vout), str(inp.sequence)])
-        for out in self.outputs:
-            marker = ""
-            if out.script_pubkey:
-                try:
-                    marker = out.script_pubkey.decode("utf-8")
-                except Exception:
-                    marker = out.script_pubkey.hex()
-            parts.extend([str(out.value), str(out.address), marker])
+        if not isinstance(network, str) or not network or len(network) > 32:
+            raise ValueError("Transaction signing network is invalid")
         try:
-            parts.append(json.dumps(self.extra_data or {}, sort_keys=True, separators=(",", ":")))
-        except Exception:
-            parts.append(str(self.extra_data))
-        message = "|".join(parts)
-        return hashlib.sha256(message.encode("utf-8")).digest()
+            network_bytes = network.encode("ascii", errors="strict")
+        except UnicodeError as exc:
+            raise ValueError("Transaction signing network is invalid") from exc
+        unsigned = {
+            "version": self.version,
+            "lock_time": self.lock_time,
+            "timestamp": self.timestamp,
+            "fee": self.fee,
+            "tx_type": self.tx_type,
+            "inputs": [
+                {
+                    "prev_txid": inp.prev_txid,
+                    "prev_vout": inp.prev_vout,
+                    "sequence": inp.sequence,
+                }
+                for inp in self.inputs
+            ],
+            "outputs": [
+                {
+                    "value": out.value,
+                    "address": out.address,
+                    "script_pubkey": bytes(out.script_pubkey or b"").hex(),
+                }
+                for out in self.outputs
+            ],
+            "shielded_bundle": _shielded_bundle_to_dict(
+                self.shielded_bundle, include_proof=False
+            ),
+            "extra_data": self.extra_data or {},
+        }
+        payload = json.dumps(
+            unsigned, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+        preimage = (
+            b"WEPO_SIGHASH_V3\x00"
+            + struct.pack("<I", len(network_bytes))
+            + network_bytes
+            + struct.pack("<I", len(payload))
+            + payload
+        )
+        return hashlib.sha256(preimage).digest()
 
-    def sign_input(self, input_index: int, private_key: bytes, public_key: bytes) -> bool:
+    def sign_input(self, input_index: int, private_key: bytes, public_key: bytes, network: str = NETWORK_NAME) -> bool:
         """Attach a Dilithium signature authorizing one input.
 
         The caller must supply the keypair whose public key hashes to the
@@ -391,7 +629,7 @@ class Transaction:
             from dilithium import sign_with_dilithium
         except ImportError:
             from .dilithium import sign_with_dilithium
-        sighash = self.get_canonical_sighash()
+        sighash = self.get_canonical_sighash(network)
         signature = sign_with_dilithium(sighash, private_key)
         inp = self.inputs[input_index]
         inp.signature_type = "dilithium"
@@ -400,16 +638,16 @@ class Transaction:
         inp.script_sig = b""
         return True
 
-    def sign_all_inputs(self, private_key: bytes, public_key: bytes) -> bool:
+    def sign_all_inputs(self, private_key: bytes, public_key: bytes, network: str = NETWORK_NAME) -> bool:
         """Convenience: sign every input with a single keypair (single-owner spend)."""
         if not self.inputs:
             return False
         ok = True
         for i in range(len(self.inputs)):
-            ok = self.sign_input(i, private_key, public_key) and ok
+            ok = self.sign_input(i, private_key, public_key, network) and ok
         return ok
 
-    def verify_quantum_signature(self, input_index: int, expected_address: Optional[str] = None) -> bool:
+    def verify_quantum_signature(self, input_index: int, expected_address: Optional[str] = None, network: str = NETWORK_NAME) -> bool:
         """Verify the Dilithium signature authorizing one input.
 
         When expected_address is provided (the address that owns the spent
@@ -448,7 +686,7 @@ class Transaction:
             from dilithium import verify_signature
         except ImportError:
             from .dilithium import verify_signature
-        sighash = self.get_canonical_sighash()
+        sighash = self.get_canonical_sighash(network)
         try:
             return bool(verify_signature(sighash, inp.quantum_signature, inp.quantum_public_key))
         except Exception as e:
@@ -472,6 +710,7 @@ class Transaction:
             'extra_data': self.extra_data or {},
             'privacy_proof': enc(self.privacy_proof),
             'ring_signature': enc(self.ring_signature),
+            'shielded_bundle': _shielded_bundle_to_dict(self.shielded_bundle),
             'inputs': [
                 {
                     'prev_txid': inp.prev_txid,
@@ -502,75 +741,139 @@ class Transaction:
         __post_init__ enforces Dilithium key/signature sizes, so malformed
         signed transactions raise here rather than reaching consensus.
         """
+        if not isinstance(data, dict) or set(data) - {
+            "version",
+            "lock_time",
+            "fee",
+            "tx_type",
+            "timestamp",
+            "extra_data",
+            "privacy_proof",
+            "ring_signature",
+            "shielded_bundle",
+            "inputs",
+            "outputs",
+        }:
+            raise ValueError("Transaction has an invalid wire schema")
+        input_data = data.get("inputs", [])
+        output_data = data.get("outputs", [])
+        if (
+            any(
+                field in data and type(data[field]) is not int
+                for field in ("version", "lock_time", "fee", "timestamp")
+            )
+            or ("tx_type" in data and not isinstance(data["tx_type"], str))
+            or ("extra_data" in data and not isinstance(data["extra_data"], dict))
+            or not isinstance(input_data, list)
+            or len(input_data) > MAX_TRANSACTION_INPUTS
+            or not isinstance(output_data, list)
+            or len(output_data) > MAX_TRANSACTION_OUTPUTS
+        ):
+            raise ValueError("Transaction exceeds wire resource limits")
+
         def dec(v):
             if v is None or v == '':
                 return None
             if isinstance(v, (bytes, bytearray)):
                 return bytes(v)
-            if isinstance(v, str):
-                try:
-                    return bytes.fromhex(v)
-                except ValueError:
-                    return v.encode()
-            return v
+            if not isinstance(v, str):
+                raise ValueError("Transaction byte field must use hexadecimal text")
+            return bytes.fromhex(v)
 
         inputs = []
-        for i in data.get('inputs', []):
+        for i in input_data:
+            if (
+                not isinstance(i, dict)
+                or set(i) - {
+                    "prev_txid",
+                    "prev_vout",
+                    "script_sig",
+                    "sequence",
+                    "quantum_signature",
+                    "quantum_public_key",
+                    "signature_type",
+                }
+                or "prev_txid" not in i
+                or "prev_vout" not in i
+                or not isinstance(i["prev_txid"], str)
+                or type(i["prev_vout"]) is not int
+                or ("sequence" in i and type(i["sequence"]) is not int)
+                or (
+                    "signature_type" in i
+                    and not isinstance(i["signature_type"], str)
+                )
+            ):
+                raise ValueError("Transaction input has an invalid wire schema")
             inputs.append(TransactionInput(
                 prev_txid=i['prev_txid'],
-                prev_vout=int(i['prev_vout']),
+                prev_vout=i['prev_vout'],
                 script_sig=dec(i.get('script_sig')) or b'',
-                sequence=int(i.get('sequence', 0xffffffff)),
+                sequence=i.get('sequence', 0xffffffff),
                 quantum_signature=dec(i.get('quantum_signature')),
                 quantum_public_key=dec(i.get('quantum_public_key')),
                 signature_type=i.get('signature_type', 'ecdsa'),
             ))
 
         outputs = []
-        for o in data.get('outputs', []):
+        for o in output_data:
+            if (
+                not isinstance(o, dict)
+                or set(o) - {
+                    "value",
+                    "script_pubkey",
+                    "address",
+                }
+                or "value" not in o
+                or type(o["value"]) is not int
+                or ("address" in o and not isinstance(o["address"], str))
+            ):
+                raise ValueError("Transaction output has an invalid wire schema")
             outputs.append(TransactionOutput(
-                value=int(o['value']),
+                value=o['value'],
                 script_pubkey=dec(o.get('script_pubkey')) or b'',
                 address=o.get('address', ''),
             ))
 
+        timestamp = data.get('timestamp', 0)
         tx = cls(
-            version=int(data.get('version', 1)),
+            version=data.get('version', 1),
             inputs=inputs,
             outputs=outputs,
-            lock_time=int(data.get('lock_time', 0)),
-            fee=int(data.get('fee', 0)),
+            lock_time=data.get('lock_time', 0),
+            fee=data.get('fee', 0),
             privacy_proof=dec(data.get('privacy_proof')),
             ring_signature=dec(data.get('ring_signature')),
+            shielded_bundle=_shielded_bundle_from_dict(data.get('shielded_bundle')),
             tx_type=data.get('tx_type', TX_TYPE_TRANSFER),
             extra_data=data.get('extra_data') or {},
+            timestamp=timestamp,
         )
-        if data.get('timestamp'):
-            tx.timestamp = int(data['timestamp'])
+        # __post_init__ timestamps locally constructed transactions. Wire data
+        # must preserve an explicit/missing zero so every node rejects it identically.
+        tx.timestamp = timestamp
         return tx
 
+    def canonical_wire_size(self) -> int:
+        """Return the deterministic JSON-wire size used for resource accounting."""
+        return len(
+            json.dumps(
+                self.to_dict(),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        )
+
     def calculate_txid(self) -> str:
-        """Calculate transaction hash"""
-        # Create a string representation for hashing that avoids bytes serialization
-        tx_string = f"{self.version}"
-        
-        # Add inputs
-        for inp in self.inputs:
-            tx_string += f"{inp.prev_txid}{inp.prev_vout}{inp.sequence}"
-            if inp.script_sig:
-                tx_string += inp.script_sig.hex()
-        
-        # Add outputs
-        for out in self.outputs:
-            tx_string += f"{out.value}{out.address}"
-            if out.script_pubkey:
-                tx_string += out.script_pubkey.hex()
-        
-        tx_string += f"{self.lock_time}{self.timestamp}{self.tx_type}"
-        if self.extra_data:
-            tx_string += json.dumps(self.extra_data, sort_keys=True, separators=(",", ":"))
-        
-        return hashlib.sha256(tx_string.encode()).hexdigest()
+        """Return the unambiguous hash of the complete serialized transaction."""
+        payload = json.dumps(
+            self.to_dict(),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+        preimage = b"WEPO_TXID_V2\x00" + struct.pack("<I", len(payload)) + payload
+        return hashlib.sha256(preimage).hexdigest()
     
     def is_coinbase(self) -> bool:
         """Check if this is a coinbase transaction"""
@@ -589,18 +892,44 @@ class BlockHeader:
     nonce: int
     consensus_type: str  # 'pow', 'pos', or 'hybrid'
     validator_address: Optional[str] = None  # For PoS blocks
+    validator_public_key: Optional[bytes] = None  # ML-DSA-44 public key for PoS
     validator_signature: Optional[bytes] = None  # For PoS blocks
     
+    @staticmethod
+    def _length_prefixed(value: bytes) -> bytes:
+        return struct.pack("<I", len(value)) + value
+
+    def canonical_bytes(self, include_validator_signature: bool = True) -> bytes:
+        """Return unambiguous, versioned bytes for the consensus block header."""
+        consensus = self.consensus_type.encode("ascii")
+        validator_address = (self.validator_address or "").encode("ascii")
+        validator_public_key = bytes(self.validator_public_key or b"")
+        validator_signature = (
+            bytes(self.validator_signature or b"")
+            if include_validator_signature
+            else b""
+        )
+
+        return (
+            b"WEPO_BLOCK_HEADER_V2\x00"
+            + struct.pack(
+                "<I32s32sQII",
+                self.version,
+                bytes.fromhex(self.prev_hash),
+                bytes.fromhex(self.merkle_root),
+                self.timestamp,
+                self.bits,
+                self.nonce,
+            )
+            + self._length_prefixed(consensus)
+            + self._length_prefixed(validator_address)
+            + self._length_prefixed(validator_public_key)
+            + self._length_prefixed(validator_signature)
+        )
+
     def calculate_hash(self) -> str:
-        """Calculate block hash"""
-        header_data = struct.pack('<I32s32sIII', 
-                                self.version,
-                                bytes.fromhex(self.prev_hash),
-                                bytes.fromhex(self.merkle_root),
-                                self.timestamp,
-                                self.bits,
-                                self.nonce)
-        return hashlib.sha256(header_data).hexdigest()
+        """Calculate the consensus block id over every header field."""
+        return hashlib.sha256(self.canonical_bytes()).hexdigest()
     
     def is_pos_block(self) -> bool:
         """Check if this is a PoS block"""
@@ -622,20 +951,26 @@ class Block:
         if self.size == 0:
             self.size = self.calculate_size()
     
+    @staticmethod
+    def _size_json_default(value):
+        if isinstance(value, (bytes, bytearray)):
+            return bytes(value).hex()
+        raise TypeError(f"Unsupported consensus size value: {type(value).__name__}")
+
     def calculate_size(self) -> int:
-        """Calculate block size in bytes"""
-        # Simplified size calculation avoiding JSON serialization of bytes
-        total_size = 0
-        for tx in self.transactions:
-            # Count transaction components
-            total_size += 100  # Base transaction overhead
-            total_size += len(tx.inputs) * 50  # Input overhead
-            total_size += len(tx.outputs) * 50  # Output overhead
-            for inp in tx.inputs:
-                total_size += len(inp.script_sig) if inp.script_sig else 0
-            for out in tx.outputs:
-                total_size += len(out.script_pubkey) if out.script_pubkey else 0
-        return total_size
+        """Calculate deterministic JSON-wire size enforced by consensus."""
+        transaction_bytes = json.dumps(
+            [tx.to_dict() for tx in self.transactions],
+            sort_keys=True,
+            separators=(",", ":"),
+            default=self._size_json_default,
+        ).encode("utf-8")
+        return (
+            8  # block height
+            + 4  # transaction count
+            + len(self.header.canonical_bytes())
+            + len(transaction_bytes)
+        )
     
     def calculate_merkle_root(self) -> str:
         """Calculate Merkle root of transactions"""
@@ -672,7 +1007,7 @@ class WepoArgon2Miner:
     def _build_pow_input(self, header: BlockHeader) -> bytes:
         """Build deterministic PoW input bytes for a block header."""
         return struct.pack(
-            '<I32s32sIII',
+            '<I32s32sQII',
             header.version,
             bytes.fromhex(header.prev_hash),
             bytes.fromhex(header.merkle_root),
@@ -749,22 +1084,83 @@ class WepoArgon2Miner:
 class WepoBlockchain:
     """WEPO Blockchain Core"""
     
-    def __init__(self, data_dir: str = "/tmp/wepo", network_profile: Optional[str] = None):
+    def __init__(
+        self,
+        data_dir: str = "/tmp/wepo",
+        network_profile: Optional[str] = None,
+        fixed_difficulty: Optional[int] = None,
+    ):
         self.network_profile_name = (network_profile or os.getenv("WEPO_NETWORK_PROFILE", NETWORK_PROFILE_NAME)).strip().lower()
+        self.network_profile = get_network_profile(self.network_profile_name)
+        if fixed_difficulty is not None:
+            if self.network_profile.name == "mainnet":
+                raise RuntimeError("A fixed difficulty is not permitted on mainnet")
+            if type(fixed_difficulty) is not int or fixed_difficulty < 1:
+                raise ValueError("fixed difficulty must be a positive integer")
+
+        self.coinbase_maturity = self.network_profile.coinbase_maturity
+        if (
+            self.coinbase_maturity is not None
+            and (type(self.coinbase_maturity) is not int or self.coinbase_maturity < 1)
+        ):
+            raise RuntimeError("coinbase maturity must be a positive integer or unset")
+        self.minimum_relay_fee_per_kb = (
+            self.network_profile.minimum_relay_fee_per_kb
+        )
+        if (
+            self.minimum_relay_fee_per_kb is not None
+            and (type(self.minimum_relay_fee_per_kb) is not int
+                 or self.minimum_relay_fee_per_kb < 0)
+        ):
+            raise RuntimeError("minimum relay fee rate must be a nonnegative integer or unset")
         apply_network_profile(self.network_profile_name)
+        if PRIVACY_CONSENSUS_ENABLED:
+            if (
+                SHIELDED_ACTIVATION_HEIGHT is None
+                or type(SHIELDED_ACTIVATION_HEIGHT) is not int
+                or SHIELDED_ACTIVATION_HEIGHT < 1
+            ):
+                raise RuntimeError(
+                    "shielded consensus is enabled without a valid activation height"
+                )
+            try:
+                from .shielded import verifier_is_audited
+            except ImportError:
+                from shielded import verifier_is_audited
+            if not verifier_is_audited():
+                raise RuntimeError(
+                    "shielded consensus is enabled without the pinned, "
+                    "audit-approved verifier"
+                )
         self.data_dir = data_dir
         self.db_path = os.path.join(data_dir, "blockchain.db")
         self.chain: List[Block] = []
         self.mempool: Dict[str, Transaction] = {}
+        self.mempool_bytes = 0
+        self.mempool_lock = threading.RLock()
+        self.chain_lock = threading.RLock()
+        # Process-scoped operational counters. External monitoring retains and
+        # compares them across restarts; consensus state never depends on them.
+        self.process_started_at = int(time.time())
+        self.accepted_blocks_total = 0
+        self.block_validation_rejections_total = 0
+        self.reorgs_total = 0
+        self.reorg_failures_total = 0
+        self.last_reorg: Optional[Dict[str, Any]] = None
         self.utxo_set: Dict[str, TransactionOutput] = {}
         self.stakes: Dict[str, dict] = {}
         self.masternodes: Dict[str, dict] = {}
         self.block_index: Dict[str, Block] = {}
         self.main_chain_hashes: Set[str] = set()
         self.pending_blocks_by_prev_hash: Dict[str, Set[str]] = {}
-        self.current_difficulty = 4  # Start with 4 leading zeros
-        self.fixed_difficulty: Optional[int] = None
+        self.pending_block_order: Dict[str, str] = {}
+        self.issued_supply_by_height: Dict[int, int] = {}
+        self.fixed_difficulty = fixed_difficulty
+        self.current_difficulty = fixed_difficulty or 4
         self.miner = WepoArgon2Miner()
+        self.shielded_tree = None
+        self.shielded_anchors = None
+        self.shielded_nullifiers = None
         
         # Ensure data directory exists
         os.makedirs(data_dir, exist_ok=True)
@@ -776,14 +1172,54 @@ class WepoBlockchain:
         self.load_chain()
         self._refresh_main_chain_index()
         if self.chain:
-            self.rebuild_protocol_state_from_chain()
+            canonical_blocks = list(self.chain)
+            self._rebuild_canonical_state_from_blocks(canonical_blocks)
+            self.conn.commit()
         if not self.chain:
             self.create_genesis_block()
+        self._rebuild_issued_supply_cache()
         self.backfill_wallet_activity_ledger()
     
+        if _shielded_active_at(self.get_block_height() + 1):
+            self._ensure_shielded_state()
+    @staticmethod
+    def _configure_database_connection(
+        connection: sqlite3.Connection,
+    ) -> None:
+        """Apply the durable, bounded SQLite policy required by a full node."""
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA busy_timeout = 5000")
+        journal_mode = connection.execute(
+            "PRAGMA journal_mode = WAL"
+        ).fetchone()
+        if not journal_mode or str(journal_mode[0]).lower() != "wal":
+            raise RuntimeError("blockchain database could not enable WAL mode")
+        connection.execute("PRAGMA synchronous = FULL")
+        connection.execute("PRAGMA wal_autocheckpoint = 1000")
+        connection.execute("PRAGMA journal_size_limit = 67108864")
+
+    @staticmethod
+    def _assert_database_integrity(
+        connection: sqlite3.Connection,
+    ) -> None:
+        """Fail closed instead of starting from a structurally corrupt database."""
+        try:
+            row = connection.execute("PRAGMA quick_check").fetchone()
+        except sqlite3.DatabaseError as exc:
+            raise RuntimeError(
+                "blockchain database integrity check failed"
+            ) from exc
+        if not row or row[0] != "ok":
+            detail = row[0] if row else "no result"
+            raise RuntimeError(
+                f"blockchain database integrity check failed: {detail}"
+            )
+
     def init_database(self):
         """Initialize SQLite database"""
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        self._configure_database_connection(self.conn)
+        self._assert_database_integrity(self.conn)
         self.conn.execute('''
             CREATE TABLE IF NOT EXISTS blocks (
                 height INTEGER PRIMARY KEY,
@@ -823,6 +1259,8 @@ class WepoBlockchain:
                 address TEXT NOT NULL,
                 amount INTEGER NOT NULL,
                 script_pubkey BLOB NOT NULL,
+                created_height INTEGER NOT NULL DEFAULT 0,
+                is_coinbase BOOLEAN NOT NULL DEFAULT FALSE,
                 spent BOOLEAN DEFAULT FALSE,
                 spent_txid TEXT,
                 spent_height INTEGER,
@@ -876,6 +1314,34 @@ class WepoBlockchain:
                 block_hash TEXT NOT NULL,
                 timestamp INTEGER NOT NULL,
                 FOREIGN KEY(block_height) REFERENCES blocks(height)
+            )
+        ''')
+
+        self.conn.execute('''
+            CREATE TABLE IF NOT EXISTS shielded_commitments (
+                position INTEGER PRIMARY KEY,
+                commitment BLOB NOT NULL,
+                block_height INTEGER NOT NULL,
+                txid TEXT NOT NULL,
+                output_index INTEGER NOT NULL,
+                UNIQUE(txid, output_index)
+            )
+        ''')
+
+        self.conn.execute('''
+            CREATE TABLE IF NOT EXISTS shielded_nullifiers (
+                nullifier BLOB PRIMARY KEY,
+                block_height INTEGER NOT NULL,
+                txid TEXT NOT NULL,
+                spend_index INTEGER NOT NULL,
+                UNIQUE(txid, spend_index)
+            )
+        ''')
+
+        self.conn.execute('''
+            CREATE TABLE IF NOT EXISTS shielded_anchors (
+                anchor BLOB PRIMARY KEY,
+                block_height INTEGER NOT NULL
             )
         ''')
 
@@ -935,6 +1401,10 @@ class WepoBlockchain:
             ON staking_rewards(recipient_address, block_height DESC, timestamp DESC)
         ''')
         self.conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_staking_rewards_height_id
+            ON staking_rewards(block_height, reward_id)
+        ''')
+        self.conn.execute('''
             CREATE INDEX IF NOT EXISTS idx_wallet_activity_address_height
             ON wallet_activity(address, block_height DESC, timestamp DESC)
         ''')
@@ -947,6 +1417,8 @@ class WepoBlockchain:
         self._ensure_table_column("stakes", "lock_vout", "INTEGER")
         self._ensure_table_column("stakes", "deactivation_txid", "TEXT")
         self._ensure_table_column("masternodes", "deactivation_txid", "TEXT")
+        self._ensure_table_column("utxos", "created_height", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_table_column("utxos", "is_coinbase", "BOOLEAN NOT NULL DEFAULT FALSE")
         
         self.conn.commit()
 
@@ -963,6 +1435,25 @@ class WepoBlockchain:
         """Normalize transaction type access for legacy and upgraded transactions."""
         tx_type = getattr(transaction, "tx_type", TX_TYPE_TRANSFER) or TX_TYPE_TRANSFER
         return str(tx_type)
+    @staticmethod
+    def _transaction_state_claims(
+        transaction: Transaction,
+    ) -> Set[Tuple[str, str]]:
+        """Return logical state identifiers that must be unique at admission."""
+        tx_type = WepoBlockchain._protocol_tx_type(transaction)
+        metadata = transaction.extra_data or {}
+        field_by_type = {
+            TX_TYPE_STAKE_CREATE: ("stake", "stake_id"),
+            TX_TYPE_MASTERNODE_CREATE: ("masternode", "masternode_id"),
+            TX_TYPE_RWA_CREATE: ("rwa", "asset_id"),
+        }
+        claim_spec = field_by_type.get(tx_type)
+        if claim_spec is None or not isinstance(metadata, dict):
+            return set()
+        namespace, field = claim_spec
+        identifier = metadata.get(field)
+        return {(namespace, identifier)} if isinstance(identifier, str) and identifier else set()
+
 
     @staticmethod
     def _decode_script_marker(script_pubkey: Optional[bytes]) -> str:
@@ -1338,35 +1829,253 @@ class WepoBlockchain:
             self.block_index[block_hash] = block
             self.main_chain_hashes.add(block_hash)
 
-    def _remember_noncanonical_block(self, block: Block) -> None:
-        """Store a side-branch or orphan block for later branch assembly."""
+    def _drop_pending_block_hash(self, block_hash: str, prev_hash: str) -> None:
+        """Remove one pending block from every bounded in-memory index."""
+        self.pending_block_order.pop(block_hash, None)
+        children = self.pending_blocks_by_prev_hash.get(prev_hash)
+        if children:
+            children.discard(block_hash)
+            if not children:
+                self.pending_blocks_by_prev_hash.pop(prev_hash, None)
+        if block_hash not in self.main_chain_hashes:
+            self.block_index.pop(block_hash, None)
+
+    def _validate_pending_block_envelope(self, block: Block) -> bool:
+        """Reject context-free invalid branch data before it consumes cache."""
+        if type(block.height) is not int or block.height <= 0:
+            return False
+        header = block.header
+        if (
+            header.version != 1
+            or header.consensus_type not in {"pow", "pos"}
+            or type(header.timestamp) is not int
+            or not 0 <= header.timestamp <= 0xFFFFFFFFFFFFFFFF
+            or type(header.bits) is not int
+            or not 0 <= header.bits <= 0xFFFFFFFF
+            or type(header.nonce) is not int
+            or not 0 <= header.nonce <= 0xFFFFFFFF
+        ):
+            return False
+        for hash_value in (header.prev_hash, header.merkle_root):
+            if not isinstance(hash_value, str) or len(hash_value) != 64:
+                return False
+            try:
+                if len(bytes.fromhex(hash_value)) != 32:
+                    return False
+            except ValueError:
+                return False
+        if header.timestamp > int(time.time()) + MAX_FUTURE_BLOCK_TIME_DRIFT:
+            return False
+        if not block.transactions or len(block.transactions) > MAX_BLOCK_TRANSACTIONS:
+            return False
+        if block.calculate_size() > MAX_BLOCK_SIZE:
+            return False
+        if header.merkle_root != block.calculate_merkle_root():
+            return False
+        if not block.transactions[0].is_coinbase():
+            return False
+        for tx_index, transaction in enumerate(block.transactions):
+            if tx_index > 0 and transaction.is_coinbase():
+                return False
+            if not self._validate_transaction_consensus_shape(
+                transaction,
+                block.height,
+                allow_coinbase=(tx_index == 0),
+                context=f"pending block {block.height} transaction {tx_index}",
+            ):
+                return False
+
+        parent = self.block_index.get(header.prev_hash)
+        if parent is not None and (
+            block.height != parent.height + 1
+            or header.timestamp <= parent.header.timestamp
+        ):
+            return False
+
+        if header.is_pow_block():
+            if (
+                header.bits < 1
+                or header.validator_address is not None
+                or header.validator_public_key is not None
+                or header.validator_signature is not None
+            ):
+                return False
+            pow_hash = self.miner.calculate_pow_hash(header)
+            if not self.miner.check_difficulty(pow_hash, header.bits):
+                return False
+        elif header.is_pos_block():
+            if (
+                header.bits != 0
+                or not is_quantum_address(header.validator_address or "")
+                or not isinstance(header.validator_public_key, bytes)
+                or len(header.validator_public_key) != DILITHIUM_PUBKEY_SIZE
+                or not isinstance(header.validator_signature, bytes)
+                or len(header.validator_signature) != DILITHIUM_SIGNATURE_SIZE
+            ):
+                return False
+        else:
+            return False
+
+        return True
+
+    def _remember_noncanonical_block(self, block: Block) -> bool:
+        """Store a side-branch or orphan block within bounded memory limits."""
         block_hash = block.get_block_hash()
+        if block_hash in self.main_chain_hashes or block_hash in self.pending_block_order:
+            return True
+
+        prev_hash = block.header.prev_hash
+        siblings = self.pending_blocks_by_prev_hash.get(prev_hash, set())
+        if len(siblings) >= MAX_PENDING_CHILDREN_PER_PARENT:
+            print(
+                f"Rejected pending block {block_hash}: parent {prev_hash} already "
+                f"has {MAX_PENDING_CHILDREN_PER_PARENT} pending children"
+            )
+            return False
+
+        while len(self.pending_block_order) >= MAX_PENDING_BLOCKS:
+            oldest_hash, oldest_prev = next(iter(self.pending_block_order.items()))
+            self._drop_pending_block_hash(oldest_hash, oldest_prev)
+
         self.block_index[block_hash] = block
-        self.pending_blocks_by_prev_hash.setdefault(block.header.prev_hash, set()).add(block_hash)
+        self.pending_blocks_by_prev_hash.setdefault(prev_hash, set()).add(block_hash)
+        self.pending_block_order[block_hash] = prev_hash
+        return True
 
     def _forget_pending_block(self, block: Block) -> None:
         """Remove a block from pending-branch bookkeeping once it is adopted."""
         block_hash = block.get_block_hash()
-        children = self.pending_blocks_by_prev_hash.get(block.header.prev_hash)
-        if not children:
-            return
-        children.discard(block_hash)
-        if not children:
-            self.pending_blocks_by_prev_hash.pop(block.header.prev_hash, None)
+        self._drop_pending_block_hash(block_hash, block.header.prev_hash)
+        self.block_index[block_hash] = block
 
-    def _chain_score(self, blocks: List[Block]) -> int:
-        """Approximate cumulative chainwork for main-branch selection."""
-        score = 0
-        for block in blocks:
-            if block.header.is_pow_block():
-                score += max(1, int(block.header.bits))
-            else:
-                score += 1
-        return score
+    @staticmethod
+    def _block_chainwork(block: Block) -> int:
+        """Return work represented by a block under the leading-hex-zero target."""
+        if block.header.is_pow_block():
+            difficulty = max(0, int(block.header.bits))
+            return 1 << (4 * difficulty)
+        # PoS never manufactures proof-of-work. Valid paced PoS blocks are a
+        # tie-breaker only after branches have equal cumulative PoW.
+        return 0
+
+    def _chain_score(self, blocks: List[Block]) -> Tuple[int, int]:
+        """Rank branches by PoW first, then valid PoS progress.
+
+        Lexicographic ordering prevents any number of zero-work PoS blocks from
+        replacing a branch with more cumulative PoW. PoS only resolves branches
+        whose cumulative PoW is exactly equal.
+        """
+        pow_work = sum(self._block_chainwork(block) for block in blocks)
+        pos_blocks = sum(1 for block in blocks if not block.header.is_pow_block())
+        return pow_work, pos_blocks
+
+    def _reset_shielded_memory_state(self) -> None:
+        self.shielded_tree = None
+        self.shielded_anchors = None
+        self.shielded_nullifiers = None
+
+    def _ensure_shielded_state(self) -> None:
+        if self.shielded_tree is not None:
+            return
+        try:
+            from .shielded import AnchorSet, NoteCommitmentTree, NullifierSet
+        except ImportError:
+            from shielded import AnchorSet, NoteCommitmentTree, NullifierSet
+
+        tree = NoteCommitmentTree()
+        commitments = self.conn.execute(
+            "SELECT position, commitment FROM shielded_commitments ORDER BY position"
+        ).fetchall()
+        for expected, (position, commitment) in enumerate(commitments):
+            if position != expected:
+                raise RuntimeError("shielded commitment positions are not contiguous")
+            tree.append(bytes(commitment))
+
+        nullifiers = NullifierSet()
+        for nullifier, height in self.conn.execute(
+            "SELECT nullifier, block_height FROM shielded_nullifiers"
+        ).fetchall():
+            nullifiers.add(bytes(nullifier), int(height))
+
+        anchors = AnchorSet()
+        for anchor, height in self.conn.execute(
+            "SELECT anchor, block_height FROM shielded_anchors ORDER BY block_height"
+        ).fetchall():
+            anchors.add(bytes(anchor), int(height))
+
+        latest = self.conn.execute(
+            "SELECT anchor FROM shielded_anchors ORDER BY block_height DESC LIMIT 1"
+        ).fetchone()
+        if latest is not None and bytes(latest[0]) != tree.root():
+            raise RuntimeError("persisted shielded anchor does not match commitment tree")
+
+        self.shielded_tree = tree
+        self.shielded_anchors = anchors
+        self.shielded_nullifiers = nullifiers
+
+    def _validate_shielded_bundle(self, transaction: Transaction, height: int) -> bool:
+        bundle = transaction.shielded_bundle
+        if bundle is None:
+            return True
+        if not _shielded_active_at(height):
+            return False
+        self._ensure_shielded_state()
+        try:
+            from .shielded import verify_bundle
+        except ImportError:
+            from shielded import verify_bundle
+        ok, reason = verify_bundle(
+            bundle,
+            transaction.get_canonical_sighash(self.network_profile.network_label),
+            self.shielded_anchors,
+            self.shielded_nullifiers,
+        )
+        if not ok:
+            print(f"Invalid shielded bundle: {reason}")
+        return ok
+
+    def _apply_shielded_state(self, block: Block) -> None:
+        if not _shielded_active_at(block.height):
+            return
+        self._ensure_shielded_state()
+        for transaction in block.transactions:
+            bundle = transaction.shielded_bundle
+            if bundle is None:
+                continue
+            txid = transaction.calculate_txid()
+            for spend_index, nullifier in enumerate(bundle.nullifiers()):
+                self.conn.execute(
+                    "INSERT INTO shielded_nullifiers "
+                    "(nullifier, block_height, txid, spend_index) VALUES (?, ?, ?, ?)",
+                    (nullifier, block.height, txid, spend_index),
+                )
+                self.shielded_nullifiers.add(nullifier, block.height)
+            for output_index, commitment in enumerate(bundle.commitments()):
+                position = self.shielded_tree.append(commitment)
+                self.conn.execute(
+                    "INSERT INTO shielded_commitments "
+                    "(position, commitment, block_height, txid, output_index) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (position, commitment, block.height, txid, output_index),
+                )
+
+        root = self.shielded_tree.root()
+        self.shielded_anchors.add(root, block.height)
+        self.conn.execute(
+            "INSERT OR REPLACE INTO shielded_anchors (anchor, block_height) VALUES (?, ?)",
+            (root, block.height),
+        )
+        self.conn.execute(
+            "DELETE FROM shielded_anchors WHERE block_height < ?",
+            (block.height - self.shielded_anchors.window,),
+        )
 
     def _reset_derived_chain_tables(self) -> None:
         """Clear canonical chain-derived tables before a deterministic replay."""
         for table_name in (
+            "shielded_anchors",
+            "shielded_nullifiers",
+            "shielded_commitments",
             "wallet_activity",
             "staking_rewards",
             "stakes",
@@ -1380,6 +2089,8 @@ class WepoBlockchain:
             self.conn.execute(f"DELETE FROM {table_name}")
         self.stakes.clear()
         self.masternodes.clear()
+        self.issued_supply_by_height.clear()
+        self._reset_shielded_memory_state()
 
     def _persist_confirmed_block(self, block: Block) -> None:
         """Persist one confirmed block into the canonical derived state tables."""
@@ -1394,7 +2105,10 @@ class WepoBlockchain:
         self._apply_protocol_state_transitions(block)
         self._index_rwa_transactions(block)
         self._index_messaging_key_registrations(block)
+        self._apply_shielded_state(block)
+        self._record_issued_supply_for_block(block)
 
+    @_chain_state_locked
     def _rebuild_canonical_state_from_blocks(self, canonical_blocks: List[Block]) -> None:
         """Rebuild all chain-derived state from an explicit canonical block list."""
         self._reset_derived_chain_tables()
@@ -1441,8 +2155,11 @@ class WepoBlockchain:
         except Exception:
             pass
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        self._configure_database_connection(self.conn)
         backup_conn.backup(self.conn)
+        self._assert_database_integrity(self.conn)
 
+    @_chain_state_locked
     def _try_adopt_branch_from_tip(self, tip_hash: str) -> bool:
         """Attempt to adopt a competing branch if it outranks the current main chain."""
         branch_info = self._build_branch_to_tip(tip_hash)
@@ -1457,19 +2174,36 @@ class WepoBlockchain:
         current_score = self._chain_score(self.chain)
         candidate_score = self._chain_score(candidate_chain)
 
-        if len(candidate_chain) < len(self.chain):
-            return False
-        if len(candidate_chain) == len(self.chain) and candidate_score <= current_score:
+        if candidate_score <= current_score:
             return False
 
         backup_conn = sqlite3.connect(":memory:")
         self.conn.backup(backup_conn)
         original_chain = list(self.chain)
         original_main_hashes = set(self.main_chain_hashes)
+        original_stakes = {key: dict(value) for key, value in self.stakes.items()}
+        original_masternodes = {key: dict(value) for key, value in self.masternodes.items()}
+        original_issued_supply = dict(self.issued_supply_by_height)
 
         try:
             self._rebuild_canonical_state_from_blocks(candidate_chain)
             self.conn.commit()
+            for disconnected_block in original_chain[ancestor_height + 1:]:
+                self._remember_noncanonical_block(disconnected_block)
+            for adopted_block in candidate_suffix:
+                self._forget_pending_block(adopted_block)
+            disconnected_depth = len(original_chain) - ancestor_height - 1
+            if disconnected_depth > 0:
+                self.reorgs_total += 1
+                self.last_reorg = {
+                    "observed_at": int(time.time()),
+                    "ancestor_height": ancestor_height,
+                    "disconnected_depth": disconnected_depth,
+                    "old_tip": original_chain[-1].get_block_hash(),
+                    "new_tip": candidate_chain[-1].get_block_hash(),
+                    "new_height": candidate_chain[-1].height,
+                }
+
             print(
                 f"Adopted new canonical branch at height {candidate_chain[-1].height}: "
                 f"old_score={current_score} new_score={candidate_score}"
@@ -1478,9 +2212,14 @@ class WepoBlockchain:
         except Exception as e:
             self.conn.rollback()
             self._restore_database_from_backup(backup_conn)
+            self._reset_shielded_memory_state()
             self.chain = original_chain
             self.main_chain_hashes = original_main_hashes
+            self.stakes = original_stakes
+            self.masternodes = original_masternodes
+            self.issued_supply_by_height = original_issued_supply
             self.current_difficulty = self.calculate_expected_difficulty()
+            self.reorg_failures_total += 1
             print(f"Failed to adopt competing branch ending {tip_hash}: {e}")
             return False
         finally:
@@ -1747,10 +2486,74 @@ class WepoBlockchain:
 
         self.conn.commit()
 
+    def _validate_configured_genesis(self, block: Block) -> bool:
+        """Require the unique deterministic genesis for the active profile."""
+        try:
+            expected_transaction = Transaction(
+                version=1,
+                inputs=[
+                    TransactionInput(
+                        prev_txid="0" * 64,
+                        prev_vout=0xFFFFFFFF,
+                        script_sig=b"WEPO Genesis - We The People",
+                        sequence=0xFFFFFFFF,
+                    )
+                ],
+                outputs=[
+                    TransactionOutput(
+                        value=GENESIS_BOOTSTRAP_REWARD,
+                        script_pubkey=b"genesis_output",
+                        address=self.network_profile.genesis_address,
+                    )
+                ],
+                lock_time=0,
+                timestamp=GENESIS_TIME,
+            )
+            expected_header = BlockHeader(
+                version=1,
+                prev_hash="0" * 64,
+                merkle_root="",
+                timestamp=GENESIS_TIME,
+                bits=1,
+                nonce=0,
+                consensus_type="pow",
+            )
+            expected = Block(
+                header=expected_header,
+                transactions=[expected_transaction],
+                height=0,
+            )
+            expected.header.merkle_root = expected.calculate_merkle_root()
+            while not self.miner.check_difficulty(
+                self.miner.calculate_pow_hash(expected.header),
+                expected.header.bits,
+            ):
+                if expected.header.nonce == 0xFFFFFFFF:
+                    return False
+                expected.header.nonce += 1
+            expected.size = expected.calculate_size()
+            return (
+                block.height == 0
+                and len(block.transactions) == 1
+                and block.header.canonical_bytes()
+                == expected.header.canonical_bytes()
+                and block.transactions[0].to_dict()
+                == expected.transactions[0].to_dict()
+                and block.size == expected.size
+                and block.get_block_hash() == expected.get_block_hash()
+            )
+        except (TypeError, ValueError, OverflowError):
+            return False
+
     def create_genesis_block(self):
-        """Create the genesis block"""
+        """Create the deterministic genesis block for this network profile."""
         print("Creating WEPO genesis block...")
-        genesis_address = generate_wepo_address("wepo-mainnet-genesis", address_type="regular")
+        genesis_address = self.network_profile.genesis_address
+        if not is_quantum_address(genesis_address):
+            raise RuntimeError(
+                f"{self.network_profile.name} genesis address must be a quantum "
+                "wepo1q address bound to an ML-DSA public key"
+            )
         
         # Genesis coinbase transaction
         genesis_tx = Transaction(
@@ -1804,16 +2607,67 @@ class WepoBlockchain:
             raise Exception("Failed to mine genesis block")
     
     def load_chain(self):
-        """Load blockchain from database"""
-        cursor = self.conn.execute('''
-            SELECT block_data FROM blocks ORDER BY height ASC
-        ''')
-        
-        for row in cursor.fetchall():
-            block_data = json.loads(row[0])
+        """Load canonical block payloads and reject denormalized-row drift."""
+        cursor = self.conn.execute(
+            """
+            SELECT height, hash, prev_hash, merkle_root, timestamp, bits, nonce,
+                   version, size, tx_count, consensus_type, block_data
+            FROM blocks
+            ORDER BY height ASC
+            """
+        )
+
+        for expected_height, row in enumerate(cursor.fetchall()):
+            (
+                stored_height,
+                stored_hash,
+                stored_prev_hash,
+                stored_merkle_root,
+                stored_timestamp,
+                stored_bits,
+                stored_nonce,
+                stored_version,
+                stored_size,
+                stored_tx_count,
+                stored_consensus_type,
+                stored_block_data,
+            ) = row
+            if stored_height != expected_height:
+                raise RuntimeError(
+                    "block database heights are not contiguous from genesis"
+                )
+            try:
+                block_data = json.loads(stored_block_data)
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    f"block {stored_height} has invalid canonical payload JSON"
+                ) from exc
             block = self.deserialize_block(block_data)
+            expected_row = (
+                block.height,
+                block.get_block_hash(),
+                block.header.prev_hash,
+                block.header.merkle_root,
+                block.header.timestamp,
+                block.header.bits,
+                block.header.nonce,
+                block.header.version,
+                block.size,
+                len(block.transactions),
+                block.header.consensus_type,
+                self.serialize_block(block),
+            )
+            if row != expected_row:
+                raise RuntimeError(
+                    f"block {stored_height} metadata does not match its "
+                    "canonical payload"
+                )
+            if stored_height == 0 and not self._validate_configured_genesis(block):
+                raise RuntimeError(
+                    "stored genesis does not match the configured network genesis"
+                )
             self.chain.append(block)
-        
+
         self.current_difficulty = self.calculate_expected_difficulty()
         print(f"Loaded {len(self.chain)} blocks from database")
     
@@ -1837,16 +2691,13 @@ class WepoBlockchain:
             'size': block.size
         }
         
-        # Serialize transactions with bytes conversion
-        for tx in block.transactions:
-            tx_dict = asdict(tx)
-            tx_dict = bytes_to_hex(tx_dict)
-            block_dict['transactions'].append(tx_dict)
+        block_dict['transactions'] = [tx.to_dict() for tx in block.transactions]
         
-        return json.dumps(block_dict)
+        return json.dumps(block_dict, sort_keys=True, separators=(",", ":"))
     
-    def deserialize_block(self, data: dict) -> Block:
-        """Deserialize block from JSON"""
+    def _deserialize_block_legacy_unreachable(self, data: dict) -> Block:
+        """Removed legacy decoder; retained temporarily only to make old calls fail closed."""
+        raise RuntimeError("Legacy permissive block decoding has been removed")
         def decode_bytes_field(value):
             if value in (None, b'', ''):
                 return None if value is None else b''
@@ -1860,6 +2711,8 @@ class WepoBlockchain:
             return value
 
         header_data = dict(data['header'])
+        if 'validator_public_key' in header_data:
+            header_data['validator_public_key'] = decode_bytes_field(header_data.get('validator_public_key'))
         if 'validator_signature' in header_data:
             header_data['validator_signature'] = decode_bytes_field(header_data.get('validator_signature'))
         header = BlockHeader(**header_data)
@@ -1892,6 +2745,7 @@ class WepoBlockchain:
             
             privacy_proof = decode_bytes_field(tx_data.get('privacy_proof'))
             ring_signature = decode_bytes_field(tx_data.get('ring_signature'))
+            shielded_bundle = _shielded_bundle_from_dict(tx_data.get('shielded_bundle'))
             
             tx = Transaction(
                 version=tx_data['version'],
@@ -1901,6 +2755,7 @@ class WepoBlockchain:
                 fee=tx_data.get('fee', 0),
                 privacy_proof=privacy_proof,
                 ring_signature=ring_signature,
+                shielded_bundle=shielded_bundle,
                 tx_type=tx_data.get('tx_type', TX_TYPE_TRANSFER),
                 extra_data=tx_data.get('extra_data') or {},
                 timestamp=tx_data.get('timestamp', 0)
@@ -1914,6 +2769,83 @@ class WepoBlockchain:
             size=data['size']
         )
     
+    def deserialize_block(self, data: dict) -> Block:
+        """Deserialize one canonical, resource-bounded block wire envelope."""
+        if not isinstance(data, dict) or set(data) != {
+            "header",
+            "transactions",
+            "height",
+            "size",
+        }:
+            raise ValueError("Block has an invalid wire schema")
+        if type(data["height"]) is not int or type(data["size"]) is not int:
+            raise ValueError("Block height and size must be canonical integers")
+        tx_data = data["transactions"]
+        if (
+            not isinstance(tx_data, list)
+            or not tx_data
+            or len(tx_data) > MAX_BLOCK_TRANSACTIONS
+        ):
+            raise ValueError("Block transaction count exceeds wire resource limits")
+
+        def decode_bytes_field(value):
+            if value in (None, b'', ''):
+                return None if value is None else b''
+            if isinstance(value, (bytes, bytearray)):
+                return bytes(value)
+            if not isinstance(value, str):
+                raise ValueError("Block byte field must use hexadecimal text")
+            return bytes.fromhex(value)
+
+        header_data = data["header"]
+        if not isinstance(header_data, dict) or set(header_data) != {
+            "version",
+            "prev_hash",
+            "merkle_root",
+            "timestamp",
+            "bits",
+            "nonce",
+            "consensus_type",
+            "validator_address",
+            "validator_public_key",
+            "validator_signature",
+        }:
+            raise ValueError("Block header has an invalid wire schema")
+        if (
+            any(
+                type(header_data[field]) is not int
+                for field in ("version", "timestamp", "bits", "nonce")
+            )
+            or any(
+                not isinstance(header_data[field], str)
+                for field in ("prev_hash", "merkle_root", "consensus_type")
+            )
+            or (
+                header_data["validator_address"] is not None
+                and not isinstance(header_data["validator_address"], str)
+            )
+        ):
+            raise ValueError("Block header has non-canonical wire field types")
+
+        decoded_header = dict(header_data)
+        decoded_header['validator_public_key'] = decode_bytes_field(
+            header_data['validator_public_key']
+        )
+        decoded_header['validator_signature'] = decode_bytes_field(
+            header_data['validator_signature']
+        )
+        block = Block(
+            header=BlockHeader(**decoded_header),
+            transactions=[Transaction.from_dict(item) for item in tx_data],
+            height=data["height"],
+            size=0,
+        )
+        if data["size"] != block.size:
+            raise ValueError("Block declared size does not match its canonical payload")
+        if block.size > MAX_BLOCK_SIZE:
+            raise ValueError("Block exceeds the consensus byte limit")
+        return block
+
     def get_latest_block(self) -> Optional[Block]:
         """Get the latest block in the chain"""
         return self.chain[-1] if self.chain else None
@@ -2113,11 +3045,42 @@ class WepoBlockchain:
             'privacy_proof': bool(row[3]),
             'ring_signature': bool(row[4]),
         }
-    
+
+    def has_transaction(self, txid: str) -> bool:
+        """Return whether a transaction is in the mempool or confirmed index."""
+        if not isinstance(txid, str) or len(txid) != 64:
+            return False
+        if txid in self.mempool:
+            return True
+        return self.conn.execute(
+            "SELECT 1 FROM transactions WHERE txid = ? LIMIT 1",
+            (txid,),
+        ).fetchone() is not None
+
+    def get_transaction_payload(self, txid: str) -> Optional[dict]:
+        """Return the canonical full transaction envelope used by P2P getdata."""
+        if not isinstance(txid, str) or len(txid) != 64:
+            return None
+        transaction = self.mempool.get(txid)
+        if transaction is not None:
+            return {"txid": txid, "tx_data": transaction.to_dict()}
+
+        row = self.conn.execute(
+            "SELECT tx_data FROM transactions WHERE txid = ? LIMIT 1",
+            (txid,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            tx_data = json.loads(row[0])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        return {"txid": txid, "tx_data": tx_data}
+
     def get_block_height(self) -> int:
         """Get current block height"""
         return len(self.chain) - 1 if self.chain else -1
-    
+
     # === Issuance model (owner decision 2026-06-20, "distribution-only") =========
     # Every block can mint coins via at most TWO newly-minted paths, processed in
     # this order so the hard cap is applied identically in production and on replay:
@@ -2153,24 +3116,101 @@ class WepoBlockchain:
         return self.calculate_pos_reward(height)
 
     def get_issued_supply(self, up_to_height: Optional[int] = None) -> int:
-        """Cumulative newly-minted supply over the canonical chain, hard-cap clamped.
+        """Return cached canonical issuance through a requested height.
 
-        Accounts for BOTH minting paths (coinbase base + PoS distribution pool) in
-        production order. Deterministic and reorg-safe: derived purely from the
-        canonical chain (height + consensus type) and the deterministic schedule,
-        with the same clamp block production used, so recomputation always matches
-        what was minted. Fee redistribution is excluded (not new issuance).
+        The prefix is rebuilt once on startup/reorg and extended once per
+        accepted block. Normal validation therefore reads prior issuance in O(1).
         """
-        issued = 0
+        if not self.chain:
+            return 0
+        requested_height = (
+            self.chain[-1].height if up_to_height is None else up_to_height
+        )
+        effective_height = min(requested_height, self.chain[-1].height)
+        if effective_height < 0:
+            return 0
+        if effective_height not in self.issued_supply_by_height:
+            self._rebuild_issued_supply_cache()
+        return self.issued_supply_by_height.get(effective_height, 0)
+
+    def _actual_pos_issuance_by_height(
+        self, maximum_height: int
+    ) -> Dict[int, int]:
+        cursor = self.conn.execute(
+            """
+            SELECT block_height, COALESCE(SUM(amount), 0)
+            FROM staking_rewards
+            WHERE block_height <= ?
+              AND (
+                  reward_id GLOB 'reward_staker_*'
+                  OR reward_id GLOB 'reward_masternode_*'
+              )
+            GROUP BY block_height
+            """,
+            (maximum_height,),
+        )
+        return {
+            int(height): int(amount) for height, amount in cursor.fetchall()
+        }
+
+    def _actual_pos_issuance_at_height(self, height: int) -> int:
+        row = self.conn.execute(
+            """
+            SELECT COALESCE(SUM(amount), 0)
+            FROM staking_rewards
+            WHERE block_height = ?
+              AND (
+                  reward_id GLOB 'reward_staker_*'
+                  OR reward_id GLOB 'reward_masternode_*'
+              )
+            """,
+            (height,),
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def _extend_issued_supply_prefix(
+        self, block: Block, actual_pos_pool: int
+    ) -> None:
+        previous_issued = (
+            0
+            if block.height == 0
+            else self.issued_supply_by_height.get(block.height - 1)
+        )
+        if previous_issued is None:
+            raise RuntimeError("issued-supply cache is missing the prior height")
+        scheduled_base = self.scheduled_coinbase_base(
+            block.height,
+            "pos" if block.header.is_pos_block() else "pow",
+        )
+        base = min(scheduled_base, max(0, SUPPLY_CAP - previous_issued))
+        remaining = SUPPLY_CAP - previous_issued - base
+        if (
+            actual_pos_pool < 0
+            or actual_pos_pool > self.scheduled_pos_pool(block.height)
+            or actual_pos_pool > remaining
+        ):
+            raise RuntimeError(
+                f"invalid persisted PoS issuance at height {block.height}"
+            )
+        self.issued_supply_by_height[block.height] = (
+            previous_issued + base + actual_pos_pool
+        )
+
+    def _rebuild_issued_supply_cache(self) -> None:
+        self.issued_supply_by_height.clear()
+        if not self.chain:
+            return
+        actual_pos_issuance = self._actual_pos_issuance_by_height(
+            self.chain[-1].height
+        )
         for block in self.chain:
-            if up_to_height is not None and block.height > up_to_height:
-                break
-            consensus_type = "pos" if block.header.is_pos_block() else "pow"
-            base = self.scheduled_coinbase_base(block.height, consensus_type)
-            issued += min(base, max(0, SUPPLY_CAP - issued))
-            pool = self.scheduled_pos_pool(block.height)
-            issued += min(pool, max(0, SUPPLY_CAP - issued))
-        return issued
+            self._extend_issued_supply_prefix(
+                block, actual_pos_issuance.get(block.height, 0)
+            )
+
+    def _record_issued_supply_for_block(self, block: Block) -> None:
+        actual = self._actual_pos_issuance_at_height(block.height)
+        self._extend_issued_supply_prefix(block, actual)
 
     def clamped_coinbase_base(self, height: int, consensus_type: str) -> int:
         """Coinbase base reward clamped so cumulative issuance never exceeds SUPPLY_CAP.
@@ -2231,7 +3271,7 @@ class WepoBlockchain:
             return PHASE_2D_REWARD
         
         else:
-            # PoW ENDS at block 1,007,400 (Month 198)
+            # PoW ENDS at block 1,008,000 (nominal Month 198)
             # Miners continue earning through 25% fee redistribution
             return 0
         
@@ -2283,7 +3323,9 @@ class WepoBlockchain:
             distributed_masternode_fees = 0
             distributed_staker_fees = 0
 
-            active_masternodes = self.get_active_masternodes()
+            active_masternodes = sorted(
+                self.get_active_masternodes(), key=lambda item: item.masternode_id
+            )
             pre_pos_fee_policy = height <= POS_ACTIVATION_HEIGHT
             if pre_pos_fee_policy:
                 # Before PoS activation, all fees go to the miner unless active masternodes
@@ -2291,15 +3333,15 @@ class WepoBlockchain:
                 # non-staker remainder to the miner.
                 staker_fees = 0
                 if active_masternodes:
-                    masternode_fees = int(total_transaction_fees * 0.60)
+                    masternode_fees = total_transaction_fees * 60 // 100
                     miner_fees = total_transaction_fees - masternode_fees
                 else:
                     masternode_fees = 0
                     miner_fees = total_transaction_fees
             else:
                 # Post-PoS: 60% masternodes, 25% miner/validator, 15% stakers.
-                masternode_fees = int(total_transaction_fees * 0.60)
-                miner_fees = int(total_transaction_fees * 0.25)
+                masternode_fees = total_transaction_fees * 60 // 100
+                miner_fees = total_transaction_fees * 25 // 100
                 staker_fees = total_transaction_fees - masternode_fees - miner_fees
 
             if active_masternodes and masternode_fees > 0:
@@ -2320,7 +3362,10 @@ class WepoBlockchain:
                         f"{fee_amount / COIN:.8f} WEPO in fees"
                     )
 
-            active_stakers = [] if pre_pos_fee_policy else self.get_active_stakes()
+            active_stakers = [] if pre_pos_fee_policy else sorted(
+                self.get_active_stakes(),
+                key=lambda item: (item.staker_address, item.stake_id),
+            )
             total_stake = sum(staker.amount for staker in active_stakers)
             if active_stakers and total_stake > 0 and staker_fees > 0:
                 remaining_fees = staker_fees
@@ -2328,7 +3373,7 @@ class WepoBlockchain:
                     if index == len(active_stakers) - 1:
                         staker_reward = remaining_fees
                     else:
-                        staker_reward = int(staker_fees * (staker.amount / total_stake))
+                        staker_reward = staker_fees * staker.amount // total_stake
                         staker_reward = min(staker_reward, remaining_fees)
                     if staker_reward <= 0:
                         continue
@@ -2387,6 +3432,21 @@ class WepoBlockchain:
             lock_time=0
         )
     
+    def _next_block_timestamp(self) -> int:
+        """Choose a locally valid, monotonic timestamp for the next block."""
+        now = int(time.time())
+        latest_block = self.get_latest_block()
+        minimum = (latest_block.header.timestamp + 1) if latest_block else GENESIS_TIME
+        if self.get_block_height() + 1 == 1:
+            minimum = max(minimum, GENESIS_TIME)
+        candidate = max(now, minimum)
+        if candidate > now + MAX_FUTURE_BLOCK_TIME_DRIFT:
+            raise RuntimeError(
+                "Block production is not active yet: the finalized genesis time "
+                "is still outside the allowed future-time window"
+            )
+        return candidate
+
     def create_new_block(self, miner_address: str) -> Block:
         """Create a new block with transactions from mempool"""
         height = self.get_block_height() + 1
@@ -2394,7 +3454,6 @@ class WepoBlockchain:
         prev_hash = latest_block.get_block_hash() if latest_block else "0" * 64
 
         selected_transactions = []
-        selected_txids = []
         selected_outpoints = set()
         provisional_coinbase = self.create_coinbase_transaction(
             height,
@@ -2404,7 +3463,9 @@ class WepoBlockchain:
         )
         current_size = self._estimate_transaction_size(provisional_coinbase)
 
-        for txid, tx in list(self.mempool.items()):
+        with self.mempool_lock:
+            mempool_items = list(self.mempool.items())
+        for txid, tx in mempool_items:
             if not self.validate_transaction(tx):
                 continue
 
@@ -2419,7 +3480,6 @@ class WepoBlockchain:
             tx_size = self._estimate_transaction_size(tx)
             if current_size + tx_size <= MAX_BLOCK_SIZE:
                 selected_transactions.append(tx)
-                selected_txids.append(txid)
                 selected_outpoints |= tx_outpoints
                 current_size += tx_size
             else:
@@ -2433,18 +3493,15 @@ class WepoBlockchain:
         )
         transactions = [coinbase_tx, *selected_transactions]
 
-        for txid in selected_txids:
-            del self.mempool[txid]
-        
         # Create block header
         header = BlockHeader(
             version=1,
             prev_hash=prev_hash,
             merkle_root="",
-            timestamp=int(time.time()),
+            timestamp=self._next_block_timestamp(),
             bits=self.current_difficulty,
             nonce=0,
-            consensus_type="pow"  # TODO: Implement PoS after activation height
+            consensus_type="pow"  # PoS templates use _produce_pos_block().
         )
         
         # Create block
@@ -2487,15 +3544,36 @@ class WepoBlockchain:
         
         return None
     
-    def create_pos_block(self, validator_address: str) -> Optional[Block]:
-        """Create a PoS block (no mining required)"""
+    def create_pos_block_template(
+        self,
+        validator_address: str,
+        validator_public_key: bytes,
+    ) -> Optional[Block]:
+        """Build an unsigned PoS block without accepting validator private keys."""
+        if not self.network_profile.pos_consensus_ready:
+            return None
+
+        if (
+            not isinstance(validator_public_key, (bytes, bytearray))
+            or len(validator_public_key) != DILITHIUM_PUBKEY_SIZE
+        ):
+            return None
+        validator_public_key = bytes(validator_public_key)
+        if not addresses_equal(
+            generate_wepo_address(validator_public_key, address_type="quantum"),
+            validator_address,
+        ):
+            return None
+
         next_height = self.get_block_height() + 1
+        prev_hash = self.chain[-1].get_block_hash() if self.chain else "0" * 64
+        if self.select_pos_validator(next_height, parent_hash=prev_hash) != validator_address:
+            return None
         if not self.is_valid_pos_validator(validator_address, next_height):
             return None
         
         # Create block with PoS consensus
         height = next_height
-        prev_hash = self.chain[-1].get_block_hash() if self.chain else "0" * 64
         
         # Create coinbase transaction for PoS rewards
         selected_transactions = []
@@ -2506,10 +3584,11 @@ class WepoBlockchain:
             candidate_transactions=[],
         )
         current_size = self._estimate_transaction_size(provisional_coinbase)
-        selected_txids = []
         
         # Add transactions from mempool
-        for txid, tx in list(self.mempool.items()):
+        with self.mempool_lock:
+            mempool_items = list(self.mempool.items())
+        for txid, tx in mempool_items:
             if not self.validate_transaction(tx):
                 continue
 
@@ -2519,7 +3598,6 @@ class WepoBlockchain:
 
             selected_transactions.append(tx)
             current_size += tx_size
-            selected_txids.append(txid)
 
         coinbase_tx = self.create_coinbase_transaction(
             height,
@@ -2529,19 +3607,17 @@ class WepoBlockchain:
         )
         transactions = [coinbase_tx, *selected_transactions]
 
-        for txid in selected_txids:
-            self.mempool.pop(txid, None)
-        
         # Create PoS block header
         header = BlockHeader(
             version=1,
             prev_hash=prev_hash,
             merkle_root="",
-            timestamp=int(time.time()),
+            timestamp=self._next_block_timestamp(),
             bits=0,  # No difficulty for PoS
             nonce=0,  # No nonce for PoS
             consensus_type="pos",
-            validator_address=validator_address
+            validator_address=validator_address,
+            validator_public_key=validator_public_key,
         )
         
         # Create PoS block
@@ -2550,45 +3626,140 @@ class WepoBlockchain:
             transactions=transactions,
             height=height
         )
-        
+
         # Calculate merkle root
         pos_block.header.merkle_root = pos_block.calculate_merkle_root()
-        
-        # Sign the block with validator's key (simplified for now)
-        # In production, this would use the validator's private key
-        header.validator_signature = self.sign_pos_block(pos_block, validator_address)
-        
+
         return pos_block
-    
-    def sign_pos_block(self, block: Block, validator_address: str) -> bytes:
-        """Sign PoS block with validator's key (simplified implementation)"""
-        # For now, create a simple signature based on block hash and validator
-        import hashlib
-        block_hash = block.get_block_hash()
-        signature_data = f"{block_hash}:{validator_address}".encode()
-        return hashlib.sha256(signature_data).digest()
-    
+
+    def get_pos_signing_payload(self, block: Block) -> bytes:
+        """Return the complete domain-separated payload a PoS signer authorizes."""
+        network_name = self.network_profile.name.encode("ascii")
+        payload = (
+            b"WEPO_POS_BLOCK_SIGNATURE_V1\x00"
+            + BlockHeader._length_prefixed(network_name)
+            + struct.pack("<Q", block.height)
+            + block.header.canonical_bytes(include_validator_signature=False)
+        )
+        return payload
+
+    def get_pos_signing_message(self, block: Block) -> bytes:
+        """Return the digest committed by the validator's ML-DSA signature."""
+        return hashlib.sha3_256(self.get_pos_signing_payload(block)).digest()
+
+    def finalize_pos_block(self, block: Block, validator_signature: bytes) -> Optional[Block]:
+        """Attach an external signature only when the complete PoS block validates."""
+        if (
+            not isinstance(validator_signature, (bytes, bytearray))
+            or len(validator_signature) != DILITHIUM_SIGNATURE_SIZE
+            or not block.header.is_pos_block()
+            or block.header.validator_signature
+        ):
+            return None
+
+        block.header.validator_signature = bytes(validator_signature)
+        block.size = block.calculate_size()
+        if not self.validate_pos_block(block):
+            block.header.validator_signature = b""
+            block.size = block.calculate_size()
+            return None
+        return block
+
     def validate_pos_block(self, block: Block) -> bool:
-        """Validate PoS block"""
+        """Validate deterministic selection, key ownership, and ML-DSA signature."""
+        if not self.network_profile.pos_consensus_ready:
+            return False
+
         if not block.header.is_pos_block():
+            return False
+        if block.header.bits != 0 or block.header.nonce != 0:
+            return False
+
+        latest_block = self.get_latest_block()
+        if latest_block is None:
+            return False
+        last_pos_timestamp = self.get_last_block_timestamp("pos")
+        slot_anchor = (
+            last_pos_timestamp
+            if last_pos_timestamp is not None
+            else latest_block.header.timestamp
+        )
+        if block.header.timestamp < slot_anchor + BLOCK_TIME_POS:
+            return False
+
+        validator_address = block.header.validator_address
+        public_key = block.header.validator_public_key
+        signature = block.header.validator_signature
+        if (
+            not isinstance(validator_address, str)
+            or not isinstance(public_key, (bytes, bytearray))
+            or len(public_key) != DILITHIUM_PUBKEY_SIZE
+            or not isinstance(signature, (bytes, bytearray))
+            or len(signature) != DILITHIUM_SIGNATURE_SIZE
+        ):
+            return False
+        public_key = bytes(public_key)
+        signature = bytes(signature)
+
+        selected_validator = self.select_pos_validator(
+            block.height,
+            parent_hash=block.header.prev_hash,
+        )
+        if selected_validator != validator_address:
             return False
         
         # Check validator eligibility
-        if not self.is_valid_pos_validator(block.header.validator_address, block.height):
+        if not self.is_valid_pos_validator(validator_address, block.height):
             return False
-        
-        # Verify block signature (simplified)
-        expected_signature = self.sign_pos_block(block, block.header.validator_address)
-        if block.header.validator_signature != expected_signature:
+
+        derived_address = generate_wepo_address(public_key, address_type="quantum")
+        if not addresses_equal(derived_address, validator_address):
             return False
-        
-        return True
+
+        return verify_dilithium_signature(
+            self.get_pos_signing_message(block),
+            signature,
+            public_key,
+        )
     
+    def _produce_pos_block(
+        self,
+        validator_address: str,
+        pos_signer: Optional[ValidatorSigner],
+    ) -> Optional[Block]:
+        """Build and sign one PoS block through the private-key-free boundary."""
+        if pos_signer is None:
+            return None
+        try:
+            public_key = pos_signer.get_public_key(validator_address)
+            block = self.create_pos_block_template(validator_address, public_key)
+            if block is None:
+                return None
+            signing_payload = self.get_pos_signing_payload(block)
+            signature = pos_signer.sign(
+                validator_address,
+                hashlib.sha3_256(signing_payload).digest(),
+                context=PosSigningContext(
+                    network=self.network_profile.name,
+                    block_height=block.height,
+                    previous_block_hash=block.header.prev_hash,
+                    signing_payload=signing_payload,
+                ),
+            )
+            return self.finalize_pos_block(block, signature)
+        except Exception as exc:
+            print(f"PoS signer operation failed closed: {type(exc).__name__}")
+            return None
+
+    @_chain_state_locked
     def add_block(self, block: Block, validate: bool = True) -> bool:
         """Add a block to the blockchain"""
+        original_issued_supply = dict(self.issued_supply_by_height)
         if validate and not self.validate_block(block):
+            self.block_validation_rejections_total += 1
             return False
         
+        block.size = block.calculate_size()
         # Add to chain
         self.chain.append(block)
         block_hash = block.get_block_hash()
@@ -2601,23 +3772,35 @@ class WepoBlockchain:
             # cannot leave canonical state partially applied.
             self._persist_confirmed_block(block)
             self.conn.commit()
+            with self.mempool_lock:
+                for transaction in block.transactions:
+                    if transaction.is_coinbase():
+                        continue
+                    removed = self.mempool.pop(transaction.calculate_txid(), None)
+                    if removed is not None:
+                        self.mempool_bytes = max(
+                            0, self.mempool_bytes - removed.canonical_wire_size()
+                        )
             self.current_difficulty = self.calculate_expected_difficulty()
             self._process_pending_descendants(block_hash)
             print(f"Block {block.height} added to chain: {block_hash}")
+            self.accepted_blocks_total += 1
             return True
         except Exception as e:
             self.conn.rollback()
+            self._reset_shielded_memory_state()
             self.chain.pop()
             self.main_chain_hashes.discard(block_hash)
+            self.issued_supply_by_height = original_issued_supply
             self.current_difficulty = self.calculate_expected_difficulty()
             print(f"Failed to add block {block.height}: {e}")
+            self.block_validation_rejections_total += 1
             return False
     
+    @_chain_state_locked
     def add_block_with_priority(self, new_block: Block) -> bool:
         """Add a block while retaining side branches and adopting a better canonical tip when possible."""
         new_hash = new_block.get_block_hash()
-        self.block_index[new_hash] = new_block
-
         current_length = len(self.chain)
         current_tip_hash = self.chain[-1].get_block_hash() if self.chain else None
 
@@ -2631,7 +3814,21 @@ class WepoBlockchain:
         ):
             return self.add_block(new_block)
 
-        self._remember_noncanonical_block(new_block)
+        if new_block.height > current_length + MAX_ORPHAN_HEIGHT_AHEAD:
+            self.block_validation_rejections_total += 1
+            print(
+                f"Rejected orphan block {new_hash}: height {new_block.height} is "
+                f"more than {MAX_ORPHAN_HEIGHT_AHEAD} blocks beyond the local chain"
+            )
+            return False
+
+        if not self._validate_pending_block_envelope(new_block):
+            print(f"Rejected invalid pending block envelope {new_hash}")
+            self.block_validation_rejections_total += 1
+            return False
+
+        if not self._remember_noncanonical_block(new_block):
+            return False
 
         if new_block.header.prev_hash not in self.block_index and new_block.header.prev_hash not in self.main_chain_hashes:
             print(
@@ -2664,7 +3861,7 @@ class WepoBlockchain:
         else:
             return "hybrid"  # Both PoW and PoS active
     
-    def process_hybrid_blocks(self, height: int):
+    def process_hybrid_blocks(self, height: int, pos_signer: Optional[ValidatorSigner] = None):
         """Process both PoW and PoS blocks for hybrid consensus"""
         if height <= POS_ACTIVATION_HEIGHT:
             return
@@ -2677,7 +3874,7 @@ class WepoBlockchain:
             # Select validator for PoS block
             validator = self.select_pos_validator(height)
             if validator:
-                pos_block = self.create_pos_block(validator)
+                pos_block = self._produce_pos_block(validator, pos_signer)
                 if pos_block and self.validate_block(pos_block):
                     self.add_block_with_priority(pos_block)
         
@@ -2688,28 +3885,126 @@ class WepoBlockchain:
             # This would trigger miners to start mining
             pass
     
+    def _transaction_type_consensus_ready(self, tx_type: str) -> bool:
+        """Return whether this network profile admits the transaction type."""
+        if tx_type in PROTOCOL_LIFECYCLE_TX_TYPES:
+            return self.network_profile.pos_consensus_ready
+        if tx_type == TX_TYPE_RWA_CREATE:
+            return self.network_profile.rwa_consensus_ready
+        if tx_type == TX_TYPE_KEY_REGISTER:
+            return self.network_profile.messaging_consensus_ready
+        return True
+
+    def _require_transaction_type_consensus_ready(self, tx_type: str) -> None:
+        """Fail before building a transaction disabled by the network profile."""
+        if not self._transaction_type_consensus_ready(tx_type):
+            raise ValueError(
+                f"{tx_type} is not consensus-enabled on "
+                f"the {self.network_profile.name} network profile"
+            )
+
     def _validate_transaction_consensus_shape(
         self,
         transaction: Transaction,
+        height: int,
         *,
         allow_coinbase: bool,
         context: str = "transaction",
     ) -> bool:
         """Validate consensus-critical transaction fields before value math."""
-        if not PRIVACY_CONSENSUS_ENABLED and (
-            transaction.privacy_proof is not None or transaction.ring_signature is not None
+        if type(transaction.version) is not int or transaction.version != TRANSACTION_VERSION:
+            print(f"Invalid {context}: unsupported transaction version")
+            return False
+        if (
+            type(transaction.lock_time) is not int
+            or transaction.lock_time != 0
         ):
-            print(f"Invalid {context}: privacy fields are not active consensus")
+            print(
+                f"Invalid {context}: v1 lock_time is unsupported and must be zero"
+            )
             return False
-
-        if type(transaction.fee) is not int or transaction.fee < 0:
-            print(f"Invalid {context}: fee must be a non-negative integer")
+        if (
+            type(transaction.timestamp) is not int
+            or not 0 < transaction.timestamp <= MAX_SAFE_JSON_INTEGER
+        ):
+            print(f"Invalid {context}: timestamp is outside the canonical range")
             return False
+        if (
+            not isinstance(transaction.tx_type, str)
+            or transaction.tx_type not in VALID_TRANSACTION_TYPES
+        ):
+            print(f"Invalid {context}: unsupported transaction type")
+            return False
+        if not self._transaction_type_consensus_ready(transaction.tx_type):
+            print(
+                f"Invalid {context}: {transaction.tx_type} is not "
+                f"consensus-enabled on the {self.network_profile.name} network profile"
+            )
+            return False
+        if not isinstance(transaction.inputs, list) or not isinstance(
+            transaction.outputs, list
+        ):
+            print(f"Invalid {context}: inputs and outputs must be canonical lists")
+            return False
+        # Reject count-based work before constructing or hashing a transaction
+        # serialization. This is intentionally ahead of UTXO and signature work.
+        if len(transaction.inputs) > MAX_TRANSACTION_INPUTS:
+            print(f"Invalid {context}: input count exceeds the consensus limit")
+            return False
+        if len(transaction.outputs) > MAX_TRANSACTION_OUTPUTS:
+            print(f"Invalid {context}: output count exceeds the consensus limit")
+            return False
+        if not isinstance(transaction.extra_data, dict) or not _is_consensus_json_value(
+            transaction.extra_data
+        ):
+            print(f"Invalid {context}: extra_data is not canonical consensus JSON")
+            return False
+        try:
+            extra_data_size = len(
+                json.dumps(
+                    transaction.extra_data,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            )
+            transaction_size = transaction.canonical_wire_size()
+        except (TypeError, ValueError, OverflowError, UnicodeError):
+            print(f"Invalid {context}: transaction is not canonically serializable")
+            return False
+        if extra_data_size > MAX_TRANSACTION_EXTRA_DATA_BYTES:
+            print(f"Invalid {context}: extra_data exceeds the consensus byte limit")
+            return False
+        if transaction_size > MAX_TRANSACTION_WIRE_SIZE:
+            print(f"Invalid {context}: transaction exceeds the consensus byte limit")
+            return False
+        if type(transaction.fee) is not int or not 0 <= transaction.fee <= SUPPLY_CAP:
+            print(f"Invalid {context}: fee is outside the canonical range")
+            return False
+        if transaction.privacy_proof is not None or transaction.ring_signature is not None:
+            print(f"Invalid {context}: legacy privacy fields are never active consensus")
+            return False
+        if transaction.shielded_bundle is not None:
+            if not _shielded_active_at(height):
+                print(f"Invalid {context}: shielded consensus is not active")
+                return False
+            if transaction.is_coinbase():
+                print(f"Invalid {context}: coinbase cannot carry a shielded bundle")
+                return False
+            try:
+                transaction.shielded_bundle.check_shape()
+            except Exception as exc:
+                print(f"Invalid {context}: malformed shielded bundle ({exc})")
+                return False
 
-        if not transaction.inputs:
+        if not transaction.inputs and transaction.shielded_bundle is None:
             print(f"Invalid {context}: transaction must contain at least one input")
             return False
-        if not transaction.outputs:
+        if (
+            not transaction.outputs
+            and transaction.shielded_bundle is None
+            and transaction.tx_type not in FEE_ONLY_METADATA_TX_TYPES
+        ):
             print(f"Invalid {context}: transaction must contain at least one output")
             return False
 
@@ -2719,11 +4014,36 @@ class WepoBlockchain:
 
         seen_outpoints = set()
         for idx, inp in enumerate(transaction.inputs):
-            if not isinstance(inp.prev_txid, str) or len(inp.prev_txid) != 64:
+            if (
+                not isinstance(inp.prev_txid, str)
+                or len(inp.prev_txid) != 64
+                or any(char not in "0123456789abcdef" for char in inp.prev_txid)
+            ):
                 print(f"Invalid {context}: input {idx} has malformed prev_txid")
                 return False
-            if type(inp.prev_vout) is not int or inp.prev_vout < 0:
+            if (
+                type(inp.prev_vout) is not int
+                or not 0 <= inp.prev_vout <= MAX_OUTPUT_INDEX
+            ):
                 print(f"Invalid {context}: input {idx} has malformed prev_vout")
+                return False
+            if (
+                type(inp.sequence) is not int
+                or inp.sequence != MAX_SEQUENCE
+            ):
+                print(f"Invalid {context}: v1 input {idx} sequence must be final")
+                return False
+            if not isinstance(inp.script_sig, (bytes, bytearray)):
+                print(f"Invalid {context}: input {idx} script_sig must be bytes")
+                return False
+            if len(inp.script_sig) > MAX_TRANSACTION_SCRIPT_BYTES:
+                print(f"Invalid {context}: input {idx} script_sig exceeds the byte limit")
+                return False
+            if not transaction.is_coinbase() and inp.script_sig:
+                print(f"Invalid {context}: v1 input {idx} script_sig must be empty")
+                return False
+            if not isinstance(inp.signature_type, str):
+                print(f"Invalid {context}: input {idx} signature type is malformed")
                 return False
             outpoint = (inp.prev_txid, inp.prev_vout)
             if outpoint in seen_outpoints:
@@ -2741,6 +4061,14 @@ class WepoBlockchain:
             if out.value > SUPPLY_CAP:
                 print(f"Invalid {context}: output {idx} exceeds the supply cap")
                 return False
+            if not isinstance(out.script_pubkey, (bytes, bytearray)):
+                print(f"Invalid {context}: output {idx} script_pubkey must be bytes")
+                return False
+            if (
+                len(out.script_pubkey) > MAX_TRANSACTION_SCRIPT_BYTES
+            ):
+                print(f"Invalid {context}: output {idx} script_pubkey exceeds the byte limit")
+                return False
             if not out.is_valid_address():
                 print(f"Invalid {context}: output {idx} has an invalid address")
                 return False
@@ -2749,11 +4077,52 @@ class WepoBlockchain:
 
     def validate_block(self, block: Block) -> bool:
         """Validate a block (supports both PoW and PoS)"""
-        # Basic validation
-        if not block.transactions:
+        if type(block.height) is not int or block.height < 0:
+            return False
+        if block.header.version != 1:
+            return False
+        if block.header.consensus_type not in {"pow", "pos"}:
             return False
 
-        if block.size > MAX_BLOCK_SIZE:
+        for field_name, hash_value in (
+            ("prev_hash", block.header.prev_hash),
+            ("merkle_root", block.header.merkle_root),
+        ):
+            if not isinstance(hash_value, str) or len(hash_value) != 64:
+                print(f"Invalid block {block.height}: malformed {field_name}")
+                return False
+            try:
+                decoded_hash = bytes.fromhex(hash_value)
+            except ValueError:
+                print(f"Invalid block {block.height}: malformed {field_name}")
+                return False
+            if len(decoded_hash) != 32:
+                return False
+
+        if (
+            type(block.header.timestamp) is not int
+            or block.header.timestamp < 0
+            or block.header.timestamp > 0xFFFFFFFFFFFFFFFF
+            or type(block.header.bits) is not int
+            or block.header.bits < 0
+            or block.header.bits > 0xFFFFFFFF
+            or type(block.header.nonce) is not int
+            or block.header.nonce < 0
+            or block.header.nonce > 0xFFFFFFFF
+        ):
+            print(f"Invalid block {block.height}: malformed numeric header field")
+            return False
+
+        if not block.transactions:
+            return False
+        if len(block.transactions) > MAX_BLOCK_TRANSACTIONS:
+            return False
+
+        try:
+            calculated_size = block.calculate_size()
+        except (TypeError, ValueError, OverflowError, struct.error):
+            return False
+        if calculated_size > MAX_BLOCK_SIZE:
             return False
 
         latest_block = self.get_latest_block()
@@ -2762,6 +4131,16 @@ class WepoBlockchain:
             if block.height != expected_height:
                 return False
             if block.header.prev_hash != latest_block.get_block_hash():
+                return False
+            if block.header.timestamp <= latest_block.header.timestamp:
+                print(
+                    f"Invalid block {block.height}: timestamp "
+                    f"{block.header.timestamp} must be greater than previous "
+                    f"timestamp {latest_block.header.timestamp}"
+                )
+                return False
+            if block.height == 1 and block.header.timestamp < GENESIS_TIME:
+                print(f"Invalid block 1: timestamp precedes genesis time {GENESIS_TIME}")
                 return False
         elif block.height != 0:
             return False
@@ -2785,6 +4164,7 @@ class WepoBlockchain:
                 return False
             if not self._validate_transaction_consensus_shape(
                 tx,
+                block.height,
                 allow_coinbase=(tx_index == 0),
                 context=f"block {block.height} transaction {tx_index}",
             ):
@@ -2801,7 +4181,17 @@ class WepoBlockchain:
         else:
             return False
 
-        # Reject intra-block double-spends: no two transactions in one block may
+        block_nullifiers = set()
+        for tx in block.transactions[1:]:
+            if tx.shielded_bundle is None:
+                continue
+            for nullifier in tx.shielded_bundle.nullifiers():
+                if nullifier in block_nullifiers:
+                    print(f"Invalid block {block.height}: duplicate shielded nullifier")
+                    return False
+                block_nullifiers.add(nullifier)
+
+        # Reject intra-block transparent double-spends: no two transactions may
         # spend the same outpoint. validate_transaction only checks each tx
         # against COMMITTED UTXO state (the block is not applied yet), so without
         # this cross-transaction check two conflicting spends of a single UTXO
@@ -2820,24 +4210,67 @@ class WepoBlockchain:
                     return False
                 block_spent_outpoints.add(outpoint)
 
-        total_block_fees = 0
+        # Logical protocol records are keyed independently from transaction
+        # outpoints. Two otherwise valid transactions must not replace the same
+        # stake, masternode, or RWA record within one block.
+        block_state_claims: Set[Tuple[str, str]] = set()
         for tx in block.transactions[1:]:
-            if not self.validate_transaction(tx):
+            claims = self._transaction_state_claims(tx)
+            duplicate_claims = block_state_claims & claims
+            if duplicate_claims:
+                claim = sorted(duplicate_claims)[0]
+                print(
+                    f"Invalid block {block.height}: duplicate protocol state "
+                    f"claim {claim[0]}:{claim[1]}"
+                )
                 return False
-            total_block_fees += tx.fee
+            block_state_claims.update(claims)
 
-        # Enforce the hard supply cap at consensus level: the coinbase may mint at
-        # most the cap-clamped base reward, plus validated fee redistribution.
+        for tx in block.transactions[1:]:
+            if not self.validate_transaction(tx, validation_height=block.height):
+                return False
+
+        # Reconstruct the canonical payout list from validated fees and the
+        # pre-block protocol state. A total-only check would let a producer
+        # redirect masternode/staker shares while preserving the supply cap.
         consensus_type = "pos" if block.header.is_pos_block() else "pow"
-        allowed_base_reward = self.clamped_base_reward(block.height, consensus_type)
-        coinbase_total = sum(out.value for out in coinbase.outputs)
-        max_allowed_coinbase = allowed_base_reward + total_block_fees
-        if coinbase_total > max_allowed_coinbase:
+        recipient_address = coinbase.outputs[0].address
+        expected_coinbase = self.create_coinbase_transaction(
+            block.height,
+            recipient_address,
+            consensus_type,
+            block.transactions[1:],
+        )
+        actual_input = coinbase.inputs[0]
+        expected_input = expected_coinbase.inputs[0]
+        actual_outputs = [
+            (output.value, bytes(output.script_pubkey or b""), output.address)
+            for output in coinbase.outputs
+        ]
+        expected_outputs = [
+            (output.value, bytes(output.script_pubkey or b""), output.address)
+            for output in expected_coinbase.outputs
+        ]
+        canonical_input = (
+            actual_input.prev_txid == expected_input.prev_txid
+            and actual_input.prev_vout == expected_input.prev_vout
+            and bytes(actual_input.script_sig or b"")
+            == bytes(expected_input.script_sig or b"")
+            and actual_input.sequence == expected_input.sequence
+            and actual_input.signature_type == expected_input.signature_type
+            and actual_input.quantum_signature is None
+            and actual_input.quantum_public_key is None
+        )
+        if (
+            not canonical_input
+            or coinbase.fee != 0
+            or coinbase.tx_type != TX_TYPE_TRANSFER
+            or coinbase.extra_data
+            or actual_outputs != expected_outputs
+        ):
             print(
-                f"Invalid coinbase at height {block.height}: mints "
-                f"{coinbase_total / COIN:.8f} WEPO, max allowed "
-                f"{max_allowed_coinbase / COIN:.8f} (base {allowed_base_reward / COIN:.8f} "
-                f"+ fees {total_block_fees / COIN:.8f})"
+                f"Invalid coinbase at height {block.height}: payout or input "
+                "does not match canonical reward and fee distribution"
             )
             return False
 
@@ -2845,6 +4278,14 @@ class WepoBlockchain:
 
     def validate_pow_block(self, block: Block) -> bool:
         """Validate deterministic PoW and expected difficulty for a block."""
+        if (
+            block.header.validator_address is not None
+            or block.header.validator_public_key is not None
+            or block.header.validator_signature is not None
+        ):
+            print("Invalid PoW block: validator fields must be empty")
+            return False
+
         expected_difficulty = self.calculate_expected_difficulty()
         if block.header.bits != expected_difficulty:
             print(
@@ -2882,9 +4323,12 @@ class WepoBlockchain:
             # Process transaction outputs (create new UTXOs)
             for i, out in enumerate(tx.outputs):
                 self.conn.execute('''
-                    INSERT INTO utxos (txid, vout, address, amount, script_pubkey, spent)
-                    VALUES (?, ?, ?, ?, ?, FALSE)
-                ''', (tx.calculate_txid(), i, out.address, out.value, out.script_pubkey))
+                    INSERT INTO utxos (
+                        txid, vout, address, amount, script_pubkey,
+                        created_height, is_coinbase, spent
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, FALSE)
+                ''', (tx.calculate_txid(), i, out.address, out.value, out.script_pubkey,
+                      block.height, tx.is_coinbase()))
     
     def save_block(self, block: Block):
         """Save block to database"""
@@ -2941,52 +4385,164 @@ class WepoBlockchain:
         if not self.chain:
             return max(1, self.current_difficulty)
 
-        base_difficulty = max(1, int(self.chain[-1].header.bits))
-        if len(self.chain) < 10:
+        # PoS headers deliberately carry bits=0 and arrive on a different
+        # cadence. Only PoW headers may drive the next PoW target.
+        pow_blocks = [
+            block for block in self.chain if block.header.consensus_type == "pow"
+        ]
+        if not pow_blocks:
+            return max(1, self.current_difficulty)
+        base_difficulty = max(1, int(pow_blocks[-1].header.bits))
+        if len(pow_blocks) < 10:
             return base_difficulty
 
-        recent_blocks = self.chain[-10:]
-        time_diffs = []
-        for i in range(1, len(recent_blocks)):
-            diff = recent_blocks[i].header.timestamp - recent_blocks[i - 1].header.timestamp
-            time_diffs.append(diff)
+        recent_pow_blocks = pow_blocks[-10:]
+        time_diffs = [
+            recent_pow_blocks[index].header.timestamp
+            - recent_pow_blocks[index - 1].header.timestamp
+            for index in range(1, len(recent_pow_blocks))
+        ]
 
-        if not time_diffs:
-            return base_difficulty
-
-        avg_time = sum(time_diffs) / len(time_diffs)
-        current_height = self.get_block_height()
+        elapsed = sum(time_diffs)
+        interval_count = len(time_diffs)
+        next_height = self.get_block_height() + 1
         target_time = (
             BLOCK_TIME_INITIAL_18_MONTHS
-            if current_height <= TOTAL_INITIAL_BLOCKS
-            else BLOCK_TIME_LONGTERM
+            if next_height <= TOTAL_INITIAL_BLOCKS
+            else BLOCK_TIME_POW_HYBRID
         )
 
-        if avg_time < target_time * 0.75:
+        # Compare exact integer ratios: average < 3/4 target or > 5/4
+        # target. Consensus must not depend on floating-point rounding.
+        scaled_elapsed = elapsed * 4
+        if scaled_elapsed < target_time * 3 * interval_count:
             return base_difficulty + 1
-        if avg_time > target_time * 1.25:
+        if scaled_elapsed > target_time * 5 * interval_count:
             return max(1, base_difficulty - 1)
         return base_difficulty
-    
+
+    def required_relay_fee(self, transaction_size: int) -> Optional[int]:
+        """Return node-local admission fee for canonical bytes, or None if unset."""
+        if type(transaction_size) is not int or transaction_size < 0:
+            raise ValueError("transaction size must be a nonnegative integer")
+        if self.minimum_relay_fee_per_kb is None:
+            return None
+        return (
+            self.minimum_relay_fee_per_kb * transaction_size + 999
+        ) // 1000
+
+    @staticmethod
+    def estimated_signed_wire_size(transaction: Transaction) -> int:
+        """Return exact canonical size for the fixed-size ML-DSA signed shape."""
+        candidate = Transaction.from_dict(transaction.to_dict())
+        for tx_input in candidate.inputs:
+            tx_input.script_sig = b""
+            tx_input.signature_type = "dilithium"
+            tx_input.quantum_public_key = b"\x00" * DILITHIUM_PUBKEY_SIZE
+            tx_input.quantum_signature = b"\x00" * DILITHIUM_SIGNATURE_SIZE
+        return candidate.canonical_wire_size()
+
+    def create_relay_fee_transaction(
+        self,
+        from_address: str,
+        to_address: str,
+        amount: int,
+    ) -> tuple[Transaction, int]:
+        """Build a deterministic fee-bearing transaction without private keys.
+
+        Fee iteration is monotonic and bounded. The returned fee is the exact
+        amount the wallet will sign and is never below either the wallet baseline
+        or this node's canonical-byte relay requirement.
+        """
+        if self.minimum_relay_fee_per_kb is None:
+            raise ValueError("minimum relay fee policy is not finalized")
+
+        fee = DEFAULT_TRANSACTION_FEE
+        for _ in range(64):
+            transaction = self.create_transaction(
+                from_address, to_address, amount, fee
+            )
+            if transaction is None:
+                raise ValueError(
+                    "failed to build transaction (insufficient funds or no UTXOs)"
+                )
+            if len(transaction.inputs) > 32:
+                raise ValueError("standard wallet transaction requires more than 32 inputs")
+            signed_size = self.estimated_signed_wire_size(transaction)
+            required = self.required_relay_fee(signed_size)
+            next_fee = max(fee, DEFAULT_TRANSACTION_FEE, required or 0)
+            if next_fee == fee:
+                return transaction, signed_size
+            fee = next_fee
+        raise RuntimeError("relay-fee transaction quote did not converge")
+
     def add_transaction_to_mempool(self, transaction: Transaction) -> bool:
         """Add transaction to mempool"""
-        txid = transaction.calculate_txid()
-
         # Coinbase transactions are minted by block production only. validate_transaction
         # exempts coinbase from UTXO/signature checks, so accepting one here (or over the
         # P2P relay path) would let a forged "coinbase" mint coins from nothing.
         if transaction.is_coinbase():
-            print(f"Rejected coinbase transaction submitted to mempool: {txid}")
+            print("Rejected coinbase transaction submitted to mempool")
             return False
 
-        # Basic validation
-        if self.validate_transaction(transaction):
-            # Reject a transaction that conflicts with one already in the mempool
-            # (both spend the same outpoint). Keeping the mempool single-spend per
-            # outpoint means block assembly cannot accidentally pack a
-            # double-spend, and a conflicting spend can't silently evict the
-            # first. (A replacement policy could be added later; for now
-            # first-seen wins.)
+        validation_height = self.get_block_height() + 1
+        if not self._validate_transaction_consensus_shape(
+            transaction,
+            validation_height,
+            allow_coinbase=False,
+            context="mempool transaction",
+        ):
+            return False
+        try:
+            txid = transaction.calculate_txid()
+            transaction_size = transaction.canonical_wire_size()
+        except (TypeError, ValueError, OverflowError, UnicodeError):
+            print("Rejected transaction with a non-canonical identity")
+            return False
+
+        required_relay_fee = self.required_relay_fee(transaction_size)
+        if required_relay_fee is None:
+            print(
+                f"Rejected transaction: {self.network_profile_name} minimum "
+                "relay fee policy is not finalized"
+            )
+            return False
+        if transaction.fee < required_relay_fee:
+            print(
+                f"Rejected transaction: fee {transaction.fee} is below "
+                f"the local relay requirement {required_relay_fee} for "
+                f"{transaction_size} canonical bytes"
+            )
+            return False
+
+        # Reject excess load before doing signature/proof work, then repeat the
+        # check under the admission lock after validation to close races.
+        with self.mempool_lock:
+            if txid in self.mempool:
+                return False
+            if len(self.mempool) >= MAX_MEMPOOL_TRANSACTIONS:
+                print("Rejected transaction: mempool transaction limit reached")
+                return False
+            if self.mempool_bytes + transaction_size > MAX_MEMPOOL_BYTES:
+                print("Rejected transaction: mempool byte limit reached")
+                return False
+
+        # Full UTXO, value, protocol, proof, and signature validation.
+        if not self.validate_transaction(
+            transaction, validation_height=validation_height
+        ):
+            print(f"Invalid transaction rejected: {txid}")
+            return False
+
+        with self.mempool_lock:
+            if txid in self.mempool:
+                return False
+            if len(self.mempool) >= MAX_MEMPOOL_TRANSACTIONS:
+                return False
+            if self.mempool_bytes + transaction_size > MAX_MEMPOOL_BYTES:
+                return False
+
+            # First-seen wins for transparent outpoints and shielded nullifiers.
             new_outpoints = {(inp.prev_txid, inp.prev_vout) for inp in transaction.inputs}
             for existing in self.mempool.values():
                 existing_outpoints = {(i.prev_txid, i.prev_vout) for i in existing.inputs}
@@ -2997,19 +4553,47 @@ class WepoBlockchain:
                     )
                     return False
 
-            self.mempool[txid] = transaction
+            new_state_claims = self._transaction_state_claims(transaction)
+            for existing in self.mempool.values():
+                duplicate_claims = (
+                    new_state_claims & self._transaction_state_claims(existing)
+                )
+                if duplicate_claims:
+                    claim = sorted(duplicate_claims)[0]
+                    print(
+                        f"Rejected transaction {txid}: protocol state claim "
+                        f"{claim[0]}:{claim[1]} is already pending"
+                    )
+                    return False
 
-            print(f"Transaction added to mempool: {txid}")
-            return True
-        else:
-            print(f"Invalid transaction rejected: {txid}")
-            return False
+            if transaction.shielded_bundle is not None:
+                new_nullifiers = set(transaction.shielded_bundle.nullifiers())
+                for existing in self.mempool.values():
+                    if (
+                        existing.shielded_bundle is not None
+                        and new_nullifiers & set(existing.shielded_bundle.nullifiers())
+                    ):
+                        print(
+                            f"Rejected transaction {txid}: conflicts with an existing "
+                            "mempool shielded nullifier"
+                        )
+                        return False
+
+            self.mempool[txid] = transaction
+            self.mempool_bytes += transaction_size
+
+        print(f"Transaction added to mempool: {txid}")
+        return True
     
-    def validate_transaction(self, transaction: Transaction) -> bool:
+    def validate_transaction(
+        self, transaction: Transaction, validation_height: Optional[int] = None
+    ) -> bool:
         """Validate a transaction with proper UTXO checking and quantum signature support"""
         try:
+            height = validation_height if validation_height is not None else self.get_block_height() + 1
             if not self._validate_transaction_consensus_shape(
                 transaction,
+                height,
                 allow_coinbase=True,
                 context="transaction",
             ):
@@ -3028,8 +4612,8 @@ class WepoBlockchain:
             for inp in transaction.inputs:
                 # Check if UTXO exists and is unspent
                 cursor = self.conn.execute('''
-                    SELECT amount, spent, address, script_pubkey
-                    FROM utxos
+                    SELECT amount, spent, address, script_pubkey,
+                           created_height, is_coinbase FROM utxos
                     WHERE txid = ? AND vout = ?
                 ''', (inp.prev_txid, inp.prev_vout))
                 
@@ -3042,6 +4626,22 @@ class WepoBlockchain:
                     print(f"UTXO already spent: {inp.prev_txid}:{inp.prev_vout}")
                     return False
                 
+                if bool(utxo[5]):
+                    if self.coinbase_maturity is None:
+                        print(
+                            "Block-issued value cannot be spent until the "
+                            f"{self.network_profile_name} coinbase maturity is finalized"
+                        )
+                        return False
+                    confirmations_before_spend = height - utxo[4]
+                    if confirmations_before_spend < self.coinbase_maturity:
+                        print(
+                            f"Immature coinbase UTXO: {inp.prev_txid}:{inp.prev_vout} "
+                            f"has depth {confirmations_before_spend}, requires "
+                            f"{self.coinbase_maturity}"
+                        )
+                        return False
+
                 total_input_value += utxo[0]
                 input_rows.append({
                     'txid': inp.prev_txid,
@@ -3055,15 +4655,30 @@ class WepoBlockchain:
             
             # Check outputs
             total_output_value = sum(out.value for out in transaction.outputs)
-            
-            # Calculate fee
-            fee = total_input_value - total_output_value
+
+            if transaction.shielded_bundle is None:
+                fee = total_input_value - total_output_value
+            else:
+                # Positive value_balance moves transparent value into the pool;
+                # negative value_balance moves pool value to transparent outputs
+                # or pays a fee directly from the shielded pool.
+                fee = (
+                    total_input_value
+                    - total_output_value
+                    - transaction.shielded_bundle.value_balance
+                )
             if fee < 0:
-                print(f"Transaction outputs exceed inputs: {total_output_value} > {total_input_value}")
+                print("Transaction spends more value than its transparent and shielded inputs")
                 return False
-            
-            # Set fee on transaction
-            transaction.fee = fee
+            if transaction.fee != fee:
+                print(
+                    f"Transaction declares fee {transaction.fee}, "
+                    f"but value conservation requires {fee}"
+                )
+                return False
+
+            if not self._validate_shielded_bundle(transaction, height):
+                return False
 
             tx_type = self._protocol_tx_type(transaction)
             metadata = dict(transaction.extra_data or {})
@@ -3082,17 +4697,31 @@ class WepoBlockchain:
                 if input_addresses != {staker_address}:
                     print("Stake create transaction inputs do not belong to staker")
                     return False
-                lock_output = self._find_protocol_output(transaction, f"stake_lock:{stake_id}")
-                if not lock_output:
-                    print("Stake create transaction missing canonical lock output")
+                lock_marker = f"stake_lock:{stake_id}"
+                lock_outputs = [
+                    (index, output)
+                    for index, output in enumerate(transaction.outputs)
+                    if self._decode_script_marker(output.script_pubkey) == lock_marker
+                ]
+                if len(lock_outputs) != 1:
+                    print("Stake create transaction requires exactly one canonical lock output")
                     return False
-                _, lock_tx_output = lock_output
+                lock_index, lock_tx_output = lock_outputs[0]
                 if lock_tx_output.address != staker_address or lock_tx_output.value != locked_amount:
                     print("Stake create transaction lock output does not match metadata")
                     return False
-                if fee != 0:
-                    print("Stake create transaction must not charge a fee")
+                if len(transaction.outputs) not in (1, 2):
+                    print("Stake create transaction has a non-canonical output count")
                     return False
+                for index, output in enumerate(transaction.outputs):
+                    if index == lock_index:
+                        continue
+                    if (
+                        output.address != staker_address
+                        or output.script_pubkey != b"change_script"
+                    ):
+                        print("Stake create change must use the canonical owner output")
+                        return False
                 existing_cursor = self.conn.execute(
                     'SELECT 1 FROM stakes WHERE stake_id = ?',
                     (stake_id,),
@@ -3131,42 +4760,89 @@ class WepoBlockchain:
                     print("Stake deactivation must return a single unlocked output")
                     return False
                 unlock_output = transaction.outputs[0]
-                if unlock_output.address != staker_address or unlock_output.value != stake_row[0]:
-                    print("Stake deactivation output does not return the locked principal")
-                    return False
-                if self._decode_script_marker(unlock_output.script_pubkey).startswith("stake_lock:"):
-                    print("Stake deactivation output is still marked as locked")
-                    return False
-                if fee != 0:
-                    print("Stake deactivation transaction must not charge a fee")
+                if (
+                    unlock_output.address != staker_address
+                    or unlock_output.script_pubkey != b"stake_unlock"
+                    or unlock_output.value <= 0
+                    or unlock_output.value + fee != stake_row[0]
+                ):
+                    print(
+                        "Stake deactivation must return locked principal minus "
+                        "the declared fee in one canonical owner output"
+                    )
                     return False
             elif tx_type == TX_TYPE_MASTERNODE_CREATE:
                 masternode_id = metadata.get('masternode_id')
                 operator_address = metadata.get('operator_address')
-                required_collateral = self.get_masternode_collateral_for_height(next_height)
-                if not masternode_id or not operator_address:
+                ip_address = metadata.get('ip_address')
+                port = metadata.get('port', 22567)
+                required_collateral = self.get_masternode_collateral_for_height(height)
+                if (
+                    not isinstance(masternode_id, str)
+                    or not masternode_id
+                    or not isinstance(operator_address, str)
+                    or not operator_address
+                ):
                     print("Masternode create transaction missing metadata")
                     return False
-                if len(transaction.inputs) != 1:
-                    print("Masternode create transaction must lock exactly one collateral UTXO")
+                if (
+                    (ip_address is not None and not isinstance(ip_address, str))
+                    or type(port) is not int
+                    or not 1 <= port <= 65535
+                ):
+                    print("Masternode endpoint metadata is malformed")
+                    return False
+                existing_id_cursor = self.conn.execute(
+                    'SELECT 1 FROM masternodes WHERE masternode_id = ?',
+                    (masternode_id,),
+                )
+                if existing_id_cursor.fetchone():
+                    print(f"Masternode ID already exists: {masternode_id}")
+                    return False
+                if not transaction.inputs:
+                    print("Masternode create transaction requires a collateral UTXO")
                     return False
                 if input_addresses != {operator_address}:
-                    print("Masternode collateral does not belong to operator")
+                    print("Masternode collateral and fee inputs must belong to operator")
                     return False
-                if total_input_value < required_collateral:
-                    print("Masternode collateral is below the required amount")
+                lock_marker = f"masternode_lock:{masternode_id}"
+                lock_outputs = [
+                    (index, output)
+                    for index, output in enumerate(transaction.outputs)
+                    if self._decode_script_marker(output.script_pubkey) == lock_marker
+                ]
+                if len(lock_outputs) != 1:
+                    print("Masternode create requires exactly one collateral output")
                     return False
-                lock_output = self._find_protocol_output(transaction, f"masternode_lock:{masternode_id}")
-                if not lock_output:
-                    print("Masternode create transaction missing canonical lock output")
+                lock_index, collateral_output = lock_outputs[0]
+                collateral_input_value = input_rows[0]['amount']
+                fee_funding_value = total_input_value - collateral_input_value
+                expected_change = fee_funding_value - fee
+                if (
+                    collateral_output.address != operator_address
+                    or collateral_output.value != collateral_input_value
+                    or collateral_output.value < required_collateral
+                    or expected_change < 0
+                ):
+                    print(
+                        "Masternode create must preserve the complete collateral "
+                        "UTXO and fund its fee separately"
+                    )
                     return False
-                _, collateral_output = lock_output
-                if collateral_output.address != operator_address or collateral_output.value != total_input_value:
-                    print("Masternode create transaction must re-lock the full collateral UTXO")
+                expected_output_count = 2 if expected_change else 1
+                if len(transaction.outputs) != expected_output_count:
+                    print("Masternode create has a non-canonical output count")
                     return False
-                if len(transaction.outputs) != 1 or fee != 0:
-                    print("Masternode create transaction must only contain the locked collateral output")
-                    return False
+                for index, output in enumerate(transaction.outputs):
+                    if index == lock_index:
+                        continue
+                    if (
+                        output.address != operator_address
+                        or output.script_pubkey != b"change_script"
+                        or output.value != expected_change
+                    ):
+                        print("Masternode fee change must use the canonical owner output")
+                        return False
                 duplicate_cursor = self.conn.execute('''
                     SELECT 1
                     FROM masternodes
@@ -3206,14 +4882,16 @@ class WepoBlockchain:
                     print("Masternode deactivation must return a single unlocked output")
                     return False
                 unlock_output = transaction.outputs[0]
-                if unlock_output.address != operator_address or unlock_output.value != total_input_value:
-                    print("Masternode deactivation output does not return the locked collateral")
-                    return False
-                if self._decode_script_marker(unlock_output.script_pubkey).startswith("masternode_lock:"):
-                    print("Masternode deactivation output is still marked as locked")
-                    return False
-                if fee != 0:
-                    print("Masternode deactivation transaction must not charge a fee")
+                if (
+                    unlock_output.address != operator_address
+                    or unlock_output.script_pubkey != b"masternode_unlock"
+                    or unlock_output.value <= 0
+                    or unlock_output.value + fee != total_input_value
+                ):
+                    print(
+                        "Masternode deactivation must return collateral minus "
+                        "the declared fee in one canonical owner output"
+                    )
                     return False
             elif tx_type == TX_TYPE_RWA_CREATE:
                 asset_id = metadata.get('asset_id')
@@ -3292,7 +4970,11 @@ class WepoBlockchain:
                     print(f"Input {i} is not authorized: Dilithium signature required "
                           f"(got signature_type={inp.signature_type!r})")
                     return False
-                if not transaction.verify_quantum_signature(i, expected_address=utxo_address):
+                if not transaction.verify_quantum_signature(
+                    i,
+                    expected_address=utxo_address,
+                    network=self.network_profile.network_label,
+                ):
                     print(f"Input {i} failed spend authorization (signature/owner binding)")
                     return False
 
@@ -3303,12 +4985,18 @@ class WepoBlockchain:
             return False
     
     def get_balance(self, address: str) -> int:
-        """Get balance for an address"""
+        """Get the address balance that is spendable in the next block."""
+        spend_height = self.get_block_height() + 1
+        maturity_cutoff = (
+            spend_height - self.coinbase_maturity
+            if self.coinbase_maturity is not None else -1
+        )
         cursor = self.conn.execute('''
             SELECT SUM(amount)
             FROM utxos
             WHERE address = ?
               AND spent = FALSE
+              AND (is_coinbase = FALSE OR (? IS NOT NULL AND created_height <= ?))
               AND NOT EXISTS (
                   SELECT 1
                   FROM masternodes
@@ -3323,21 +5011,67 @@ class WepoBlockchain:
                     AND lock_txid = utxos.txid
                     AND lock_vout = utxos.vout
               )
-        ''', (address,))
+        ''', (address, self.coinbase_maturity, maturity_cutoff))
         result = cursor.fetchone()
         return result[0] if result[0] else 0
+
+    def get_immature_balance(self, address: str) -> int:
+        """Get unspent block-issued value that cannot enter the next block."""
+        spend_height = self.get_block_height() + 1
+        maturity_cutoff = (
+            spend_height - self.coinbase_maturity
+            if self.coinbase_maturity is not None else -1
+        )
+        cursor = self.conn.execute('''
+            SELECT SUM(amount)
+            FROM utxos
+            WHERE address = ?
+              AND spent = FALSE
+              AND is_coinbase = TRUE
+              AND (? IS NULL OR created_height > ?)
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM masternodes
+                  WHERE status = 'active'
+                    AND collateral_txid = utxos.txid
+                    AND collateral_vout = utxos.vout
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM stakes
+                  WHERE status = 'active'
+                    AND lock_txid = utxos.txid
+                    AND lock_vout = utxos.vout
+              )
+        ''', (address, self.coinbase_maturity, maturity_cutoff))
+        result = cursor.fetchone()
+        return result[0] if result[0] else 0
+
+    def get_total_unlocked_balance(self, address: str) -> int:
+        """Get spendable plus immature value, excluding active collateral."""
+        return self.get_balance(address) + self.get_immature_balance(address)
 
     def get_balance_wepo(self, address: str) -> float:
         """Get balance for an address in WEPO units."""
         return self.get_balance(address) / COIN
+
+    def get_immature_balance_wepo(self, address: str) -> float:
+        """Get immature block-issued balance in WEPO units."""
+        return self.get_immature_balance(address) / COIN
     
     def get_utxos_for_address(self, address: str) -> List[dict]:
-        """Get all unspent UTXOs for an address"""
+        """Get UTXOs that are spendable in the next block."""
+        spend_height = self.get_block_height() + 1
+        maturity_cutoff = (
+            spend_height - self.coinbase_maturity
+            if self.coinbase_maturity is not None else -1
+        )
         cursor = self.conn.execute('''
             SELECT txid, vout, amount, script_pubkey
             FROM utxos 
             WHERE address = ?
               AND spent = FALSE
+              AND (is_coinbase = FALSE OR (? IS NOT NULL AND created_height <= ?))
               AND NOT EXISTS (
                   SELECT 1
                   FROM masternodes
@@ -3352,7 +5086,7 @@ class WepoBlockchain:
                     AND lock_txid = utxos.txid
                     AND lock_vout = utxos.vout
               )
-        ''', (address,))
+        ''', (address, self.coinbase_maturity, maturity_cutoff))
         
         utxos = []
         for row in cursor.fetchall():
@@ -3367,6 +5101,38 @@ class WepoBlockchain:
 
     def get_wallet_activity_totals(self, address: str) -> dict:
         """Get indexed wallet receive/send totals."""
+    def get_transaction_input_utxo_context(
+        self,
+        transaction: Transaction,
+        expected_address: str,
+    ) -> List[dict]:
+        """Return exact public UTXO data for an isolated signing policy.
+
+        The signer treats this context as untrusted and protects value by
+        enforcing owner-only outputs, value conservation, a fee ceiling, and
+        persistent outpoint fencing. Consensus still proves existence,
+        unspent status, and the same amounts when the signed tx is submitted.
+        """
+        contexts = []
+        for transaction_input in transaction.inputs:
+            row = self.conn.execute(
+                """SELECT amount, address, script_pubkey, spent
+                   FROM utxos WHERE txid = ? AND vout = ?""",
+                (transaction_input.prev_txid, transaction_input.prev_vout),
+            ).fetchone()
+            if row is None or bool(row[3]):
+                raise ValueError("Unsigned transaction references a missing or spent UTXO")
+            if row[1] != expected_address:
+                raise ValueError("Unsigned transaction input is not owned by the expected address")
+            contexts.append({
+                "prev_txid": transaction_input.prev_txid,
+                "prev_vout": transaction_input.prev_vout,
+                "amount": row[0],
+                "address": row[1],
+                "script_pubkey": bytes(row[2] or b"").hex(),
+            })
+        return contexts
+
         cursor = self.conn.execute('''
             SELECT
                 COALESCE(SUM(CASE
@@ -3441,7 +5207,7 @@ class WepoBlockchain:
         from_address: str,
         to_address: str,
         amount: int,
-        fee: int = 10000,
+        fee: int = DEFAULT_TRANSACTION_FEE,
         allow_fee_only: bool = False,
     ) -> Optional[Transaction]:
         """Create a transaction."""
@@ -3533,6 +5299,7 @@ class WepoBlockchain:
         (signed via the canonical sighash). With return_unsigned=True, returns the
         deterministic UNSIGNED Transaction for client-side Dilithium signing.
         """
+        self._require_transaction_type_consensus_ready(TX_TYPE_RWA_CREATE)
         asset_hash = (asset_hash or "").lower()
         if len(asset_hash) != RWA_ASSET_HASH_HEX_LEN or any(c not in "0123456789abcdef" for c in asset_hash):
             raise ValueError("asset_hash must be a 64-char sha256 hex digest of the asset definition")
@@ -3599,6 +5366,7 @@ class WepoBlockchain:
         the owner's UTXOs for the anti-spam fee and returns change. With
         return_unsigned=True returns the deterministic UNSIGNED Transaction.
         """
+        self._require_transaction_type_consensus_ready(TX_TYPE_KEY_REGISTER)
         kem_pub = (kem_pub or "").lower()
         sig_pub = (sig_pub or "").lower()
         hexset = set("0123456789abcdef")
@@ -3645,7 +5413,13 @@ class WepoBlockchain:
             raise ValueError("Failed to submit key registration transaction")
         return owner_address
 
-    def create_stake(self, staker_address: str, amount: int, return_unsigned: bool = False):
+    def create_stake(
+        self,
+        staker_address: str,
+        amount: int,
+        return_unsigned: bool = False,
+        fee: int = DEFAULT_TRANSACTION_FEE,
+    ):
         """Create a new stake.
 
         With return_unsigned=True, returns the deterministic UNSIGNED stake
@@ -3653,15 +5427,20 @@ class WepoBlockchain:
         The staker spends their own UTXOs into the canonical stake-lock output, so
         consensus now requires the staker's signature on every input.
         """
+        self._require_transaction_type_consensus_ready(TX_TYPE_STAKE_CREATE)
         if self.get_block_height() <= POS_ACTIVATION_HEIGHT:
             raise ValueError(f"Staking is not active until block {POS_ACTIVATION_HEIGHT + 1}")
 
         if amount < MIN_STAKE_AMOUNT:
             raise ValueError(f"Minimum stake amount is {MIN_STAKE_AMOUNT / COIN} WEPO")
-        
+
+        if type(fee) is not int or fee < 0:
+            raise ValueError("Stake fee must be a nonnegative integer")
+        required_total = amount + fee
+
         # Check if user has sufficient balance
         balance = self.get_balance(staker_address)
-        if balance < amount:
+        if balance < required_total:
             raise ValueError(f"Insufficient balance: {balance / COIN} WEPO")
 
         selected_utxos = []
@@ -3669,10 +5448,10 @@ class WepoBlockchain:
         for utxo in self.get_utxos_for_address(staker_address):
             selected_utxos.append(utxo)
             locked_total += utxo['amount']
-            if locked_total >= amount:
+            if locked_total >= required_total:
                 break
 
-        if locked_total < amount:
+        if locked_total < required_total:
             raise ValueError(f"Insufficient spendable balance: {locked_total / COIN} WEPO")
 
         stake_id = f"stake_{staker_address}_{int(time.time())}"
@@ -3693,7 +5472,7 @@ class WepoBlockchain:
             )
         ]
 
-        change_amount = locked_total - amount
+        change_amount = locked_total - required_total
         if change_amount > 0:
             outputs.append(TransactionOutput(
                 value=change_amount,
@@ -3706,7 +5485,7 @@ class WepoBlockchain:
             inputs=inputs,
             outputs=outputs,
             lock_time=0,
-            fee=0,
+            fee=fee,
             tx_type=TX_TYPE_STAKE_CREATE,
             extra_data={
                 'stake_id': stake_id,
@@ -3722,7 +5501,13 @@ class WepoBlockchain:
         print(f"Submitted canonical stake transaction: {stake_id} for {amount / COIN} WEPO")
         return stake_id
 
-    def deactivate_stake(self, stake_id: str, staker_address: str, return_unsigned: bool = False):
+    def deactivate_stake(
+        self,
+        stake_id: str,
+        staker_address: str,
+        return_unsigned: bool = False,
+        fee: int = DEFAULT_TRANSACTION_FEE,
+    ):
         """Deactivate an active stake and release the principal back to spendable balance.
 
         With return_unsigned=True the canonical path returns the UNSIGNED
@@ -3730,6 +5515,7 @@ class WepoBlockchain:
         UTXO). The legacy side-state path has no real UTXO to spend and still
         completes server-side, returning its result dict unchanged.
         """
+        self._require_transaction_type_consensus_ready(TX_TYPE_STAKE_DEACTIVATE)
         cursor = self.conn.execute('''
             SELECT stake_id, staker_address, amount, status, total_rewards, lock_txid, lock_vout
             FROM stakes
@@ -3747,48 +5533,15 @@ class WepoBlockchain:
             raise ValueError("Stake is not active")
 
         if not row[5] or row[6] is None:
-            current_height = self.get_block_height()
-            unlock_txid = f"{stake_id}_unlock_{int(time.time())}"
-
-            self.conn.execute('''
-                UPDATE stakes
-                SET status = 'inactive', unlock_height = ?, deactivation_txid = ?
-                WHERE stake_id = ?
-            ''', (current_height, unlock_txid, stake_id))
-
-            self.conn.execute('''
-                INSERT INTO utxos (txid, vout, address, amount, script_pubkey, spent)
-                VALUES (?, ?, ?, ?, ?, FALSE)
-            ''', (unlock_txid, 0, staker_address, row[2], b"stake_unlock"))
-
-            self._record_wallet_activity_entry(
-                activity_id=f"stake_unlock:{stake_id}",
-                address=staker_address,
-                txid=unlock_txid,
-                activity_type='stake_unlock',
-                amount=row[2],
-                counterparty_address='staking',
-                block_height=current_height,
-                block_hash=f"synthetic:stake_unlock:{stake_id}",
-                timestamp=int(time.time()),
+            raise ValueError(
+                "Legacy side-state stake has no canonical lock UTXO; "
+                "automatic value synthesis is disabled"
             )
 
-            self.conn.commit()
-
-            if stake_id in self.stakes:
-                self.stakes[stake_id]['status'] = 'inactive'
-                self.stakes[stake_id]['unlock_height'] = current_height
-
-            return {
-                'stake_id': row[0],
-                'staker_address': row[1],
-                'amount': row[2],
-                'total_rewards': row[4],
-                'status': 'inactive',
-                'unlock_height': current_height,
-                'unlock_txid': unlock_txid,
-                'source': 'legacy_side_state',
-            }
+        if type(fee) is not int or fee < 0:
+            raise ValueError("Stake deactivation fee must be a nonnegative integer")
+        if fee >= row[2]:
+            raise ValueError("Stake deactivation fee must be below locked principal")
 
         transaction = Transaction(
             version=1,
@@ -3799,12 +5552,12 @@ class WepoBlockchain:
                 sequence=0xffffffff,
             )],
             outputs=[TransactionOutput(
-                value=row[2],
+                value=row[2] - fee,
                 script_pubkey=b"stake_unlock",
                 address=staker_address,
             )],
             lock_time=0,
-            fee=0,
+            fee=fee,
             tx_type=TX_TYPE_STAKE_DEACTIVATE,
             extra_data={
                 'stake_id': stake_id,
@@ -3837,6 +5590,7 @@ class WepoBlockchain:
         ip_address: str = None,
         port: int = 22567,
         return_unsigned: bool = False,
+        fee: int = DEFAULT_TRANSACTION_FEE,
     ):
         """Create a new masternode.
 
@@ -3845,8 +5599,9 @@ class WepoBlockchain:
         their collateral UTXO into the masternode-lock output, so consensus now
         requires the operator's signature.
         """
-        current_height = self.get_block_height()
-        required_collateral = self.get_masternode_collateral_for_height(current_height)
+        self._require_transaction_type_consensus_ready(TX_TYPE_MASTERNODE_CREATE)
+        candidate_height = self.get_block_height() + 1
+        required_collateral = self.get_masternode_collateral_for_height(candidate_height)
         
         # Verify collateral UTXO exists, belongs to the operator, and has correct amount.
         cursor = self.conn.execute('''
@@ -3861,6 +5616,9 @@ class WepoBlockchain:
         if utxo_address != operator_address:
             raise ValueError("Collateral UTXO does not belong to operator")
 
+        if type(fee) is not int or fee < 0:
+            raise ValueError("Masternode registration fee must be a nonnegative integer")
+
         if utxo_spent or utxo_amount < required_collateral:
             raise ValueError(f"Invalid collateral UTXO or insufficient amount")
 
@@ -3871,23 +5629,59 @@ class WepoBlockchain:
         ''', (collateral_txid, collateral_vout))
         if existing_cursor.fetchone():
             raise ValueError("Collateral UTXO is already assigned to an active masternode")
-        
+
+        fee_utxos = []
+        fee_funding_total = 0
+        for candidate in self.get_utxos_for_address(operator_address):
+            if (
+                candidate['txid'] == collateral_txid
+                and candidate['vout'] == collateral_vout
+            ):
+                continue
+            fee_utxos.append(candidate)
+            fee_funding_total += candidate['amount']
+            if fee_funding_total >= fee:
+                break
+        if fee_funding_total < fee:
+            raise ValueError("Insufficient separate spendable balance for masternode fee")
+
         masternode_id = f"mn_{operator_address}_{int(time.time())}"
-        transaction = Transaction(
-            version=1,
-            inputs=[TransactionInput(
+        inputs = [
+            TransactionInput(
                 prev_txid=collateral_txid,
                 prev_vout=collateral_vout,
                 script_sig=b"signature_placeholder",
                 sequence=0xffffffff,
-            )],
-            outputs=[TransactionOutput(
-                value=utxo_amount,
-                script_pubkey=f"masternode_lock:{masternode_id}".encode(),
+            )
+        ]
+        inputs.extend(
+            TransactionInput(
+                prev_txid=fee_utxo['txid'],
+                prev_vout=fee_utxo['vout'],
+                script_sig=b"signature_placeholder",
+                sequence=0xffffffff,
+            )
+            for fee_utxo in fee_utxos
+        )
+        outputs = [TransactionOutput(
+            value=utxo_amount,
+            script_pubkey=f"masternode_lock:{masternode_id}".encode(),
+            address=operator_address,
+)]
+        fee_change = fee_funding_total - fee
+        if fee_change:
+            outputs.append(TransactionOutput(
+                value=fee_change,
+                script_pubkey=b"change_script",
                 address=operator_address,
-            )],
+            ))
+
+        transaction = Transaction(
+            version=1,
+            inputs=inputs,
+            outputs=outputs,
             lock_time=0,
-            fee=0,
+            fee=fee,
             tx_type=TX_TYPE_MASTERNODE_CREATE,
             extra_data={
                 'masternode_id': masternode_id,
@@ -3904,12 +5698,19 @@ class WepoBlockchain:
         print(f"Submitted canonical masternode registration: {masternode_id}")
         return masternode_id
 
-    def deactivate_masternode(self, masternode_id: str, operator_address: str, return_unsigned: bool = False):
+    def deactivate_masternode(
+        self,
+        masternode_id: str,
+        operator_address: str,
+        return_unsigned: bool = False,
+        fee: int = DEFAULT_TRANSACTION_FEE,
+    ):
         """Deactivate an active masternode and release its collateral back to spendable balance.
 
         With return_unsigned=True, returns the UNSIGNED deactivation Transaction
         (the operator must sign to spend the masternode-lock collateral UTXO).
         """
+        self._require_transaction_type_consensus_ready(TX_TYPE_MASTERNODE_DEACTIVATE)
         self.get_active_masternodes()
 
         cursor = self.conn.execute('''
@@ -3936,6 +5737,11 @@ class WepoBlockchain:
         collateral_row = collateral_cursor.fetchone()
         collateral_amount = collateral_row[0] if collateral_row else 0
 
+        if type(fee) is not int or fee < 0:
+            raise ValueError("Masternode deactivation fee must be a nonnegative integer")
+        if fee >= collateral_amount:
+            raise ValueError("Masternode deactivation fee must be below collateral")
+
         transaction = Transaction(
             version=1,
             inputs=[TransactionInput(
@@ -3945,12 +5751,12 @@ class WepoBlockchain:
                 sequence=0xffffffff,
             )],
             outputs=[TransactionOutput(
-                value=collateral_amount,
+                value=collateral_amount - fee,
                 script_pubkey=b"masternode_unlock",
                 address=operator_address,
             )],
             lock_time=0,
-            fee=0,
+            fee=fee,
             tx_type=TX_TYPE_MASTERNODE_DEACTIVATE,
             extra_data={
                 'masternode_id': masternode_id,
@@ -4110,26 +5916,23 @@ class WepoBlockchain:
         }
     
     def get_active_stakes(self) -> List[StakeInfo]:
-        """Get all active stakes"""
-        self.conn.execute('''
-            UPDATE stakes
-            SET status = 'inactive'
+        """Get stakes active in the currently replayed canonical branch state."""
+        cursor = self.conn.execute('''
+            SELECT stake_id, staker_address, amount, start_height, start_time, last_reward_height, total_rewards, status, unlock_height
+            FROM stakes
             WHERE status = 'active'
-              AND lock_txid IS NOT NULL
-              AND lock_vout IS NOT NULL
-              AND NOT EXISTS (
+              AND (
+                  lock_txid IS NULL
+                  OR lock_vout IS NULL
+                  OR EXISTS (
                   SELECT 1
                   FROM utxos
                   WHERE utxos.txid = stakes.lock_txid
                     AND utxos.vout = stakes.lock_vout
                     AND utxos.spent = FALSE
               )
-        ''')
-        self.conn.commit()
-
-        cursor = self.conn.execute('''
-            SELECT stake_id, staker_address, amount, start_height, start_time, last_reward_height, total_rewards, status, unlock_height
-            FROM stakes WHERE status = 'active'
+              )
+            ORDER BY staker_address ASC, stake_id ASC
         ''')
         
         stakes = []
@@ -4149,46 +5952,19 @@ class WepoBlockchain:
         return stakes
     
     def get_active_masternodes(self) -> List[MasternodeInfo]:
-        """Get all active masternodes"""
-        self.conn.execute('''
-            UPDATE masternodes
-            SET status = 'inactive'
+        """Get masternodes active in the currently replayed branch state."""
+        cursor = self.conn.execute('''
+            SELECT masternode_id, operator_address, collateral_txid, collateral_vout, ip_address, port, start_height, start_time, last_ping, status, total_rewards
+            FROM masternodes
             WHERE status = 'active'
-              AND NOT EXISTS (
+              AND EXISTS (
                   SELECT 1
                   FROM utxos
                   WHERE utxos.txid = masternodes.collateral_txid
                     AND utxos.vout = masternodes.collateral_vout
                     AND utxos.spent = FALSE
               )
-        ''')
-
-        duplicate_cursor = self.conn.execute('''
-            SELECT masternode_id, collateral_txid, collateral_vout
-            FROM masternodes
-            WHERE status = 'active'
-            ORDER BY start_height ASC, start_time ASC, masternode_id ASC
-        ''')
-        seen_collateral = set()
-        duplicate_ids = []
-        for row in duplicate_cursor.fetchall():
-            collateral_key = (row[1], row[2])
-            if collateral_key in seen_collateral:
-                duplicate_ids.append(row[0])
-            else:
-                seen_collateral.add(collateral_key)
-
-        if duplicate_ids:
-            placeholders = ",".join("?" for _ in duplicate_ids)
-            self.conn.execute(
-                f"UPDATE masternodes SET status = 'inactive' WHERE masternode_id IN ({placeholders})",
-                tuple(duplicate_ids),
-            )
-        self.conn.commit()
-
-        cursor = self.conn.execute('''
-            SELECT masternode_id, operator_address, collateral_txid, collateral_vout, ip_address, port, start_height, start_time, last_ping, status, total_rewards
-            FROM masternodes WHERE status = 'active'
+            ORDER BY masternode_id ASC
         ''')
         
         masternodes = []
@@ -4254,8 +6030,14 @@ class WepoBlockchain:
         if block_height <= POS_ACTIVATION_HEIGHT:
             return reward_entries
 
-        active_stakes = self.get_active_stakes()
-        active_masternodes = self.get_active_masternodes()
+        active_stakes = sorted(
+            self.get_active_stakes(),
+            key=lambda item: (item.staker_address, item.stake_id),
+        )
+        active_masternodes = sorted(
+            self.get_active_masternodes(),
+            key=lambda item: item.masternode_id,
+        )
 
         if not active_stakes and not active_masternodes:
             return reward_entries
@@ -4267,7 +6049,7 @@ class WepoBlockchain:
 
         # Conserve every satoshi and roll an empty side's share to the other side.
         if active_stakes and active_masternodes:
-            staking_reward_pool = int(total_pos_reward * 0.6)
+            staking_reward_pool = total_pos_reward * 60 // 100
             masternode_reward_pool = total_pos_reward - staking_reward_pool
         elif active_stakes:
             staking_reward_pool = total_pos_reward
@@ -4284,7 +6066,7 @@ class WepoBlockchain:
                 if index == len(active_stakes) - 1:
                     reward_amount = remaining_rewards
                 else:
-                    reward_amount = int(staking_reward_pool * (stake.amount / total_stake_amount))
+                    reward_amount = staking_reward_pool * stake.amount // total_stake_amount
                     reward_amount = min(reward_amount, remaining_rewards)
 
                 if reward_amount <= 0:
@@ -4357,19 +6139,23 @@ class WepoBlockchain:
         """Distribute the hard-cap-clamped PoS reward pool for a block to stakers
         and masternodes (the single PoS issuance path, distribution-only model)."""
         reward_entries = self.calculate_staking_reward_entries(block_height, block)
+        if block is None:
+            raise ValueError("PoS reward persistence requires the canonical block")
+        reward_timestamp = block.header.timestamp
         if not reward_entries:
             return
         
         for reward_entry in reward_entries:
             address = reward_entry['recipient_address']
             reward_amount = reward_entry['amount']
-            reward_timestamp = int(time.time())
             reward_txid = f"pos_reward_{reward_entry['reward_id']}"
             
             self.conn.execute('''
-                INSERT INTO utxos (txid, vout, address, amount, script_pubkey, spent)
-                VALUES (?, ?, ?, ?, ?, FALSE)
-            ''', (reward_txid, 0, address, reward_amount, b"pos_reward"))
+                INSERT INTO utxos (
+                    txid, vout, address, amount, script_pubkey,
+                    created_height, is_coinbase, spent
+                ) VALUES (?, ?, ?, ?, ?, ?, TRUE, FALSE)
+            ''', (reward_txid, 0, address, reward_amount, b"pos_reward", block_height))
 
             if reward_entry['recipient_type'] == 'staker':
                 self.conn.execute('''
@@ -4382,7 +6168,7 @@ class WepoBlockchain:
                     UPDATE masternodes
                     SET total_rewards = total_rewards + ?, last_ping = ?
                     WHERE masternode_id = ?
-                ''', (reward_amount, int(time.time()), reward_entry['recipient_reference']))
+                ''', (reward_amount, reward_timestamp, reward_entry['recipient_reference']))
             
             self.conn.execute('''
                 INSERT INTO staking_rewards (reward_id, recipient_address, recipient_type, amount, block_height, block_hash, timestamp)
@@ -4417,7 +6203,7 @@ class WepoBlockchain:
 
         for output_index, output in enumerate(coinbase_tx.outputs[1:], start=1):
             script_marker = output.script_pubkey.decode(errors='ignore') if output.script_pubkey else ''
-            reward_timestamp = int(time.time())
+            reward_timestamp = block.header.timestamp
 
             if script_marker.startswith("staker_fee_output:"):
                 stake_id = script_marker.split(":", 1)[1]
@@ -4670,42 +6456,53 @@ class WepoBlockchain:
             }
     
     def get_total_staked(self) -> int:
-        """Get total amount staked in the network"""
-        cursor = self.conn.execute('''
-            SELECT SUM(amount) FROM stakes WHERE status = 'active'
-        ''')
-        result = cursor.fetchone()
-        return result[0] if result[0] else 0
+        """Get total active stake in the currently replayed branch state."""
+        return sum(stake.amount for stake in self.get_active_stakes())
     
-    def select_pos_validator(self, block_height: int) -> Optional[str]:
-        """Select PoS validator using stake-weighted random selection"""
+    def select_pos_validator(
+        self,
+        block_height: int,
+        parent_hash: Optional[str] = None,
+    ) -> Optional[str]:
+        """Select one validator deterministically from parent hash and stake."""
         if block_height <= POS_ACTIVATION_HEIGHT:
             return None
             
-        # Get active stakes
-        active_stakes = self.get_active_stakes()
+        active_stakes = sorted(
+            self.get_active_stakes(),
+            key=lambda stake: (stake.staker_address, stake.stake_id),
+        )
         if not active_stakes:
             return None
             
-        # Calculate total stake
         total_stake = sum(stake.amount for stake in active_stakes)
-        if total_stake == 0:
+        if total_stake <= 0:
             return None
-            
-        # Generate random point in stake range
-        import random
-        random.seed(block_height)  # Deterministic seed for consensus
-        random_point = random.randint(0, total_stake - 1)
+
+        if parent_hash is None:
+            latest = self.get_latest_block()
+            parent_hash = latest.get_block_hash() if latest else "0" * 64
+        try:
+            parent_bytes = bytes.fromhex(parent_hash)
+        except (TypeError, ValueError):
+            return None
+        if len(parent_bytes) != 32:
+            return None
+
+        selection_digest = hashlib.sha3_256(
+            b"WEPO_POS_VALIDATOR_SELECTION_V1\x00"
+            + struct.pack("<Q", block_height)
+            + parent_bytes
+            + struct.pack("<Q", total_stake)
+        ).digest()
+        random_point = int.from_bytes(selection_digest, "big") % total_stake
         
-        # Find validator at random point
         cumulative_stake = 0
         for stake in active_stakes:
             cumulative_stake += stake.amount
             if cumulative_stake > random_point:
                 return stake.staker_address
-                
-        # Fallback to first validator
-        return active_stakes[0].staker_address if active_stakes else None
+        return None
     
     def is_valid_pos_validator(self, validator_address: str, block_height: int) -> bool:
         """Check if address is a valid PoS validator"""
@@ -4718,6 +6515,24 @@ class WepoBlockchain:
         
         return len(validator_stakes) > 0 and sum(stake.amount for stake in validator_stakes) >= MIN_STAKE_AMOUNT
     
+    def get_operational_metrics(self) -> dict:
+        """Return bounded, process-scoped monitoring counters."""
+        with self.chain_lock:
+            return {
+                "scope": "process",
+                "process_started_at": self.process_started_at,
+                "uptime_seconds": max(0, int(time.time()) - self.process_started_at),
+                "accepted_blocks_total": self.accepted_blocks_total,
+                "block_validation_rejections_total": (
+                    self.block_validation_rejections_total
+                ),
+                "reorgs_total": self.reorgs_total,
+                "reorg_failures_total": self.reorg_failures_total,
+                "last_reorg": (
+                    dict(self.last_reorg) if self.last_reorg is not None else None
+                ),
+            }
+
     def get_network_info(self) -> dict:
         """Get network information"""
         current_height = self.get_block_height()
@@ -4728,6 +6543,11 @@ class WepoBlockchain:
             'best_block_hash': self.get_latest_block().get_block_hash() if self.chain else None,
             'difficulty': self.current_difficulty,
             'mempool_size': len(self.mempool),
+            'mempool_bytes': self.mempool_bytes,
+            'mempool_max_transactions': MAX_MEMPOOL_TRANSACTIONS,
+            'mempool_max_bytes': MAX_MEMPOOL_BYTES,
+            'coinbase_maturity': self.coinbase_maturity,
+            'minimum_relay_fee_per_kb': self.minimum_relay_fee_per_kb,
             'total_supply': self.get_issued_supply(),
             'supply_cap': SUPPLY_CAP,
             'network': NETWORK_NAME,
@@ -4767,7 +6587,11 @@ class WepoBlockchain:
                 return block.header.timestamp
         return None
 
-    def mine_next_block(self, miner_address: str) -> Optional[Block]:
+    def mine_next_block(
+        self,
+        miner_address: str,
+        pos_signer: Optional[ValidatorSigner] = None,
+    ) -> Optional[Block]:
         """Mine or validate the next due block for the active consensus schedule."""
         current_height = self.get_block_height()
         if current_height < POS_ACTIVATION_HEIGHT:
@@ -4786,10 +6610,11 @@ class WepoBlockchain:
         pow_due_at = (last_pow_timestamp if last_pow_timestamp is not None else fallback_timestamp) + BLOCK_TIME_POW_HYBRID
 
         pos_due_at = None
-        active_stakes = self.get_active_stakes()
-        if active_stakes:
-            pos_anchor = last_pos_timestamp if last_pos_timestamp is not None else fallback_timestamp
-            pos_due_at = pos_anchor + BLOCK_TIME_POS
+        if self.network_profile.pos_consensus_ready:
+            active_stakes = self.get_active_stakes()
+            if active_stakes:
+                pos_anchor = last_pos_timestamp if last_pos_timestamp is not None else fallback_timestamp
+                pos_due_at = pos_anchor + BLOCK_TIME_POS
 
         pos_ready = pos_due_at is not None and now >= pos_due_at
         pow_ready = now >= pow_due_at
@@ -4797,7 +6622,7 @@ class WepoBlockchain:
         if pos_ready and (not pow_ready or pos_due_at <= pow_due_at):
             validator = self.select_pos_validator(next_height)
             if validator:
-                pos_block = self.create_pos_block(validator)
+                pos_block = self._produce_pos_block(validator, pos_signer)
                 if pos_block and self.add_block(pos_block):
                     return pos_block
 
@@ -4807,7 +6632,7 @@ class WepoBlockchain:
         if pos_ready:
             validator = self.select_pos_validator(next_height)
             if validator:
-                pos_block = self.create_pos_block(validator)
+                pos_block = self._produce_pos_block(validator, pos_signer)
                 if pos_block and self.add_block(pos_block):
                     return pos_block
 

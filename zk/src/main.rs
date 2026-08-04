@@ -14,10 +14,9 @@ use winterfell::{
     math::{fields::f128::BaseElement, FieldElement, ToElements},
     matrix::ColMatrix,
     AcceptableOptions, Air, AirContext, Assertion, AuxRandElements, BatchingMethod,
-    CompositionPoly, CompositionPolyTrace, DefaultConstraintCommitment,
-    DefaultConstraintEvaluator, DefaultTraceLde, EvaluationFrame, FieldExtension,
-    PartitionOptions, Proof, ProofOptions, Prover, StarkDomain, Trace, TraceInfo,
-    TracePolyTable, TraceTable, TransitionConstraintDegree,
+    CompositionPoly, CompositionPolyTrace, DefaultConstraintCommitment, DefaultConstraintEvaluator,
+    DefaultTraceLde, EvaluationFrame, FieldExtension, PartitionOptions, Proof, ProofOptions,
+    Prover, StarkDomain, Trace, TraceInfo, TracePolyTable, TraceTable, TransitionConstraintDegree,
 };
 
 type Blake3 = Blake3_256<BaseElement>;
@@ -124,7 +123,9 @@ impl Prover for FibProver {
 
     fn get_pub_inputs(&self, trace: &Self::Trace) -> PublicInputs {
         let last_step = trace.length() - 1;
-        PublicInputs { result: trace.get(1, last_step) }
+        PublicInputs {
+            result: trace.get(1, last_step),
+        }
     }
 
     fn options(&self) -> &ProofOptions {
@@ -228,7 +229,9 @@ fn main() {
         let last_step = trace.length() - 1;
         let result = trace.get(1, last_step);
 
-        let prover = FibProver { options: proof_options() };
+        let prover = FibProver {
+            options: proof_options(),
+        };
 
         let t0 = Instant::now();
         let proof = prover.prove(trace).expect("proving failed");
@@ -296,7 +299,7 @@ fn main() {
                 Outcome::Accepted => {
                     wrongly_accepted += 1;
                     println!("  !! byte {pos} accepted after tampering");
-                },
+                }
                 Outcome::Rejected => rejected_at_verify += 1,
                 Outcome::Panicked => panicked += 1,
             },
@@ -317,7 +320,11 @@ fn main() {
     );
     println!(
         "  honest proof vs wrong public input     : {}",
-        if wrong { "!! ACCEPTED" } else { "REJECTED (expected)" }
+        if wrong {
+            "!! ACCEPTED"
+        } else {
+            "REJECTED (expected)"
+        }
     );
 
     if wrongly_accepted == 0 && !wrong {

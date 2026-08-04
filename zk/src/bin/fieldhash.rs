@@ -62,8 +62,7 @@ fn h_dom(domain: u64, elements: &[BaseElement]) -> [u8; 32] {
 
     let mut out = [0u8; 32];
     for k in 0..DIGEST_LEN {
-        out[k * 8..(k + 1) * 8]
-            .copy_from_slice(&state[DIGEST_START + k].as_int().to_le_bytes());
+        out[k * 8..(k + 1) * 8].copy_from_slice(&state[DIGEST_START + k].as_int().to_le_bytes());
     }
     out
 }
@@ -128,10 +127,10 @@ fn main() {
         match reply {
             Some(s) => {
                 let _ = writeln!(out, "{s}");
-            },
+            }
             None => {
                 let _ = writeln!(out, "ERR");
-            },
+            }
         }
         let _ = out.flush();
     }

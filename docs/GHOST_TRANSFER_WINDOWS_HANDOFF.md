@@ -1,5 +1,12 @@
 # Ghost Transfers — handoff to the Windows PC
 
+> Historical handoff only. It is superseded by
+> `GHOST_TRANSFER_PHASE3_HANDOFF.md` and
+> `GHOST_VERIFIER_SUBPROCESS_PROTOCOL.md`. The complete Rust verifier and honest
+> proof integration now exist; the consensus value bound is `2^61−1`, with at
+> most four spends and two outputs per v1 bundle. Privacy remains disabled
+> pending extended resource/fuzz testing, consensus and wallet wiring, and
+> independent cryptographic review.
 **Why you:** the Linux box has no Rust toolchain (`cargo`/`rustc` absent) and
 crates.io returns HTTP 403. Every credible post-quantum proving system is Rust.
 That is the *only* thing blocking Ghost transfers, so the work moves to a machine
@@ -51,10 +58,12 @@ bundle. That default is load-bearing — see the guardrails.
    Not "temporarily", not "to unblock testing". If you need a test double, scope
    it inside the test the way `test_shielded_pool.py` does (accepts exactly one
    known statement digest, restores `RejectAllVerifier` in a `finally`).
-3. **Do not flip `WEPO_FEATURE_PRIVACY`.** It stays `0` through the 2026-09-02
-   genesis regardless of how well the circuit goes. It lifts after external audit.
+3. **Do not flip `WEPO_FEATURE_PRIVACY`.** It stays `0` through genesis regardless
+   of how well the circuit goes. It may lift only after the readiness gates,
+   reviewed activation height, and external audit are complete.
 4. **Do not touch the messaging crypto** (`@noble/post-quantum`, `wepoMessaging.js`,
-   `messaging_relay.py`). It is vetted, live, and unrelated.
+   `messaging_relay.py`). It is separately regression-tested, disabled in the
+   default release profile, and unrelated to the Ghost verifier work.
 5. **A verifier panic must never reach the node process.** Winterfell's
    `Air::new` returns `Self`, not `Result`, so the only way to reject a malformed
    trace descriptor is `assert!`/panic — and trace width is encoded in

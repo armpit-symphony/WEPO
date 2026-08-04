@@ -73,10 +73,9 @@ use winterfell::{
     math::{fields::f64::BaseElement, FieldElement, StarkField, ToElements},
     matrix::ColMatrix,
     AcceptableOptions, Air, AirContext, Assertion, AuxRandElements, BatchingMethod,
-    CompositionPoly, CompositionPolyTrace, DefaultConstraintCommitment,
-    DefaultConstraintEvaluator, DefaultTraceLde, EvaluationFrame, FieldExtension,
-    PartitionOptions, Proof, ProofOptions, Prover, StarkDomain, TraceInfo,
-    TracePolyTable, TraceTable, TransitionConstraintDegree,
+    CompositionPoly, CompositionPolyTrace, DefaultConstraintCommitment, DefaultConstraintEvaluator,
+    DefaultTraceLde, EvaluationFrame, FieldExtension, PartitionOptions, Proof, ProofOptions,
+    Prover, StarkDomain, TraceInfo, TracePolyTable, TraceTable, TransitionConstraintDegree,
 };
 
 type Blake3 = Blake3_256<BaseElement>;
@@ -453,7 +452,11 @@ impl Air for SpendAir {
         // instance A row 0: H_dom(DOMAIN_NULLIFIER_KEY, limbs(ask)) -- 4 elements,
         // so the upper half of the rate must be genuine zero padding.
         a.push(Assertion::single(A, 0, BaseElement::new(NK_ELEMENTS)));
-        a.push(Assertion::single(A + 1, 0, BaseElement::new(DOMAIN_NULLIFIER_KEY)));
+        a.push(Assertion::single(
+            A + 1,
+            0,
+            BaseElement::new(DOMAIN_NULLIFIER_KEY),
+        ));
         a.push(Assertion::single(A + 2, 0, z));
         a.push(Assertion::single(A + 3, 0, z));
         for i in 0..DIG {
@@ -462,11 +465,19 @@ impl Air for SpendAir {
 
         // instance B row 0: H_dom(DOMAIN_DIVERSIFIED_KEY, limbs(ask) ‖ [11, d0, d1]).
         a.push(Assertion::single(B, 0, BaseElement::new(PKD_ELEMENTS)));
-        a.push(Assertion::single(B + 1, 0, BaseElement::new(DOMAIN_DIVERSIFIED_KEY)));
+        a.push(Assertion::single(
+            B + 1,
+            0,
+            BaseElement::new(DOMAIN_DIVERSIFIED_KEY),
+        ));
         a.push(Assertion::single(B + 2, 0, z));
         a.push(Assertion::single(B + 3, 0, z));
         // the diversifier's length element is fixed at 11 by the node's encoding
-        a.push(Assertion::single(B + RATE + DIG, 0, BaseElement::new(DIVERSIFIER_LEN)));
+        a.push(Assertion::single(
+            B + RATE + DIG,
+            0,
+            BaseElement::new(DIVERSIFIER_LEN),
+        ));
         // 7 elements absorbed, so the eighth rate slot is padding
         a.push(Assertion::single(B + RATE + 2 * DIG - 1, 0, z));
 
@@ -591,7 +602,11 @@ fn start_node(
     }
     state[E] = BaseElement::new(NODE_ELEMENTS);
     state[E + 1] = BaseElement::new(DOMAIN_NODE);
-    let (l, r) = if bit { (sibling, digest) } else { (digest, sibling) };
+    let (l, r) = if bit {
+        (sibling, digest)
+    } else {
+        (digest, sibling)
+    };
     for i in 0..DIG {
         state[E + RATE + i] = l[i];
         state[E + RATE + DIG + i] = r[i];
@@ -632,7 +647,11 @@ fn build_trace(w: &Witness) -> TraceTable<BaseElement> {
             }
             // E: first Merkle node
             start_node(&w.leaf, &w.siblings[0], w.bits[0], state);
-            state[BIT_COL] = if w.bits[0] { BaseElement::ONE } else { BaseElement::ZERO };
+            state[BIT_COL] = if w.bits[0] {
+                BaseElement::ONE
+            } else {
+                BaseElement::ZERO
+            };
             // carried witness
             for i in 0..DIG {
                 state[CM_COL + i] = w.leaf[i];
@@ -654,17 +673,19 @@ fn build_trace(w: &Witness) -> TraceTable<BaseElement> {
 
             // ---- Merkle: advance one level -------------------------------
             let level = step / CYCLE + 1;
-            let digest: [BaseElement; DIG] =
-                state[E + RATE..E + RATE + DIG].try_into().unwrap();
+            let digest: [BaseElement; DIG] = state[E + RATE..E + RATE + DIG].try_into().unwrap();
             let bit = w.bits[level];
             start_node(&digest, &w.siblings[level], bit, state);
-            state[BIT_COL] = if bit { BaseElement::ONE } else { BaseElement::ZERO };
+            state[BIT_COL] = if bit {
+                BaseElement::ONE
+            } else {
+                BaseElement::ZERO
+            };
 
             // ---- instance A ----------------------------------------------
             if step == CYCLE - 1 {
                 // nk is done; open the nullifier sponge over limbs(nk) ‖ limbs(rho)
-                let nk: [BaseElement; DIG] =
-                    state[A + RATE..A + RATE + DIG].try_into().unwrap();
+                let nk: [BaseElement; DIG] = state[A + RATE..A + RATE + DIG].try_into().unwrap();
                 for k in 0..W {
                     state[A + k] = BaseElement::ZERO;
                 }
@@ -681,8 +702,7 @@ fn build_trace(w: &Witness) -> TraceTable<BaseElement> {
             // ---- instance B ----------------------------------------------
             if step == CYCLE - 1 {
                 // pk_d is done; open the commitment sponge, first block
-                let pkd: [BaseElement; DIG] =
-                    state[B + RATE..B + RATE + DIG].try_into().unwrap();
+                let pkd: [BaseElement; DIG] = state[B + RATE..B + RATE + DIG].try_into().unwrap();
                 for k in 0..W {
                     state[B + k] = BaseElement::ZERO;
                 }
@@ -771,8 +791,14 @@ impl Prover for SpendProver {
 
 fn opts(queries: usize) -> ProofOptions {
     ProofOptions::new(
-        queries, 8, 0, FieldExtension::Cubic, 8, 31,
-        BatchingMethod::Linear, BatchingMethod::Linear,
+        queries,
+        8,
+        0,
+        FieldExtension::Cubic,
+        8,
+        31,
+        BatchingMethod::Linear,
+        BatchingMethod::Linear,
     )
 }
 
@@ -813,7 +839,10 @@ fn main() {
 
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.pop();
-    let path = p.join("tests").join("vectors").join("shielded_rescue-rp64-256.json");
+    let path = p
+        .join("tests")
+        .join("vectors")
+        .join("shielded_rescue-rp64-256.json");
     let j: Value =
         serde_json::from_str(&fs::read_to_string(&path).expect("read golden")).expect("json");
 
@@ -892,19 +921,28 @@ fn main() {
          proved witness at position {position:#x} (aperiodic direction bits)"
     );
 
-    println!("
-witness from the node's published vectors (note {NOTE}):");
+    println!(
+        "
+witness from the node's published vectors (note {NOTE}):"
+    );
     println!("  spending key {}", kd["spending_key"].as_str().unwrap());
     println!("  value        {}", note["value"]);
     println!("  commitment   {}", note["commitment"].as_str().unwrap());
     // NOT entry["root"]: that is the deep path's root for ITS leaf (note 0).
     // A different leaf under the same siblings gives a different anchor, and
     // printing the golden one here would look like agreement that never happened.
-    println!("  anchor       {}", hex(&native_root(&cm, &siblings, &bits)));
+    println!(
+        "  anchor       {}",
+        hex(&native_root(&cm, &siblings, &bits))
+    );
     println!("  nullifier    {}", note["nullifier"].as_str().unwrap());
 
     let w = Witness {
-        ask, div, value, rho, rcm,
+        ask,
+        div,
+        value,
+        rho,
+        rcm,
         leaf: cm,
         siblings: siblings.clone(),
         bits: bits.clone(),
@@ -931,11 +969,20 @@ witness from the node's published vectors (note {NOTE}):");
         ("pk_d       = H_dom(6, ask ‖ enc(d))", pkd, golden_pkd),
         ("cm         = H_dom(3, 13 elements)", cm_air, cm),
         ("nf         = H_dom(4, nk ‖ rho)", nf, golden_nf),
-        ("anchor     = 32 node hashes", anchor, native_root(&cm, &siblings, &bits)),
+        (
+            "anchor     = 32 node hashes",
+            anchor,
+            native_root(&cm, &siblings, &bits),
+        ),
         // ^ against the native fold, not a published root: this leaf is not the
         //   deep path's own. The published root is pinned separately, above.
     ] {
-        assert_eq!(got, want, "{label} disagrees with the node\n  got {}", hex(&got));
+        assert_eq!(
+            got,
+            want,
+            "{label} disagrees with the node\n  got {}",
+            hex(&got)
+        );
         println!("  in-trace {label:<36} matches the node : OK");
     }
     // and independently, outside the trace
@@ -943,10 +990,18 @@ witness from the node's published vectors (note {NOTE}):");
     cm_elems.extend_from_slice(&pkd);
     cm_elems.extend_from_slice(&rho);
     cm_elems.extend_from_slice(&rcm);
-    assert_eq!(h_dom(DOMAIN_NOTE, &cm_elems), cm, "native H_dom disagrees on cm");
+    assert_eq!(
+        h_dom(DOMAIN_NOTE, &cm_elems),
+        cm,
+        "native H_dom disagrees on cm"
+    );
     let mut pkd_elems = ask.to_vec();
     pkd_elems.extend_from_slice(&div);
-    assert_eq!(h_dom(DOMAIN_DIVERSIFIED_KEY, &pkd_elems), golden_pkd, "native pk_d");
+    assert_eq!(
+        h_dom(DOMAIN_DIVERSIFIED_KEY, &pkd_elems),
+        golden_pkd,
+        "native pk_d"
+    );
     println!("  native H_dom agrees on cm and pk_d                       : OK");
     println!("\ntrace rows: {TRACE_LEN}  columns: {TRACE_WIDTH}\n");
 
@@ -960,7 +1015,9 @@ witness from the node's published vectors (note {NOTE}):");
         ("96-bit  (32q, blowup 8, cubic)", 32usize),
         ("128-bit (43q, blowup 8, cubic)", 43),
     ] {
-        let prover = SpendProver { options: opts(queries) };
+        let prover = SpendProver {
+            options: opts(queries),
+        };
         let t = Instant::now();
         let proof = prover.prove(trace.clone()).expect("prove failed");
         let prove_ms = t.elapsed().as_secs_f64() * 1000.0;
@@ -969,12 +1026,26 @@ witness from the node's published vectors (note {NOTE}):");
         let t = Instant::now();
         for _ in 0..20 {
             assert!(
-                verify_at(proof.clone(), PublicInputs { anchor, nullifier: nf }, 95),
+                verify_at(
+                    proof.clone(),
+                    PublicInputs {
+                        anchor,
+                        nullifier: nf
+                    },
+                    95
+                ),
                 "honest proof rejected"
             );
         }
         let verify_ms = t.elapsed().as_secs_f64() * 1000.0 / 20.0;
-        let ok128 = verify_at(proof, PublicInputs { anchor, nullifier: nf }, 128);
+        let ok128 = verify_at(
+            proof,
+            PublicInputs {
+                anchor,
+                nullifier: nf,
+            },
+            128,
+        );
         println!(
             "{label:<34} {size:>11} {prove_ms:>10.1} {verify_ms:>10.3} {:>8}",
             if ok128 { "yes" } else { "no" }
@@ -989,7 +1060,14 @@ witness from the node's published vectors (note {NOTE}):");
     bad_anchor[0] += BaseElement::ONE;
     println!(
         "  wrong anchor                             : {}",
-        if verify_at(proof.clone(), PublicInputs { anchor: bad_anchor, nullifier: nf }, 95) {
+        if verify_at(
+            proof.clone(),
+            PublicInputs {
+                anchor: bad_anchor,
+                nullifier: nf
+            },
+            95
+        ) {
             "ACCEPTED -- UNSOUND"
         } else {
             "rejected"
@@ -999,7 +1077,14 @@ witness from the node's published vectors (note {NOTE}):");
     bad_nf[0] += BaseElement::ONE;
     println!(
         "  wrong nullifier                          : {}",
-        if verify_at(proof, PublicInputs { anchor, nullifier: bad_nf }, 95) {
+        if verify_at(
+            proof,
+            PublicInputs {
+                anchor,
+                nullifier: bad_nf
+            },
+            95
+        ) {
             "ACCEPTED -- UNSOUND"
         } else {
             "rejected"
@@ -1013,7 +1098,10 @@ witness from the node's published vectors (note {NOTE}):");
     //     guardrail's scenario: commitments are public, so the path is public too.
     let mut forged_ask = ask;
     forged_ask[0] += BaseElement::ONE;
-    let thief = Witness { ask: forged_ask, ..w.clone() };
+    let thief = Witness {
+        ask: forged_ask,
+        ..w.clone()
+    };
     let thief_nf = {
         // the thief reveals the nullifier their own key produces
         let nk2 = h_dom(DOMAIN_NULLIFIER_KEY, &forged_ask);
@@ -1023,22 +1111,40 @@ witness from the node's published vectors (note {NOTE}):");
     };
     println!(
         "  invented key over a public commitment    : {}",
-        attempt(&thief, PublicInputs { anchor, nullifier: thief_nf })
+        attempt(
+            &thief,
+            PublicInputs {
+                anchor,
+                nullifier: thief_nf
+            }
+        )
     );
 
     // (2) the note is real and the key is real, but the value is inflated. The
     //     commitment moves, so the leaf no longer matches.
-    let inflated = Witness { value: value + BaseElement::ONE, ..w.clone() };
+    let inflated = Witness {
+        value: value + BaseElement::ONE,
+        ..w.clone()
+    };
     println!(
         "  same note, inflated value                : {}",
-        attempt(&inflated, PublicInputs { anchor, nullifier: nf })
+        attempt(
+            &inflated,
+            PublicInputs {
+                anchor,
+                nullifier: nf
+            }
+        )
     );
 
     // (3) a different rho, hoping to spend the same note under a fresh
     //     nullifier and double-spend it.
     let mut rho2 = rho;
     rho2[0] += BaseElement::ONE;
-    let replay = Witness { rho: rho2, ..w.clone() };
+    let replay = Witness {
+        rho: rho2,
+        ..w.clone()
+    };
     let replay_nf = {
         let mut e = golden_nk.to_vec();
         e.extend_from_slice(&rho2);
@@ -1046,16 +1152,31 @@ witness from the node's published vectors (note {NOTE}):");
     };
     println!(
         "  fresh rho to re-spend the same leaf      : {}",
-        attempt(&replay, PublicInputs { anchor, nullifier: replay_nf })
+        attempt(
+            &replay,
+            PublicInputs {
+                anchor,
+                nullifier: replay_nf
+            }
+        )
     );
 
     // (4) a note the prover genuinely owns, but which is not in the tree.
     let mut rcm2 = rcm;
     rcm2[0] += BaseElement::ONE;
-    let uncommitted = Witness { rcm: rcm2, ..w.clone() };
+    let uncommitted = Witness {
+        rcm: rcm2,
+        ..w.clone()
+    };
     println!(
         "  own note, never appended to the tree     : {}",
-        attempt(&uncommitted, PublicInputs { anchor, nullifier: nf })
+        attempt(
+            &uncommitted,
+            PublicInputs {
+                anchor,
+                nullifier: nf
+            }
+        )
     );
 
     println!(

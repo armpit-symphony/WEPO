@@ -1,15 +1,118 @@
 const { app, BrowserWindow, Menu, shell, dialog, ipcMain } = require('electron');
+const { spawn } = require('child_process');
 const path = require('path');
-const fs = require('fs');
-
-// Backend server
-let backendServer = null;
 
 // Keep a global reference of the window object
 let mainWindow;
+const GHOST_BRIDGE_MAX_REQUEST_BYTES = 64 * 1024;
+const GHOST_BRIDGE_MAX_RESPONSE_BYTES = 1024 * 1024 + 4096;
+const GHOST_BRIDGE_TIMEOUT_MS = 5000;
+
+function ghostBridgeBinary() {
+  const filename = process.platform === 'win32'
+    ? 'ghost_wallet_bridge.exe'
+    : 'ghost_wallet_bridge';
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'ghost', filename)
+    : path.join(__dirname, '../../zk/target/release', filename);
+}
+
+function normalizeGhostRequest(value) {
+  if (value instanceof Uint8Array) return Buffer.from(value);
+  if (ArrayBuffer.isView(value)) {
+    return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+  }
+  if (value instanceof ArrayBuffer) return Buffer.from(value);
+  throw new Error('Ghost wallet bridge request is not bytes');
+}
+
+function trustedGhostRenderer(event) {
+  if (!mainWindow || event.sender !== mainWindow.webContents) return false;
+  const senderUrl = event.senderFrame?.url || event.sender.getURL();
+  if (!app.isPackaged && process.env.NODE_ENV === 'development') {
+    return senderUrl === 'http://localhost:3000/';
+  }
+  return senderUrl.startsWith('file://');
+}
+
+function requestGhostWallet(event, value) {
+  if (!trustedGhostRenderer(event)) {
+    return Promise.reject(new Error('Ghost wallet bridge renderer is not trusted'));
+  }
+  let request;
+  try {
+    request = normalizeGhostRequest(value);
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  if (request.length === 0 || request.length > GHOST_BRIDGE_MAX_REQUEST_BYTES) {
+    return Promise.reject(new Error('Ghost wallet bridge request is out of bounds'));
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const chunks = [];
+    let responseLength = 0;
+    const child = spawn(ghostBridgeBinary(), [], {
+      cwd: path.dirname(ghostBridgeBinary()),
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'ignore'],
+    });
+    const finish = (callback, result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      callback(result);
+    };
+    const timeout = setTimeout(() => {
+      child.kill();
+      finish(reject, new Error('Ghost wallet bridge timed out'));
+    }, GHOST_BRIDGE_TIMEOUT_MS);
+    child.stdout.on('data', (chunk) => {
+      responseLength += chunk.length;
+      if (responseLength > GHOST_BRIDGE_MAX_RESPONSE_BYTES) {
+        child.kill();
+        finish(reject, new Error('Ghost wallet bridge response is out of bounds'));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    child.on('error', () => finish(reject, new Error('Ghost wallet bridge is unavailable')));
+    child.on('close', (code) => {
+      if (code !== 0) {
+        finish(reject, new Error('Ghost wallet bridge rejected the request'));
+        return;
+      }
+      finish(resolve, new Uint8Array(Buffer.concat(chunks)));
+    });
+    child.stdin.on('error', () => {
+      finish(reject, new Error('Ghost wallet bridge rejected the request'));
+    });
+    child.stdin.end(request);
+  });
+}
+
+function registerGhostBridge() {
+  ipcMain.handle('ghost-wallet-request', requestGhostWallet);
+}
+
+const openExternalHttps = (target) => {
+  try {
+    const parsed = new URL(target);
+    if (parsed.protocol === 'https:') {
+      void shell.openExternal(parsed.toString());
+    }
+  } catch (error) {
+    // Ignore malformed or non-HTTPS external navigation requests.
+  }
+};
+
 
 function createWindow() {
   // Create the browser window
+  const isDev = !app.isPackaged && process.env.NODE_ENV === 'development';
+  const frontendRoot = app.isPackaged
+    ? path.join(process.resourcesPath, 'frontend')
+    : path.join(__dirname, '../../frontend/build');
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -19,8 +122,11 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      enableRemoteModule: false,
-      preload: path.join(__dirname, 'preload.js')
+      sandbox: true,
+      preload: path.join(__dirname, 'preload.js'),
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      devTools: isDev
     },
     titleBarStyle: 'default',
     show: false // Don't show until ready
@@ -30,8 +136,6 @@ function createWindow() {
   mainWindow.setTitle('WEPO Wallet - Decentralized Cryptocurrency Wallet');
 
   // Load the frontend
-  const isDev = process.env.NODE_ENV === 'development';
-  
   if (isDev) {
     // Development mode - load from local server
     mainWindow.loadURL('http://localhost:3000');
@@ -39,7 +143,9 @@ function createWindow() {
     mainWindow.webContents.openDevTools();
   } else {
     // Production mode - load from built files
-    const frontendPath = path.join(__dirname, '../frontend/index.html');
+    // Desktop and web ship the exact same compiled wallet client. This prevents
+    // recovery/address/signature drift between the two surfaces.
+    const frontendPath = path.join(frontendRoot, 'index.html');
     mainWindow.loadFile(frontendPath);
   }
 
@@ -60,37 +166,32 @@ function createWindow() {
 
   // Prevent navigation to external URLs
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    openExternalHttps(url);
     return { action: 'deny' };
   });
 
   // Handle external links
   mainWindow.webContents.on('will-navigate', (event, navigationUrl) => {
-    const parsedUrl = new URL(navigationUrl);
-    
-    if (parsedUrl.origin !== 'http://localhost:3000' && parsedUrl.origin !== 'file://') {
+    let allowed = false;
+    try {
+      const parsedUrl = new URL(navigationUrl);
+      if (isDev) {
+        allowed = parsedUrl.origin === 'http://localhost:3000';
+      } else if (parsedUrl.protocol === 'file:') {
+        const candidate = path.resolve(decodeURIComponent(parsedUrl.pathname.replace(/^\/(.:\/)/, '$1')));
+        const relative = path.relative(path.resolve(frontendRoot), candidate);
+        allowed = relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+      }
+    } catch (error) {
+      allowed = false;
+    }
+    if (!allowed) {
       event.preventDefault();
-      shell.openExternal(navigationUrl);
+      openExternalHttps(navigationUrl);
     }
   });
 }
 
-// Start the backend server
-function startBackendServer() {
-  try {
-    const backendPath = path.join(__dirname, 'backend/server.js');
-    
-    if (fs.existsSync(backendPath)) {
-      backendServer = require(backendPath);
-      console.log('✅ Backend server started successfully');
-    } else {
-      console.warn('⚠️  Backend server not found, running in frontend-only mode');
-    }
-  } catch (error) {
-    console.error('❌ Failed to start backend server:', error);
-    dialog.showErrorBox('Backend Error', 'Failed to start backend server. Some features may not work.');
-  }
-}
 
 // Create application menu
 function createMenu() {
@@ -249,10 +350,8 @@ function createMenu() {
 
 // App event handlers
 app.whenReady().then(() => {
-  // Start backend server first
-  startBackendServer();
-  
   // Create window and menu
+  registerGhostBridge();
   createWindow();
   createMenu();
 
@@ -271,39 +370,6 @@ app.on('window-all-closed', () => {
   }
 });
 
-app.on('before-quit', () => {
-  // Clean up backend server
-  if (backendServer && backendServer.close) {
-    backendServer.close();
-  }
-});
 
-// Security: Prevent new window creation
-app.on('web-contents-created', (event, contents) => {
-  contents.on('new-window', (event, navigationUrl) => {
-    event.preventDefault();
-    shell.openExternal(navigationUrl);
-  });
-});
-
-// Handle app certificate errors
-app.on('certificate-error', (event, webContents, url, error, certificate, callback) => {
-  if (url.startsWith('https://localhost') || url.startsWith('http://localhost')) {
-    // Allow local development certificates
-    event.preventDefault();
-    callback(true);
-  } else {
-    callback(false);
-  }
-});
-
-// IPC handlers for communication with renderer process
-ipcMain.handle('get-app-version', () => {
-  return app.getVersion();
-});
-
-ipcMain.handle('get-app-path', () => {
-  return app.getAppPath();
-});
 
 console.log('🚀 WEPO Desktop Wallet starting...');

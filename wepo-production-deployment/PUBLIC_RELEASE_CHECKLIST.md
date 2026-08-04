@@ -4,6 +4,11 @@ Use this checklist before calling WEPO or WEPO Wallet public-ready.
 
 This is the handoff point between platform hardening and multi-wallet validation.
 
+For the clean-runner build/test/package/hash workflow and its explicit
+internal-only handoff, use `RELEASE_RUNNER_HANDOFF.md` and the GitHub Actions
+workflow `WEPO release qualification` before assembling signed release
+evidence.
+
 For the validated local pre-public-test stack and browser wallet flow, see:
 
 - `/home/sparky/WEPO/wepo-production-deployment/LOCAL_PUBLIC_TEST_CHECKLIST.md`
@@ -17,7 +22,7 @@ Require all of the following on staging:
 - `wepo-backend` active
 - nginx config valid
 - `/etc/wepo/backend.env` populated with non-placeholder values
-- canonical release gate passing
+- canonical release gate passes its staging scenarios
 
 Preferred command:
 
@@ -46,6 +51,7 @@ Before multi-wallet testing starts, confirm:
 
 - staging backend URL is fixed and known
 - staging API domain/TLS is working
+- launch DNS uses the supplied `wepocoin.org` domain only after ownership/control and live seed records are independently verified
 - canonical settlement wallet is funded
 - backend CORS allowlist includes the intended wallet origins
 - no wallet flow depends on `wepo-fast-test-bridge.py`
@@ -66,6 +72,12 @@ Run the matrix in:
 
 - `/home/sparky/WEPO/wepo-production-deployment/MULTI_WALLET_TEST_MATRIX.md`
 
+- mandatory Ghost privacy transfers pass production wallet prover/note scan,
+  restart/reorg recovery, backup/restore, pinned verifier host, and independent
+  cryptographic-audit acceptance
+- mandatory PoS passes intended-host validator signing, anti-equivocation,
+  partition/reorg, encrypted backup, fencing/failover, and independent-audit
+  acceptance
 Do not collapse this to “wallet opens and login works.” The goal is cross-client behavior against the same canonical backend.
 
 ## 6. Release Claims Audit
@@ -80,9 +92,25 @@ Before anything goes public on `sparkpitlabs.com`, confirm:
 
 ## 7. Public-Go Boundary
 
+Follow `docs/runbooks/MANDATORY_GHOST_POS_LAUNCH_QUALIFICATION.md` in order.
+Neither Ghost nor PoS may be deferred, and the 30-day launch-planning clock
+starts only after the complete readiness package is accepted.
+
+Before the readiness package is reviewed, assemble the frozen release
+qualification bundle with
+`wepo-production-deployment/assemble-release-qualification-evidence.py`, then
+run `verify-release-qualification-evidence.py` against its emitted JSON. The
+assembler must run before the verifier so the readiness package binds the
+verified retained artifacts, logs, and genesis transcript.
+
 Public release should require all of:
 
 - canonical staging host verifier passes
+- mainnet readiness gate passes with a readiness decision package whose hashes
+  and release commit bind valid seed-node inventory, Redis outage evidence,
+  monitoring evidence, backup/restore evidence, seven-day rehearsal evidence,
+  the retained external-audit package, and retained signed release qualification
+  evidence for artifacts, test logs, and the genesis transcript
 - multi-wallet matrix completed with recorded outcomes
 - unresolved failures triaged as either fixed or explicitly out of scope
 - Sparkpit Labs public pages updated with current scope

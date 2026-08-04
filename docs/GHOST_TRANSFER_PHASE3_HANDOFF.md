@@ -21,8 +21,8 @@ python tests\test_shielded_vectors.py
 | Field | **Goldilocks**, cubic extension |
 | Security | **43 queries / blowup 8** — 128-bit |
 | Python side | **Option 2: tree/anchor maintenance moves into Rust**, batched shell-out as interim |
-| Proof size | 35,049 B for depth-32 membership; ~55–60 KB per bundle |
-| Block policy | **17–19 shielded tx per 1MB block** |
+| Proof size | 69,409 B (1-in/2-out), 89,309 B (2-in/2-out), 127,480 B (4-in/2-out); proof-only |
+| Block policy | **Design fees/block size around ~11–12 proof-only tx/MiB for realistic 2-in/2-out bundles; lower after envelope/transaction overhead** |
 
 Two findings from Phase 2 that constrain the build:
 
@@ -86,23 +86,26 @@ Each step gets tests. Do not big-bang it.
 2. **+ nullifier integrity** — revealed `nf` equals `H(nk, rho)` for the note
    being spent.
 3. **+ spend authority** — prover holds the spending key authorising `pk_d`.
-4. **+ range** — every output value in `[0, 2^63−1]`. No negatives, no wraparound.
+4. **+ range** — every spent and output value in `[0, 2^61−1]`. No negatives or field wraparound.
 5. **+ balance** — `Σ(spent) + max(vb,0) == Σ(outputs) + max(−vb,0)`.
 
 **Balance must be in-circuit.** Hash commitments are not homomorphic, so summing
 commitments the way Zcash sums Pedersen is unavailable. This is why a transaction
 carries **one aggregate bundle proof**, not a proof per description.
 
-Public input is `bundle.statement_digest(sighash)`, which already binds anchor,
-nullifiers, commitments, `value_balance` and the sighash. Bind the circuit to
-exactly that so a proof cannot be lifted onto another transaction.
+The node supplies `bundle.statement_digest(sighash)`. The versioned proof
+envelope carries the corresponding public anchor, nullifiers, commitments,
+`value_balance`, and sighash; the Rust verifier recomputes the digest and passes
+the bundle fields plus an injective five-element encoding of the 32-byte sighash
+as Winterfell public inputs. A proof therefore cannot be lifted onto another
+transaction. The release-mode regression rewrites the envelope sighash,
+recomputes its digest, reuses the raw proof, and requires rejection.
 
 Report proof size and prove time after each step — the tx/MB figure moves as the
-circuit grows, and block policy depends on it. Note the figure is currently
-**provisional at 14–16 tx/MB**: the scaling harness uses degree-1 constraints
-while the real AIRs carry degree-7, so it under-reads by ~20% (measured ×1.23 at
-2.1, ×1.18 at 2.2). Re-measure that ratio each step rather than treating ×1.2 as
-settled; it will drift again when 2.4's range gadget changes constraint degree.
+circuit grows, and block policy depends on it. Earlier scaling-harness
+projections of 14–16 tx/MB are superseded by the complete-circuit measurements
+below. Treat the 2-in/2-out 11.7 proof-only number as the current planning upper
+bound, then subtract envelope and transaction overhead for fee policy.
 
 ### Watch the column budget, not the rows
 
@@ -121,18 +124,19 @@ If a common bundle does not fit, the parallel layout has to partially invert for
 multi-spend — trading rows back for columns, the same tradeoff measured at 2.2.
 That is a cheap decision at 2.4 and an expensive one at 2.5.
 
-### Measured bundle ceiling (from 2.4) — needs a decision at 2.5
+### Complete-circuit release measurements (2026-07-28)
 
 Per spend 52 columns (measured), per output ~20 (commitment only — no path, no
 nullifier), balance ~4.
 
-| bundle | columns | proof | capacity |
+| bundle | columns | raw proof | proof-only upper bound per MiB |
 |---|---|---|---|
-| 2 spends + 2 outputs | 148 | ~94 KB | ~11 tx/MB |
-| 4 spends + 2 outputs | 252 | ~145 KB | ~7 tx/MB |
+| 1 spend + 2 outputs | 96 | 69,409 B | 15.1 |
+| 2 spends + 2 outputs | 148 | 89,309 B | 11.7 |
+| 4 spends + 2 outputs | 252 | 127,480 B | 8.2 |
 
 **4 spends is the hard ceiling with 2 outputs** — 252 against the 254 cap. Past
-that the parallel layout dies and spends go sequential at 512 rows.
+that the parallel layout exceeds Winterfell's cap and is rejected by v1.
 
 Two consequences that are protocol decisions, not implementation details:
 
@@ -145,17 +149,19 @@ Two consequences that are protocol decisions, not implementation details:
   means two balance statements, and nothing binds them together without a
   second-level construction.
 
-So the choice at 2.5 is: accept a 4-spend cap, go sequential for larger bundles
-(512 rows, more proof), or design a two-level aggregation. Decide it with the
-2.5 numbers in hand.
+Decision frozen 2026-07-28: v1 uses one parallel aggregate proof with at most
+four spends and two outputs. Sequential and two-level layouts are deferred
+until they have their own circuit, vectors, resource measurements, and review.
+Wallets must consolidate additional notes across multiple transactions; this
+limit is enforced by both the node and verifier.
 
 ### The tx/MB figure keeps falling — track it deliberately
 
-20 → 17–19 → 14–16 → **~11 for a realistic 2-in/2-out bundle**. Each drop came
+20 → 17–19 → 14–16 → **11.7 proof-only for a complete 2-in/2-out bundle**.
+Actual block capacity is lower after the envelope and transaction overhead. Each drop came
 from the circuit getting more complete or the measurement getting more honest,
-not from anything going wrong. But the trend is monotonic and block/fee policy
-is downstream of it, so treat every figure as provisional until 2.5 and expect
-the final number to be lower again.
+not from anything going wrong. Block-size and shielded-fee policy must use the
+complete-circuit measurements plus conservative serialization overhead.
 
 ### Declared constraint degree: derive it, do not measure it
 
@@ -203,20 +209,30 @@ aimed straight at the Rescue cycle.
 The vector now uses `0x9E3779B9` and asserts the property, not the constant: no
 period dividing 32, and both directions present in every 8-level window. For
 range values, the same rule says the headline witness must not be `0`,
-`2^63−1`, or a power of two.
+`2^61−1`, or a power of two.
 
-## Step 3 — the verifier boundary
+## Step 3 — verifier boundaries and honest proof integration done 2026-07-28
+
+The fail-closed Python boundary is implemented in
+`wepo-blockchain/core/shielded_verifier.py` and covered by
+`tests/test_shielded_verifier_boundary.py`. Registration and explicit external
+audit approval are now separate states.
 
 Subprocess CLI, decided and not open (the "verifier panics" guardrail). Reads
 `(statement_digest, proof)`, exits 0/1. Fails **closed** on any error, non-zero
 exit, timeout, crash, missing binary or malformed output. Wall-clock timeout and
 bounded stdin, so a hostile proof cannot hang or balloon a validating node.
 
-Then implement `shielded.ShieldedVerifier` and install it with
-`register_verifier()`. Tests: real proof accepted, tampered proof rejected, proof
-rejected under a different sighash, `verifier_is_audited()` reporting correctly,
-and `test_shielded_pool.py` still passing unchanged including the reject-all
-default.
+The complete Rust Winterfell CLI, versioned statement-bound proof envelope, and
+deterministic honest proof generator are implemented. Cross-runtime integration
+accepts the honest complete-circuit proof and rejects proof tampering, statement
+tampering, truncation, trailing bytes, crashes, timeouts, missing binaries,
+oversized input, and malformed command configuration. The reject-all default
+and separate audit gate remain in force.
+
+Remaining work is extended resource/fuzz testing, wallet wiring, independent
+audit, and a reviewed activation specification. Consensus transaction/state
+wiring is implemented and remains inactive.
 
 ---
 
@@ -251,12 +267,13 @@ its own numbering, so cross-reference guardrails **by name**, not by number.
    A working verifier is not an audited one.
 6. Keep `backend/.env` and `frontend/.env` unstaged.
 
-## Out of scope
+## Deferred beyond this handoff
 
-Consensus wiring (replacing `privacy_proof`/`ring_signature` in `blockchain.py`,
-persisting the nullifier set and tree frontier, reorg handling), wallet note
-scanning and witness maintenance, and making `NoteCommitmentTree._rebuild()`
-incremental. `PRIVACY_CONSENSUS_ENABLED` stays `False`.
+Wallet note scanning, witness maintenance, backup/restore, and shipping
+activation remain deferred. Consensus persistence/reorg handling and
+incremental tree appends are now implemented, but
+`SHIELDED_ACTIVATION_HEIGHT` stays `None` and
+`PRIVACY_CONSENSUS_ENABLED` stays `False`.
 
 The Option 2 refactor — moving tree/anchor maintenance into Rust — is a real
 project of its own. Batched shell-out is explicitly blessed as the interim so the

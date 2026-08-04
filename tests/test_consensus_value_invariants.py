@@ -67,7 +67,7 @@ def make_next_block(blockchain, transactions):
         version=1,
         prev_hash=latest.get_block_hash(),
         merkle_root="",
-        timestamp=min(int(time.time()), latest.header.timestamp + 360),
+        timestamp=max(int(time.time()), latest.header.timestamp + 1),
         bits=1,
         nonce=0,
         consensus_type="pow",
@@ -199,6 +199,37 @@ def main():
             bc.validate_block(make_next_block(bc, [inflated_coinbase, tx_fake_fee])) is False,
         )
 
+        # A transaction's fee is part of its sighash, txid, and Merkle leaf.
+        # Validation must reject a mismatch without rewriting that identity.
+        insert_utxo(bc, "f" * 64, 0, owner_addr, input_amount)
+        tx_fee_identity = build_spend(
+            owner_addr,
+            recipient_addr,
+            "f" * 64,
+            0,
+            input_amount,
+            input_amount - actual_fee,
+            actual_fee,
+        )
+        tx_fee_identity.sign_all_inputs(owner_kp.private_key, owner_kp.public_key)
+        tx_fee_identity.fee = fake_fee
+        fee_before = tx_fee_identity.fee
+        txid_before = tx_fee_identity.calculate_txid()
+        check(
+            "declared transparent fee must equal value conservation",
+            bc.validate_transaction(tx_fee_identity) is False,
+        )
+        check(
+            "failed fee validation does not mutate transaction identity",
+            tx_fee_identity.fee == fee_before
+            and tx_fee_identity.calculate_txid() == txid_before,
+        )
+        correct_fee_coinbase = bc.create_coinbase_transaction(height, owner_addr, "pow", [])
+        correct_fee_coinbase.outputs[0].value = allowed + actual_fee
+        fee_identity_block = make_next_block(bc, [correct_fee_coinbase, tx_fee_identity])
+        check("block cannot validate by rewriting a Merkle-committed fee",
+              bc.validate_block(fee_identity_block) is False)
+
         print()
         if FAILURES:
             print(f"RESULT: FAILED ({len(FAILURES)} failing): {FAILURES}")
@@ -207,6 +238,10 @@ def main():
         return 0
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_regression_suite():
+    assert main() == 0
 
 
 if __name__ == "__main__":

@@ -1,0 +1,35 @@
+{
+  "format": "wepo-release-qualification-evidence-v1",
+  "network": "mainnet",
+  "release_commit": "REPLACE_WITH_RELEASE_COMMIT",
+  "release_artifact_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+  "parameter_manifest_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+  "clean_runner": false,
+  "reproducible_source_archive": false,
+  "release_manifest_signature_verified": false,
+  "release_manifest_all_files_verified": false,
+  "retained_files": {
+    "source_archive_file": "artifacts/wepo-source.tar.gz",
+    "source_archive_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+    "signed_source_archive_file": "artifacts/wepo-source-signed.tar.gz",
+    "signed_source_archive_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+    "release_manifest_file": "artifacts/SHA256SUMS",
+    "release_manifest_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+    "release_manifest_signature_file": "artifacts/SHA256SUMS.sig",
+    "release_manifest_signature_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+    "release_signing_public_key_file": "artifacts/release-signing-public.pem",
+    "release_signing_public_key_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+    "signature_verification_record_file": "artifacts/signature-verification.json",
+    "signature_verification_record_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+    "genesis_construction_transcript_file": "artifacts/genesis-construction-transcript.json",
+    "genesis_construction_transcript_sha256": "REPLACE_WITH_LOWERCASE_SHA256"
+  },
+  "test_logs": {
+    "python_maintained_suite": {"status": "REPLACE_WITH_pass", "passed_count": 0, "log_file": "logs/python-maintained.log", "log_sha256": "REPLACE_WITH_LOWERCASE_SHA256"},
+    "rust_release_all_targets": {"status": "REPLACE_WITH_pass", "log_file": "logs/rust-release.log", "log_sha256": "REPLACE_WITH_LOWERCASE_SHA256"},
+    "frontend_vitest": {"status": "REPLACE_WITH_pass", "log_file": "logs/frontend-vitest.log", "log_sha256": "REPLACE_WITH_LOWERCASE_SHA256"},
+    "frontend_production_build": {"status": "REPLACE_WITH_pass", "log_file": "logs/frontend-build.log", "log_sha256": "REPLACE_WITH_LOWERCASE_SHA256"},
+    "desktop_package_boundary": {"status": "REPLACE_WITH_pass", "log_file": "logs/desktop-package.log", "log_sha256": "REPLACE_WITH_LOWERCASE_SHA256"},
+    "github_actions_green": {"status": "REPLACE_WITH_pass", "log_file": "logs/github-actions.log", "log_sha256": "REPLACE_WITH_LOWERCASE_SHA256"}
+  }
+}

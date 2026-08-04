@@ -84,7 +84,6 @@ impl Pool {
         }
     }
 
-
     fn note(self, value: u64, pkd: &[u8], rho: &[u8], rcm: &[u8], t_note: &[u8]) -> Vec<u8> {
         if self.field_native() {
             let mut e = vec![value];
@@ -138,7 +137,7 @@ impl Pool {
                     .map(BaseElement::new)
                     .collect();
                 Rp64_256::hash_elements(&elements).as_bytes().to_vec()
-            },
+            }
         }
     }
 }
@@ -186,7 +185,11 @@ fn h_dom(domain: u64, elements: &[u64]) -> Vec<u8> {
 
 /// A 32-byte pool value is 4 canonical limbs, little-endian each.
 fn limbs(data: &[u8]) -> Vec<u64> {
-    assert_eq!(data.len() % 8, 0, "pool value must be a whole number of limbs");
+    assert_eq!(
+        data.len() % 8,
+        0,
+        "pool value must be a whole number of limbs"
+    );
     data.chunks(8)
         .map(|c| {
             let mut b = [0u8; 8];
@@ -270,7 +273,10 @@ struct Report {
 
 impl Report {
     fn new() -> Self {
-        Report { passed: 0, failed: Vec::new() }
+        Report {
+            passed: 0,
+            failed: Vec::new(),
+        }
     }
 
     fn check(&mut self, what: &str, got: &str, want: &str) {
@@ -307,7 +313,11 @@ fn run(path: &PathBuf) -> bool {
 
     let algorithm = s(&j["algorithm"]).to_string();
     let pool = Pool::parse(&algorithm);
-    println!("{} ({})", path.file_name().unwrap().to_string_lossy(), algorithm);
+    println!(
+        "{} ({})",
+        path.file_name().unwrap().to_string_lossy(),
+        algorithm
+    );
 
     let depth = j["merkle_depth"].as_u64().unwrap() as usize;
 
@@ -378,7 +388,11 @@ fn run(path: &PathBuf) -> bool {
         let div = unhex(s(&c["diversifier"]));
         let nk = pool.nullifier_key(&sk, &t_nk);
         let pkd = pool.diversified_key(&sk, &div, &t_pkd);
-        r.check(&format!("key_derivation[{i}].nk"), &hex(&nk), s(&c["nullifier_key"]));
+        r.check(
+            &format!("key_derivation[{i}].nk"),
+            &hex(&nk),
+            s(&c["nullifier_key"]),
+        );
         r.check(
             &format!("key_derivation[{i}].pk_d"),
             &hex(&pkd),
@@ -399,8 +413,16 @@ fn run(path: &PathBuf) -> bool {
         let cm = pool.note(value, &pkd, &rho, &rcm, &t_note);
         let nf = pool.nullifier(&nk, &rho, &t_nf);
 
-        r.check(&format!("notes[{i}].commitment"), &hex(&cm), s(&c["commitment"]));
-        r.check(&format!("notes[{i}].nullifier"), &hex(&nf), s(&c["nullifier"]));
+        r.check(
+            &format!("notes[{i}].commitment"),
+            &hex(&cm),
+            s(&c["commitment"]),
+        );
+        r.check(
+            &format!("notes[{i}].nullifier"),
+            &hex(&nf),
+            s(&c["nullifier"]),
+        );
     }
     println!("  {:<34} {} ok", "notes", r.passed - mark);
     mark = r.passed;
@@ -419,7 +441,11 @@ fn run(path: &PathBuf) -> bool {
     let want_empty = m["empty_roots"].as_array().unwrap();
     assert_eq!(want_empty.len(), depth + 1, "empty_roots length");
     for (i, w) in want_empty.iter().enumerate() {
-        r.check(&format!("merkle.empty_roots[{i}]"), &hex(&empty_roots[i]), s(w));
+        r.check(
+            &format!("merkle.empty_roots[{i}]"),
+            &hex(&empty_roots[i]),
+            s(w),
+        );
     }
     r.check(
         "merkle.empty_root_leaf_level",
@@ -452,7 +478,10 @@ fn run(path: &PathBuf) -> bool {
         // the sentinel must never coincide with a real commitment
         r.check(
             "merkle.sentinel is not any published commitment",
-            &commitments.iter().any(|c| c == &pool.empty_sentinel(&t_leaf)).to_string(),
+            &commitments
+                .iter()
+                .any(|c| c == &pool.empty_sentinel(&t_leaf))
+                .to_string(),
             "false",
         );
     }
@@ -527,7 +556,11 @@ fn run(path: &PathBuf) -> bool {
                 node(&cur, sib)
             };
         }
-        r.check(&format!("merkle.paths[{pi}].root"), &hex(&cur), s(&p["root"]));
+        r.check(
+            &format!("merkle.paths[{pi}].root"),
+            &hex(&cur),
+            s(&p["root"]),
+        );
     }
     println!("  {:<34} {} ok", "merkle", r.passed - mark);
     mark = r.passed;
@@ -557,8 +590,18 @@ fn run(path: &PathBuf) -> bool {
     };
 
     let b = &j["bundle"];
-    let nfs: Vec<Vec<u8>> = b["nullifiers"].as_array().unwrap().iter().map(|v| unhex(s(v))).collect();
-    let cms: Vec<Vec<u8>> = b["commitments"].as_array().unwrap().iter().map(|v| unhex(s(v))).collect();
+    let nfs: Vec<Vec<u8>> = b["nullifiers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| unhex(s(v)))
+        .collect();
+    let cms: Vec<Vec<u8>> = b["commitments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| unhex(s(v)))
+        .collect();
     r.check(
         "bundle.statement_digest",
         &hex(&statement(
@@ -573,7 +616,12 @@ fn run(path: &PathBuf) -> bool {
 
     // outputs-only bundle: no anchor, so the empty-tree root stands in
     let sb = &j["shielding_bundle"];
-    let sb_cms: Vec<Vec<u8>> = sb["commitments"].as_array().unwrap().iter().map(|v| unhex(s(v))).collect();
+    let sb_cms: Vec<Vec<u8>> = sb["commitments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| unhex(s(v)))
+        .collect();
     r.check(
         "shielding_bundle.statement_digest",
         &hex(&statement(
@@ -624,7 +672,7 @@ fn main() {
                 .collect();
             v.sort();
             v
-        },
+        }
     };
 
     assert!(!paths.is_empty(), "no golden vector files found");
@@ -636,7 +684,10 @@ fn main() {
 
     println!("{}", "-".repeat(60));
     if all_ok {
-        println!("ALL {} GOLDEN FILE(S) AGREE -- Rust matches Python", paths.len());
+        println!(
+            "ALL {} GOLDEN FILE(S) AGREE -- Rust matches Python",
+            paths.len()
+        );
     } else {
         println!("MISMATCH -- Rust and Python disagree");
         std::process::exit(1);

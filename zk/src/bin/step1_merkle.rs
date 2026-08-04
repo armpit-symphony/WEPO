@@ -34,10 +34,9 @@ use winterfell::{
     math::{fields::f64::BaseElement, FieldElement, StarkField, ToElements},
     matrix::ColMatrix,
     AcceptableOptions, Air, AirContext, Assertion, AuxRandElements, BatchingMethod,
-    CompositionPoly, CompositionPolyTrace, DefaultConstraintCommitment,
-    DefaultConstraintEvaluator, DefaultTraceLde, EvaluationFrame, FieldExtension,
-    PartitionOptions, Proof, ProofOptions, Prover, StarkDomain, Trace, TraceInfo,
-    TracePolyTable, TraceTable, TransitionConstraintDegree,
+    CompositionPoly, CompositionPolyTrace, DefaultConstraintCommitment, DefaultConstraintEvaluator,
+    DefaultTraceLde, EvaluationFrame, FieldExtension, PartitionOptions, Proof, ProofOptions,
+    Prover, StarkDomain, Trace, TraceInfo, TracePolyTable, TraceTable, TransitionConstraintDegree,
 };
 
 type Blake3 = Blake3_256<BaseElement>;
@@ -126,10 +125,12 @@ impl Air for MembershipAir {
         }
         degrees.push(TransitionConstraintDegree::with_cycles(2, vec![CYCLE_LEN])); // bit binary
         for _ in 0..DIGEST_LEN {
-            degrees.push(TransitionConstraintDegree::with_cycles(2, vec![CYCLE_LEN])); // placement
+            degrees.push(TransitionConstraintDegree::with_cycles(2, vec![CYCLE_LEN]));
+            // placement
         }
         for _ in 0..DIGEST_LEN {
-            degrees.push(TransitionConstraintDegree::with_cycles(1, vec![CYCLE_LEN])); // capacity
+            degrees.push(TransitionConstraintDegree::with_cycles(1, vec![CYCLE_LEN]));
+            // capacity
         }
         MembershipAir {
             context: AirContext::new(trace_info, degrees, 8, options),
@@ -226,7 +227,11 @@ impl Air for MembershipAir {
         a.push(Assertion::single(3, 0, BaseElement::ZERO));
         // the anchor, where the 33rd permutation completes
         for i in 0..DIGEST_LEN {
-            a.push(Assertion::single(RATE_START + i, ANCHOR_ROW, self.anchor[i]));
+            a.push(Assertion::single(
+                RATE_START + i,
+                ANCHOR_ROW,
+                self.anchor[i],
+            ));
         }
         a
     }
@@ -285,7 +290,9 @@ fn h_dom(domain: u64, elements: &[BaseElement]) -> [BaseElement; DIGEST_LEN] {
     if i > 0 || !permuted {
         Rp64_256::apply_permutation(&mut state);
     }
-    state[RATE_START..RATE_START + DIGEST_LEN].try_into().unwrap()
+    state[RATE_START..RATE_START + DIGEST_LEN]
+        .try_into()
+        .unwrap()
 }
 
 fn start_node(
@@ -299,7 +306,11 @@ fn start_node(
     }
     state[0] = BaseElement::new(NODE_ELEMENTS);
     state[1] = BaseElement::new(DOMAIN_NODE);
-    let (l, r) = if bit { (sibling, digest) } else { (digest, sibling) };
+    let (l, r) = if bit {
+        (sibling, digest)
+    } else {
+        (digest, sibling)
+    };
     for i in 0..DIGEST_LEN {
         state[RATE_START + i] = l[i];
         state[RATE_START + DIGEST_LEN + i] = r[i];
@@ -312,24 +323,30 @@ fn build_trace(w: &Witness) -> TraceTable<BaseElement> {
         |state| {
             // the commitment is the leaf: level 0 hashes it with its sibling
             start_node(&w.commitment, &w.siblings[0], w.bits[0], state);
-            state[BIT_COL] = if w.bits[0] { BaseElement::ONE } else { BaseElement::ZERO };
+            state[BIT_COL] = if w.bits[0] {
+                BaseElement::ONE
+            } else {
+                BaseElement::ZERO
+            };
         },
         |step, state| {
             let pos = step % CYCLE_LEN;
             if pos < NUM_ROUNDS {
-                let mut s: [BaseElement; STATE_WIDTH] =
-                    state[..STATE_WIDTH].try_into().unwrap();
+                let mut s: [BaseElement; STATE_WIDTH] = state[..STATE_WIDTH].try_into().unwrap();
                 Rp64_256::apply_round(&mut s, pos);
                 state[..STATE_WIDTH].copy_from_slice(&s);
             } else {
                 let cycle = step / CYCLE_LEN + 1; // level being set up
-                let digest: [BaseElement; DIGEST_LEN] = state
-                    [RATE_START..RATE_START + DIGEST_LEN]
+                let digest: [BaseElement; DIGEST_LEN] = state[RATE_START..RATE_START + DIGEST_LEN]
                     .try_into()
                     .unwrap();
                 let bit = w.bits[cycle];
                 start_node(&digest, &w.siblings[cycle], bit, state);
-                state[BIT_COL] = if bit { BaseElement::ONE } else { BaseElement::ZERO };
+                state[BIT_COL] = if bit {
+                    BaseElement::ONE
+                } else {
+                    BaseElement::ZERO
+                };
             }
         },
     );
@@ -414,7 +431,10 @@ fn main() {
     // -- witness straight out of the node's golden vectors -------------------
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.pop();
-    let path = p.join("tests").join("vectors").join("shielded_rescue-rp64-256.json");
+    let path = p
+        .join("tests")
+        .join("vectors")
+        .join("shielded_rescue-rp64-256.json");
     let j: Value = serde_json::from_str(&fs::read_to_string(&path).expect("read golden"))
         .expect("parse golden");
     assert_eq!(j["algorithm"].as_str().unwrap(), "rescue-rp64-256");
@@ -445,8 +465,14 @@ fn main() {
 
     let mut siblings: Vec<[BaseElement; DIGEST_LEN]> =
         sib_hex.iter().map(|h| limbs(&unhex(h))).collect();
-    let mut bits: Vec<bool> = (0..MERKLE_DEPTH).map(|l| (position >> l) & 1 == 1).collect();
-    let w = Witness { commitment: limbs(&cm_bytes), siblings, bits };
+    let mut bits: Vec<bool> = (0..MERKLE_DEPTH)
+        .map(|l| (position >> l) & 1 == 1)
+        .collect();
+    let w = Witness {
+        commitment: limbs(&cm_bytes),
+        siblings,
+        bits,
+    };
     let trace = build_trace(&w);
 
     // -- the check that matters: does the AIR agree with the NODE? -----------
@@ -464,7 +490,11 @@ fn main() {
     // independent native recomputation of the same path
     let mut acc = w.commitment; // the commitment IS the leaf
     for lvl in 0..MERKLE_DEPTH {
-        let (l, r) = if w.bits[lvl] { (w.siblings[lvl], acc) } else { (acc, w.siblings[lvl]) };
+        let (l, r) = if w.bits[lvl] {
+            (w.siblings[lvl], acc)
+        } else {
+            (acc, w.siblings[lvl])
+        };
         let mut e = Vec::with_capacity(8);
         e.extend_from_slice(&l);
         e.extend_from_slice(&r);
@@ -483,13 +513,29 @@ fn main() {
     for (label, opts) in [
         (
             "96-bit  (32q, blowup 8, cubic)",
-            ProofOptions::new(32, 8, 0, FieldExtension::Cubic, 8, 31,
-                              BatchingMethod::Linear, BatchingMethod::Linear),
+            ProofOptions::new(
+                32,
+                8,
+                0,
+                FieldExtension::Cubic,
+                8,
+                31,
+                BatchingMethod::Linear,
+                BatchingMethod::Linear,
+            ),
         ),
         (
             "128-bit (43q, blowup 8, cubic)",
-            ProofOptions::new(43, 8, 0, FieldExtension::Cubic, 8, 31,
-                              BatchingMethod::Linear, BatchingMethod::Linear),
+            ProofOptions::new(
+                43,
+                8,
+                0,
+                FieldExtension::Cubic,
+                8,
+                31,
+                BatchingMethod::Linear,
+                BatchingMethod::Linear,
+            ),
         ),
     ] {
         let prover = MembershipProver { options: opts };
@@ -500,7 +546,10 @@ fn main() {
 
         let t = Instant::now();
         for _ in 0..20 {
-            assert!(verify_at(proof.clone(), expected, 95), "honest proof rejected");
+            assert!(
+                verify_at(proof.clone(), expected, 95),
+                "honest proof rejected"
+            );
         }
         let verify_ms = t.elapsed().as_secs_f64() * 1000.0 / 20.0;
         let ok128 = verify_at(proof.clone(), expected, 128);
@@ -514,15 +563,27 @@ fn main() {
     // -- soundness -----------------------------------------------------------
     println!("\nsoundness:");
     let prover = MembershipProver {
-        options: ProofOptions::new(43, 8, 0, FieldExtension::Cubic, 8, 31,
-                                   BatchingMethod::Linear, BatchingMethod::Linear),
+        options: ProofOptions::new(
+            43,
+            8,
+            0,
+            FieldExtension::Cubic,
+            8,
+            31,
+            BatchingMethod::Linear,
+            BatchingMethod::Linear,
+        ),
     };
     let proof = prover.prove(trace.clone()).unwrap();
     let mut bad = expected;
     bad[0] += BaseElement::ONE;
     println!(
         "  wrong anchor rejected                  : {}",
-        if verify_at(proof, bad, 95) { "NO -- UNSOUND" } else { "yes" }
+        if verify_at(proof, bad, 95) {
+            "NO -- UNSOUND"
+        } else {
+            "yes"
+        }
     );
 
     // a commitment that is not in the tree must not produce this anchor
@@ -540,11 +601,19 @@ fn main() {
     }
     println!(
         "  different commitment -> different anchor: {}",
-        if other != expected { "yes" } else { "NO -- COLLISION" }
+        if other != expected {
+            "yes"
+        } else {
+            "NO -- COLLISION"
+        }
     );
     let p2 = prover.prove(t2).unwrap();
     println!(
         "  forged commitment rejected vs real anchor: {}",
-        if verify_at(p2, expected, 95) { "NO -- UNSOUND" } else { "yes" }
+        if verify_at(p2, expected, 95) {
+            "NO -- UNSOUND"
+        } else {
+            "yes"
+        }
     );
 }

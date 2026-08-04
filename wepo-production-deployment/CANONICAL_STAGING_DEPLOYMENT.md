@@ -12,7 +12,8 @@ Use a single staging host or a tightly controlled private network with:
 - WEPO backend bound locally on `127.0.0.1:8011`
 - nginx terminating TLS and proxying public traffic to the backend
 - Mongo reachable privately by the backend
-- Redis optional for rate limiting, with in-memory fallback if Redis is absent
+- Redis required for distributed rate limiting; set
+  `WEPO_REQUIRE_REDIS_RATE_LIMIT=1` and fail closed when it is unavailable
 - node mining RPC enabled, but background mining disabled for deterministic gate runs
 
 Recommended public DNS split:
@@ -28,7 +29,10 @@ Use these files as the starting point:
 - `/home/sparky/WEPO/wepo-production-deployment/bootstrap-canonical-staging.sh`
 - `/home/sparky/WEPO/wepo-production-deployment/verify-canonical-staging-host.sh`
 - `/home/sparky/WEPO/wepo-production-deployment/wepo-backend.service.example`
-- `/home/sparky/WEPO/wepo-production-deployment/wepo-node.service.example`
+- `/home/sparky/WEPO/wepo-production-deployment/wepo-node-staging.service.example`
+- `/home/sparky/WEPO/wepo-production-deployment/install-validator-signer.sh`
+- `/home/sparky/WEPO/wepo-production-deployment/verify-validator-signer-host.sh`
+- `/home/sparky/WEPO/wepo-production-deployment/run_validator_signer_linux_rehearsal.py`
 - `/home/sparky/WEPO/wepo-production-deployment/nginx-wepo-api.conf.example`
 - `/home/sparky/WEPO/wepo-production-deployment/run-canonical-release-gate.sh`
 
@@ -52,6 +56,8 @@ Minimum values to set correctly:
 
 - `MONGO_URL`
 - `DB_NAME`
+- `REDIS_URL`
+- `WEPO_REQUIRE_REDIS_RATE_LIMIT=1`
 - `WEPO_NODE_API_URL`
 - `WEPO_CANONICAL_APPLICATION_FEES_ENABLED=true`
 - `WEPO_APP_FEE_SETTLEMENT_ADDRESS`
@@ -64,7 +70,7 @@ The settlement address must be a funded staging address if canonical app-fee set
 Copy the systemd examples and edit the placeholder paths or addresses:
 
 ```bash
-sudo cp /home/sparky/WEPO/wepo-production-deployment/wepo-node.service.example /etc/systemd/system/wepo-node.service
+sudo cp /home/sparky/WEPO/wepo-production-deployment/wepo-node-staging.service.example /etc/systemd/system/wepo-node.service
 sudo cp /home/sparky/WEPO/wepo-production-deployment/wepo-backend.service.example /etc/systemd/system/wepo-backend.service
 ```
 
@@ -72,7 +78,6 @@ Then adjust:
 
 - Python virtualenv path under `/opt/wepo/.venv`
 - repo checkout path under `/opt/wepo`
-- node miner address placeholder in `wepo-node.service`
 - any user/group names if the service user is not `wepo`
 
 The staging node template intentionally uses:
@@ -83,6 +88,37 @@ The staging node template intentionally uses:
 That is a deterministic staging/test profile so the canonical release gate can confirm transactions quickly and repeatably. It is not the intended long-term public production mining profile.
 
 The bootstrap script can pre-install these files for you, but it intentionally does not start the services.
+
+## Optional PoS Signer Boundary
+
+The chain calls this environment "staging", but the only implemented
+non-mainnet network profile is `test`. Install the separate-user signer only
+after the immutable checkout and Python environment are frozen for that profile.
+
+```bash
+sudo env \
+  NETWORK_PROFILE=test \
+  RELEASE_ROOT=/opt/wepo \
+  PYTHON_BIN=/opt/wepo/.venv/bin/python \
+  INITIALIZE_KEY=1 \
+  /home/sparky/WEPO/wepo-production-deployment/install-validator-signer.sh
+
+sudo env \
+  NETWORK_PROFILE=test \
+  RELEASE_ROOT=/opt/wepo \
+  PYTHON_BIN=/opt/wepo/.venv/bin/python \
+  /home/sparky/WEPO/wepo-production-deployment/verify-validator-signer-host.sh
+sudo systemctl daemon-reload
+```
+
+The installer creates distinct locked node/signer accounts, changes only the
+node data directory to `wepo-node`, keeps `/etc/wepo` root-owned, creates private
+signer key/state paths, installs an exact `NOPASSWD:NOEXEC` rule, and installs a
+systemd drop-in compatible with the sudo transition. Review the printed public
+validator metadata; never retain the generated private-key JSON.
+
+The installer rejects every profile except `test`, including locked `mainnet`.
+Do not use it as a mainnet enablement path.
 
 ## Nginx Layout
 
@@ -108,9 +144,10 @@ The example assumes:
 2. Install backend dependencies from `backend/requirements.txt`.
 3. Copy `/etc/wepo/backend.env`.
 4. Install `wepo-node.service` and `wepo-backend.service`.
-5. Start the node, then start the backend.
-6. Install nginx config and TLS.
-7. Run the canonical release gate on the staging host.
+5. If PoS is in the staging scope, install and verify the separate-user signer.
+6. Start the node, then start the backend.
+7. Install nginx config and TLS.
+8. Run the canonical release gate on the staging host.
 
 ## Canonical Staging Gate
 

@@ -26,10 +26,19 @@ echo "⚠️  Verify the canonical backend/node path first via run_canonical_fee
 echo ""
 
 # Configuration
-DOMAIN="api.wepo.network"  # Change this to your domain
+DOMAIN="${WEPO_DOMAIN:-}"
 WEPO_USER="wepo"
 WEPO_DIR="/opt/wepo"
 SERVICE_NAME="wepo-api"
+
+if [[ -z "${DOMAIN}" ]]; then
+    echo "ERROR: WEPO_DOMAIN must name a domain you own and control."
+    exit 1
+fi
+if [[ ! "${DOMAIN}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || [[ "${DOMAIN}" != *.* ]]; then
+    echo "ERROR: WEPO_DOMAIN is not a valid DNS hostname."
+    exit 1
+fi
 
 # Colors
 RED='\033[0;31m'

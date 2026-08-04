@@ -164,7 +164,9 @@
       "spending_key": "0202020202020202020202020202020202020202020202020202020202020202"
     }
   ],
-  "max_note_value": 9223372036854775807,
+  "max_note_value": 2305843009213693951,
+  "max_shielded_outputs": 2,
+  "max_shielded_spends": 4,
   "merkle": {
     "empty_leaf_sentinel": "b88b1711c776ab193129f9ac08bf6492b257745225cd8c29a33c5b5b041f5a40",
     "empty_root_leaf_level": "b88b1711c776ab193129f9ac08bf6492b257745225cd8c29a33c5b5b041f5a40",
@@ -542,6 +544,7 @@
       "value": 2100000000000000
     }
   ],
+  "shielded_value_bits": 61,
   "shielding_bundle": {
     "commitments": [
       "9c5067130f437ee8394148c1ff3c65031a4f4a98213d17291ef528d6370f23a2"

@@ -1,8 +1,9 @@
 # Ghost Transfers — real-crypto design
 
-Status: **substrate built and tested; ZK proof system outstanding.**
-The shielded pool is closed at consensus and stays closed until the proof
-verifier below is implemented and audited.
+Status: **verifier and consensus substrate implemented; launch qualification incomplete.**
+The shielded pool remains fail-closed until the production wallet, independent
+cryptographic audit, pinned verifier artifact, activation freeze, and
+release-host qualification are complete.
 
 Canonical code: `wepo-blockchain/core/shielded.py`
 Tests: `tests/test_shielded_pool.py`, `tests/test_legacy_privacy_unsound.py`
@@ -27,7 +28,8 @@ forges a range proof **from `os.urandom` with no secret knowledge**, declares an
 arbitrary range, and the legacy verifier returns `True`. On a live chain that is
 unlimited counterfeiting.
 
-The legacy module must be **deleted**, not patched, once the new path lands.
+The legacy node API is permanently retired with HTTP 410 and no longer imports
+this module. The module remains only for explicit unsoundness regression tests.
 Nothing in `shielded.py` imports it.
 
 ## 2. What is built and sound today
@@ -62,18 +64,25 @@ in the shielded path.
   proof cannot be lifted onto another transaction or replayed with a swapped
   output.
 
-## 3. The one thing that is not built: the proof
+## 3. Proof and verifier status
 
 Hiding amounts and linkage at the same time is irreducibly a zero-knowledge
 statement. There is no sound way around it: revealing a Merkle path reveals which
 note is being spent, and without a proof of membership a spender can invent a
 nullifier and mint value from nothing.
 
-`shielded.ShieldedVerifier` is the seam. The default `RejectAllVerifier` refuses
-every proof, and `verify_bundle()` returns `invalid shielded proof` for even a
-structurally perfect bundle. **This default is deliberate**: an accept-by-default
-stub in exactly this position is the legacy bug, and defaulting to open would let
-an unfinished pool accept value.
+The complete five-condition Winterfell AIR and production Rust verifier CLI are
+implemented. The raw STARK public inputs include the bundle fields and an
+injective five-element encoding of the 32-byte transaction sighash. The outer
+versioned envelope independently commits to those same public fields. Rewriting
+the envelope sighash and recomputing its digest while reusing the raw proof is
+therefore rejected.
+
+`shielded.ShieldedVerifier` remains the node seam. The default
+`RejectAllVerifier` refuses every proof, verifier registration does not imply
+audit approval, and `verify_bundle()` remains closed until an independently
+audited verifier is explicitly approved. **This default is deliberate**: an
+accept-by-default stub in exactly this position is the legacy bug.
 
 ### The statement a verifier must establish
 
@@ -85,8 +94,8 @@ Given `statement_digest`, the prover knows notes and keys such that:
    note it spends.
 3. **Spend authority** — the prover holds the spending key authorising each
    note's `pk_d`.
-4. **Range** — every output note's value is in `[0, 2^63−1]`; no negatives, no
-   wraparound.
+4. **Range** — every spent and output note's value is in `[0, 2^61−1]`; no
+   negatives and no Goldilocks-field wraparound.
 5. **Balance** — `Σ(spent values) + max(value_balance, 0) == Σ(output values) + max(−value_balance, 0)`.
 
 ### Why balance must be *in-circuit* (a real design consequence)
@@ -102,53 +111,41 @@ already reflected in the `ShieldedBundle` type and its statement digest.
 
 ## 4. Remaining work, in order
 
-### Blocker: proving-system toolchain
-This machine has **no Rust toolchain** (`cargo`/`rustc` absent) and crates.io is
-unreachable (HTTP 403). Every credible post-quantum proving system is Rust. Until
-that is resolved the circuit cannot be built at all.
+1. **Independent cryptographic audit.** Review the complete AIR, Rescue
+   implementation, 61-bit/no-wrap argument, transcript/public-input binding,
+   Rust parser, and Python subprocess boundary. Close every critical/high
+   finding before audit approval can be set.
+2. **Extended adversarial/resource testing.** Fuzz the envelope and Winterfell
+   proof parser, rehearse verifier timeouts/crashes, measure worst-case CPU and
+   memory, and freeze operational limits.
+3. **Wallet prover integration.** Implement note scanning, trial decryption,
+   witness maintenance, proof generation for the transaction's exact canonical
+   sighash, backup/restore, and reorg recovery.
+4. **Activation specification.** Freeze a reviewed activation height and
+   deployment procedure. The owner-selected value is height 1 (the first
+   post-genesis block) and `MAINNET_GHOST_ACTIVATION_HEIGHT` is manifest-bound;
+   formal review is still required and `PRIVACY_CONSENSUS_ENABLED` remains
+   `False` until the complete gate passes.
+5. **Legacy privacy quarantine.** The node's `/api/privacy/*` demo routes now
+   return HTTP 410 and the node no longer imports their unsound implementation.
 
-Options, in order of preference:
-
-| System | Fit | Notes |
-|---|---|---|
-| **Winterfell** | Good | Production STARK library, hash-based/PQ, circuit written as an AIR. Most direct fit. |
-| **Plonky2** | Good | FRI-based, very fast prover, well exercised. |
-| **RISC Zero** | Easiest authoring | zkVM — circuit is a Rust guest program rather than a hand-written AIR. Larger proofs, heavier verifier. |
-
-Do **not** substitute a hand-written prover. Writing the proof system is the one
-part of this that must not be hand-rolled, and it is precisely how the legacy
-module ended up unsound.
-
-### Then
-1. **Pick the hash for in-circuit use.** SHA3-256 is expensive inside an AIR. A
-   ZK-friendly PQ hash (Rescue-Prime / Poseidon over the STARK field) should
-   replace it for the tree and commitments. This changes the tag constants in
-   `shielded.py` — do it **before** any mainnet notes exist, since it changes
-   every commitment.
-2. **Write the AIR/circuit** for the five conditions above.
-3. **FFI + `ShieldedVerifier` implementation**, registered via
-   `register_verifier()`.
-4. **Wallet prover integration** (note scanning, witness maintenance, proof
-   generation) — trial-decrypt outputs with ML-KEM-768, same construction as
-   messaging.
-5. **Consensus wiring** — replace the `privacy_proof` / `ring_signature` fields in
-   `blockchain.py` (currently hard-rejected by `PRIVACY_CONSENSUS_ENABLED = False`)
-   with `ShieldedBundle`, persist the nullifier set and tree frontier, and handle
-   reorgs via `NullifierSet.rollback()`.
-6. **Performance** — `NoteCommitmentTree._rebuild()` recomputes layers over the
-   occupied prefix, which is fine for tests and early chain life but must become
-   incremental frontier state before mainnet volume.
-7. **External audit** of the circuit and verifier. Only then does
-   `WEPO_FEATURE_PRIVACY` get to be `1`.
-8. **Delete `privacy.py`** and `production_zk_stark.py`.
+Consensus plumbing is now implemented but inactive: `ShieldedBundle` has
+deterministic transaction/block serialization; transparent/shielded conservation
+enforces `inputs - outputs = fee + value_balance`; nullifiers, commitments, and
+anchors persist atomically in SQLite; same-block and mempool nullifier conflicts
+are rejected; canonical disconnect/replay and restart recovery are tested; and
+the note commitment tree appends incrementally rather than rebuilding its
+occupied prefix.
 
 ## 5. Launch position
 
-Ghost transfers and Quantum Vault stay **🔒 gated** for the 2026-09-02 genesis.
+Ghost transfers and Quantum Vault are **mandatory launch gates** and stay
+**🔒 fail-closed** until their
+independent audit, wallet path, activation specification, and release-candidate
+rehearsal are complete. No calendar launch date is currently committed.
 The whitepaper framing is already correct and should not change:
 
 > *"Ghost transfers & Vault — post-quantum private transactions, launching after
 > independent audit."*
 
-Live privacy at launch is real but narrower: Dandelion++ transaction-origin
-privacy, optional Tor routing, and end-to-end post-quantum private messaging.
+A mainnet release without qualified Ghost transfers is prohibited by policy and code.

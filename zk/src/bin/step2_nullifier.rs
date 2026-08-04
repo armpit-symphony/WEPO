@@ -42,10 +42,9 @@ use winterfell::{
     math::{fields::f64::BaseElement, FieldElement, StarkField, ToElements},
     matrix::ColMatrix,
     AcceptableOptions, Air, AirContext, Assertion, AuxRandElements, BatchingMethod,
-    CompositionPoly, CompositionPolyTrace, DefaultConstraintCommitment,
-    DefaultConstraintEvaluator, DefaultTraceLde, EvaluationFrame, FieldExtension,
-    PartitionOptions, Proof, ProofOptions, Prover, StarkDomain, TraceInfo,
-    TracePolyTable, TraceTable, TransitionConstraintDegree,
+    CompositionPoly, CompositionPolyTrace, DefaultConstraintCommitment, DefaultConstraintEvaluator,
+    DefaultTraceLde, EvaluationFrame, FieldExtension, PartitionOptions, Proof, ProofOptions,
+    Prover, StarkDomain, TraceInfo, TracePolyTable, TraceTable, TransitionConstraintDegree,
 };
 
 type Blake3 = Blake3_256<BaseElement>;
@@ -278,7 +277,11 @@ impl Air for SpendAir {
         a.push(Assertion::single(M + 3, 0, BaseElement::ZERO));
         // nullifier: H_dom(DOMAIN_NULLIFIER, 8 elements)
         a.push(Assertion::single(N, 0, BaseElement::new(NF_ELEMENTS)));
-        a.push(Assertion::single(N + 1, 0, BaseElement::new(DOMAIN_NULLIFIER)));
+        a.push(Assertion::single(
+            N + 1,
+            0,
+            BaseElement::new(DOMAIN_NULLIFIER),
+        ));
         a.push(Assertion::single(N + 2, 0, BaseElement::ZERO));
         a.push(Assertion::single(N + 3, 0, BaseElement::ZERO));
         // the anchor and the revealed nullifier
@@ -359,7 +362,11 @@ fn start_node(
     }
     state[base] = BaseElement::new(NODE_ELEMENTS);
     state[base + 1] = BaseElement::new(DOMAIN_NODE);
-    let (l, r) = if bit { (sibling, digest) } else { (digest, sibling) };
+    let (l, r) = if bit {
+        (sibling, digest)
+    } else {
+        (digest, sibling)
+    };
     for i in 0..DIG {
         state[base + RATE + i] = l[i];
         state[base + RATE + DIG + i] = r[i];
@@ -371,7 +378,11 @@ fn build_trace(w: &Witness) -> TraceTable<BaseElement> {
     trace.fill(
         |state| {
             start_node(&w.commitment, &w.siblings[0], w.bits[0], state, M);
-            state[BIT_COL] = if w.bits[0] { BaseElement::ONE } else { BaseElement::ZERO };
+            state[BIT_COL] = if w.bits[0] {
+                BaseElement::ONE
+            } else {
+                BaseElement::ZERO
+            };
             // nullifier instance: H_dom(4, limbs(nk) ‖ limbs(rho))
             for k in 0..W {
                 state[N + k] = BaseElement::ZERO;
@@ -387,8 +398,7 @@ fn build_trace(w: &Witness) -> TraceTable<BaseElement> {
             let pos = step % CYCLE;
             if pos < ROUNDS {
                 for base in [M, N] {
-                    let mut s: [BaseElement; W] =
-                        state[base..base + W].try_into().unwrap();
+                    let mut s: [BaseElement; W] = state[base..base + W].try_into().unwrap();
                     Rp64_256::apply_round(&mut s, pos);
                     state[base..base + W].copy_from_slice(&s);
                 }
@@ -398,11 +408,14 @@ fn build_trace(w: &Witness) -> TraceTable<BaseElement> {
                     state[M + RATE..M + RATE + DIG].try_into().unwrap();
                 let bit = w.bits[level];
                 start_node(&digest, &w.siblings[level], bit, state, M);
-                state[BIT_COL] = if bit { BaseElement::ONE } else { BaseElement::ZERO };
+                state[BIT_COL] = if bit {
+                    BaseElement::ONE
+                } else {
+                    BaseElement::ZERO
+                };
 
                 // nullifier instance idles by chaining its own digest
-                let nd: [BaseElement; DIG] =
-                    state[N + RATE..N + RATE + DIG].try_into().unwrap();
+                let nd: [BaseElement; DIG] = state[N + RATE..N + RATE + DIG].try_into().unwrap();
                 for k in 0..W {
                     state[N + k] = BaseElement::ZERO;
                 }
@@ -492,7 +505,10 @@ fn main() {
 
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.pop();
-    let path = p.join("tests").join("vectors").join("shielded_rescue-rp64-256.json");
+    let path = p
+        .join("tests")
+        .join("vectors")
+        .join("shielded_rescue-rp64-256.json");
     let j: Value =
         serde_json::from_str(&fs::read_to_string(&path).expect("read golden")).expect("json");
 
@@ -511,7 +527,11 @@ fn main() {
     let note = &j["notes"][0];
     let position = entry["position"].as_u64().unwrap() as usize;
     let cm = unhex(entry["commitment"].as_str().unwrap());
-    assert_eq!(cm, unhex(note["commitment"].as_str().unwrap()), "note/path mismatch");
+    assert_eq!(
+        cm,
+        unhex(note["commitment"].as_str().unwrap()),
+        "note/path mismatch"
+    );
     let golden_anchor = unhex(entry["root"].as_str().unwrap());
     let golden_nf = unhex(note["nullifier"].as_str().unwrap());
     let nk = unhex(note["nullifier_key"].as_str().unwrap());
@@ -546,9 +566,17 @@ fn main() {
         anchor[i] = trace.get(M + RATE + i, ANCHOR_ROW);
         nf[i] = trace.get(N + RATE + i, NF_ROW);
     }
-    assert_eq!(anchor, limbs(&golden_anchor), "AIR anchor disagrees with the node");
+    assert_eq!(
+        anchor,
+        limbs(&golden_anchor),
+        "AIR anchor disagrees with the node"
+    );
     println!("\nAIR anchor matches the node                : OK");
-    assert_eq!(nf, limbs(&golden_nf), "AIR nullifier disagrees with the node");
+    assert_eq!(
+        nf,
+        limbs(&golden_nf),
+        "AIR nullifier disagrees with the node"
+    );
     println!("AIR nullifier matches the node             : OK");
 
     let mut e = w.nk.to_vec();
@@ -567,13 +595,29 @@ fn main() {
     for (label, opts) in [
         (
             "96-bit  (32q, blowup 8, cubic)",
-            ProofOptions::new(32, 8, 0, FieldExtension::Cubic, 8, 31,
-                              BatchingMethod::Linear, BatchingMethod::Linear),
+            ProofOptions::new(
+                32,
+                8,
+                0,
+                FieldExtension::Cubic,
+                8,
+                31,
+                BatchingMethod::Linear,
+                BatchingMethod::Linear,
+            ),
         ),
         (
             "128-bit (43q, blowup 8, cubic)",
-            ProofOptions::new(43, 8, 0, FieldExtension::Cubic, 8, 31,
-                              BatchingMethod::Linear, BatchingMethod::Linear),
+            ProofOptions::new(
+                43,
+                8,
+                0,
+                FieldExtension::Cubic,
+                8,
+                31,
+                BatchingMethod::Linear,
+                BatchingMethod::Linear,
+            ),
         ),
     ] {
         let prover = SpendProver { options: opts };
@@ -585,12 +629,26 @@ fn main() {
         let t = Instant::now();
         for _ in 0..20 {
             assert!(
-                verify_at(proof.clone(), PublicInputs { anchor, nullifier: nf }, 95),
+                verify_at(
+                    proof.clone(),
+                    PublicInputs {
+                        anchor,
+                        nullifier: nf
+                    },
+                    95
+                ),
                 "honest proof rejected"
             );
         }
         let verify_ms = t.elapsed().as_secs_f64() * 1000.0 / 20.0;
-        let ok128 = verify_at(proof.clone(), PublicInputs { anchor, nullifier: nf }, 128);
+        let ok128 = verify_at(
+            proof.clone(),
+            PublicInputs {
+                anchor,
+                nullifier: nf,
+            },
+            128,
+        );
 
         println!(
             "{label:<34} {size:>11} {prove_ms:>10.1} {verify_ms:>10.3} {:>8}",
@@ -601,15 +659,30 @@ fn main() {
     // ---- soundness ---------------------------------------------------------
     println!("\nsoundness:");
     let prover = SpendProver {
-        options: ProofOptions::new(43, 8, 0, FieldExtension::Cubic, 8, 31,
-                                   BatchingMethod::Linear, BatchingMethod::Linear),
+        options: ProofOptions::new(
+            43,
+            8,
+            0,
+            FieldExtension::Cubic,
+            8,
+            31,
+            BatchingMethod::Linear,
+            BatchingMethod::Linear,
+        ),
     };
     let proof = prover.prove(trace.clone()).unwrap();
     let mut bad_anchor = anchor;
     bad_anchor[0] += BaseElement::ONE;
     println!(
         "  wrong anchor rejected                    : {}",
-        if verify_at(proof.clone(), PublicInputs { anchor: bad_anchor, nullifier: nf }, 95) {
+        if verify_at(
+            proof.clone(),
+            PublicInputs {
+                anchor: bad_anchor,
+                nullifier: nf
+            },
+            95
+        ) {
             "NO -- UNSOUND"
         } else {
             "yes"
@@ -619,7 +692,14 @@ fn main() {
     bad_nf[0] += BaseElement::ONE;
     println!(
         "  wrong nullifier rejected                 : {}",
-        if verify_at(proof, PublicInputs { anchor, nullifier: bad_nf }, 95) {
+        if verify_at(
+            proof,
+            PublicInputs {
+                anchor,
+                nullifier: bad_nf
+            },
+            95
+        ) {
             "NO -- UNSOUND"
         } else {
             "yes"
@@ -629,13 +709,16 @@ fn main() {
     // a different rho must move the nullifier
     let mut w2_rho = w.rho;
     w2_rho[0] += BaseElement::ONE;
-    let w2 = Witness { rho: w2_rho, ..Witness {
-        commitment: w.commitment,
-        siblings: w.siblings.clone(),
-        bits: w.bits.clone(),
-        nk: w.nk,
+    let w2 = Witness {
         rho: w2_rho,
-    } };
+        ..Witness {
+            commitment: w.commitment,
+            siblings: w.siblings.clone(),
+            bits: w.bits.clone(),
+            nk: w.nk,
+            rho: w2_rho,
+        }
+    };
     let t2 = build_trace(&w2);
     let mut nf2 = [BaseElement::ZERO; DIG];
     for i in 0..DIG {
@@ -648,7 +731,14 @@ fn main() {
     let p2 = prover.prove(t2).unwrap();
     println!(
         "  proof with altered rho rejected vs real nf: {}",
-        if verify_at(p2, PublicInputs { anchor, nullifier: nf }, 95) {
+        if verify_at(
+            p2,
+            PublicInputs {
+                anchor,
+                nullifier: nf
+            },
+            95
+        ) {
             "NO -- UNSOUND"
         } else {
             "yes"

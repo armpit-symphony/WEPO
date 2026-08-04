@@ -25,14 +25,22 @@ fn bench<F: FnMut()>(label: &str, iters: usize, mut f: F) -> f64 {
         f();
     }
     let ns_per = t.elapsed().as_secs_f64() * 1e9 / iters as f64;
-    println!("{:<44} {:>12.1} ns {:>14.0} /s", label, ns_per, 1e9 / ns_per);
+    println!(
+        "{:<44} {:>12.1} ns {:>14.0} /s",
+        label,
+        ns_per,
+        1e9 / ns_per
+    );
     ns_per
 }
 
 fn main() {
     println!("Phase 2 -- native hash throughput (out of circuit)");
     println!("host: x86_64-pc-windows-gnu, release, single thread\n");
-    println!("{:<44} {:>15} {:>16}", "operation", "per call", "throughput");
+    println!(
+        "{:<44} {:>15} {:>16}",
+        "operation", "per call", "throughput"
+    );
     println!("{}", "-".repeat(78));
 
     // ---- two-to-one compression: the Merkle node operation -----------------
@@ -70,7 +78,11 @@ fn main() {
     println!(
         "native ratio (SHA3 node / Rescue node): {:.2}x  -- {} is faster natively",
         sha3_node / rescue_node,
-        if sha3_node < rescue_node { "SHA3" } else { "Rescue" }
+        if sha3_node < rescue_node {
+            "SHA3"
+        } else {
+            "Rescue"
+        }
     );
 
     // ---- authentication path recomputation ---------------------------------
@@ -80,8 +92,14 @@ fn main() {
     println!("per-spend authentication path (depth {MERKLE_DEPTH}):");
     let r_path = rescue_node * MERKLE_DEPTH as f64 / 1e6;
     let s_path = sha3_node * MERKLE_DEPTH as f64 / 1e6;
-    println!("  Rescue : {r_path:>8.4} ms   ({:.0} paths/sec)", 1e3 / r_path);
-    println!("  SHA3   : {s_path:>8.4} ms   ({:.0} paths/sec)", 1e3 / s_path);
+    println!(
+        "  Rescue : {r_path:>8.4} ms   ({:.0} paths/sec)",
+        1e3 / r_path
+    );
+    println!(
+        "  SHA3   : {s_path:>8.4} ms   ({:.0} paths/sec)",
+        1e3 / s_path
+    );
 
     // A full tree build over N leaves costs ~2N node hashes.
     println!("\nfull tree rebuild (2N node hashes):");

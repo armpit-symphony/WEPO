@@ -43,7 +43,10 @@ fn main() {
     let predicted: Vec<usize> = (0..=200usize)
         .filter(|&l| l > 56 && !l.is_multiple_of(7))
         .collect();
-    println!("predicted by rule (len > 56 && len % 7 != 0): {} lengths", predicted.len());
+    println!(
+        "predicted by rule (len > 56 && len % 7 != 0): {} lengths",
+        predicted.len()
+    );
     println!("rule matches observed exactly: {}", predicted == panics);
 
     if predicted != panics {
@@ -53,7 +56,10 @@ fn main() {
         println!("  predicted but not observed: {only_pred:?}");
     }
 
-    println!("\nsafe lengths in 0..=64: {:?}", ok.iter().filter(|&&l| l <= 64).collect::<Vec<_>>());
+    println!(
+        "\nsafe lengths in 0..=64: {:?}",
+        ok.iter().filter(|&&l| l <= 64).collect::<Vec<_>>()
+    );
 
     // the operations the Merkle tree actually uses are unaffected -- confirm
     let d1 = Rp64_256::hash(&[1u8; 32]);

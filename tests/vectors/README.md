@@ -1,4 +1,66 @@
-# Shielded pool cross-runtime vectors
+# WEPO cross-runtime consensus vectors
+
+## Mainnet emission schedule
+
+`emission_schedule_v1.json` pins the exact mainnet atomic rewards, inclusive
+height boundaries, all PoW phase totals, complete PoS integer-halving tail,
+paid and paused pool scenarios, terminal nonzero/zero heights, maximum issuance,
+and hard-cap shortfall. `tests/emission_schedule_oracle.mjs` recomputes it
+without importing Python; `tests/test_emission_schedule_oracle.py` binds the
+same vector back to production consensus and rejects one-unit/one-height
+tampering.
+
+The vector currently records a blocking truth, not frozen economics: the
+implemented maximum is 26,006,468.86718600 WEPO and cannot reach the
+69,000,003-WEPO ceiling. Do not update its expected totals merely to make a
+changed schedule pass. Any replacement curve requires an approved tokenomics
+decision, a new reviewed vector, and full consensus regression.
+
+
+
+## Transparent wallet signing
+
+`wallet_signing_v3.json` pins a test-only BIP-39 recovery phrase, ML-DSA-44
+public key, `wepo1q` address binding, recipient address, canonical UTF-8
+payload and length-prefixed network label and preimage for `WEPO_SIGHASH_V3`,
+a reproducible
+FIPS 204 signature made with deterministic test hedging, normalized signed
+transaction bytes, the `WEPO_TXID_V2` preimage and txid, and canonical PoW/PoS
+header bytes, validator-signing bytes, and block IDs. The short PoS key and
+signature sample is serialization-only; real FIPS 204 sizes and verification
+are covered by the wallet signature in the same fixture.
+
+Regenerate it only with the pinned frontend dependency graph:
+
+```bash
+node tests/generate_wallet_signing_vector.mjs
+```
+
+The generator must produce a byte-identical file. The shipping JavaScript signer
+checks it in `frontend/src/utils/wepoSignerVector.test.js`; Python consensus
+checks the same JSON in `tests/test_wallet_signing_vectors.py`. The mnemonic and
+key are public test material and must never receive funds.
+
+Changing any expected byte or digest is a consensus-format change. Update the
+schema version, retain the superseded fixture when compatibility matters, and
+document the migration before changing a released network.
+The sighash network field is consensus-critical: otherwise a valid signature
+
+can be replayed on another WEPO network with the same UTXO history. The browser
+wallet, Python consensus, and isolated validator signer must always supply and
+verify the explicit profile. Wrong-network verification is a required negative
+test.
+
+## Validator signer protocol
+
+`validator_signer_protocol_v3.json` pins the complete canonical PoS request and
+response, including network, height, parent, validator identity, public key,
+header material, recomputed signing message, and deterministic signature. The
+generator and signer tests require byte-identical regeneration. Stake signing
+uses the same protocol version but is additionally fenced by exact signer-only
+operator authorization and `stake_transaction_policy.py`.
+
+## Shielded pool
 
 The Rust circuit and the Python node must compute **byte-identical** note
 commitments and Merkle roots. If they disagree the chain splits, and it splits
@@ -141,7 +203,8 @@ cm    = H_dom(3, [value] ‖ limbs(pk_d) ‖ limbs(rho) ‖ limbs(rcm))  // 13 e
 nf    = H_dom(4, limbs(nk) ‖ limbs(rho))                      // 8 elements, 1 permutation
 ```
 
-`value` is one element: `MAX_NOTE_VALUE` is `2**63-1`, well under `p`. The
+`value` is one element: `MAX_NOTE_VALUE` is `2**61-1`. With the frozen
+4-spend/2-output bundle limits, neither balance side can wrap `p`. The
 diversifier is 11 bytes — not a whole number of limbs — and is a pure witness
 input that never feeds another hash, so it uses the 7-byte `encode()` above and
 costs the circuit nothing. That makes it **three** elements, not two:

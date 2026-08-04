@@ -51,12 +51,10 @@
 //! VALUE_BITS = 61, and MAX_NOTE_VALUE has to come down from 2^63-1 to 2^61-1 to
 //! match. That costs nothing real: TOTAL_SUPPLY is 69,000,003 WEPO, which is
 //! about 6.9e15 base units, while 2^61 is 2.3e18 -- roughly 300x the entire
-//! supply. The current 2^63-1 was chosen to fit a signed 64-bit Python
+//! supply. The previous 2^63-1 was chosen to fit a signed 64-bit Python
 //! accumulator, not to fit a field.
 //!
-//! UNTIL shielded.py agrees, there is a gap: the node would accept a note the
-//! circuit cannot spend. That is a consensus change and is deliberately NOT made
-//! here.
+//! `shielded.py` now freezes the same 61-bit value bound.
 //!
 //! The side-total recomposition is kept, but it is bookkeeping rather than the
 //! source of soundness: it pins each side to a genuine integer and caps total
@@ -83,9 +81,9 @@
 //! An output is a commitment and nothing else -- no path, no nullifier, no key
 //! derivation -- which is why it costs 20 against a spend's 52.
 //!
-//! STILL NOT WIRED. The proof is not yet bound to the bundle statement digest
-//! (that is the verifier boundary, step 3), and register_verifier() remains
-//! untouched. See the partial-circuit guardrail.
+//! The production verifier binds these public inputs to the node's bundle
+//! statement digest through `WEPO_GHOST_PROOF_V1`, then verifies this complete
+//! AIR out of process. Consensus registration remains separately audit-gated.
 
 use std::fs;
 use std::panic::{self, AssertUnwindSafe};
@@ -98,10 +96,9 @@ use winterfell::{
     math::{fields::f64::BaseElement, FieldElement, StarkField, ToElements},
     matrix::ColMatrix,
     AcceptableOptions, Air, AirContext, Assertion, AuxRandElements, BatchingMethod,
-    CompositionPoly, CompositionPolyTrace, DefaultConstraintCommitment,
-    DefaultConstraintEvaluator, DefaultTraceLde, EvaluationFrame, FieldExtension,
-    PartitionOptions, Proof, ProofOptions, Prover, StarkDomain, TraceInfo,
-    TracePolyTable, TraceTable, TransitionConstraintDegree,
+    CompositionPoly, CompositionPolyTrace, DefaultConstraintCommitment, DefaultConstraintEvaluator,
+    DefaultTraceLde, EvaluationFrame, FieldExtension, PartitionOptions, Proof, ProofOptions,
+    Prover, StarkDomain, TraceInfo, TracePolyTable, TraceTable, TransitionConstraintDegree,
 };
 
 type Blake3 = Blake3_256<BaseElement>;
@@ -226,7 +223,12 @@ impl Layout {
     }
     fn bal(&self) -> BalCols {
         let b = self.spends * SPEND_COLS + self.outputs * OUT_COLS;
-        BalCols { in_bit: b, in_acc: b + 1, out_bit: b + 2, out_acc: b + 3 }
+        BalCols {
+            in_bit: b,
+            in_acc: b + 1,
+            out_bit: b + 2,
+            out_acc: b + 3,
+        }
     }
     fn constraints(&self) -> usize {
         self.spends * 98 + self.outputs * 34 + 7
@@ -326,6 +328,18 @@ fn node(l: &[BaseElement; DIG], r: &[BaseElement; DIG]) -> [BaseElement; DIG] {
 
 // --- public inputs ----------------------------------------------------------
 
+const STATEMENT_BINDING_ELEMENTS: usize = 5;
+
+fn statement_binding(bytes: &[u8; 32]) -> [BaseElement; STATEMENT_BINDING_ELEMENTS] {
+    let mut result = [BaseElement::ZERO; STATEMENT_BINDING_ELEMENTS];
+    for (index, chunk) in bytes.chunks(7).enumerate() {
+        let mut encoded = [0u8; 8];
+        encoded[..chunk.len()].copy_from_slice(chunk);
+        result[index] = BaseElement::new(u64::from_le_bytes(encoded));
+    }
+    result
+}
+
 pub struct PublicInputs {
     spends: usize,
     outputs: usize,
@@ -335,11 +349,15 @@ pub struct PublicInputs {
     commitments: Vec<[BaseElement; DIG]>,
     vb_pos: BaseElement,
     vb_neg: BaseElement,
+    statement_binding: [BaseElement; STATEMENT_BINDING_ELEMENTS],
 }
 
 impl PublicInputs {
     fn layout(&self) -> Layout {
-        Layout { spends: self.spends, outputs: self.outputs }
+        Layout {
+            spends: self.spends,
+            outputs: self.outputs,
+        }
     }
 }
 
@@ -359,6 +377,7 @@ impl ToElements<BaseElement> for PublicInputs {
         }
         v.push(self.vb_pos);
         v.push(self.vb_neg);
+        v.extend_from_slice(&self.statement_binding);
         v
     }
 }
@@ -553,8 +572,8 @@ impl Air for BundleAir {
             idx += 1;
             for k in 0..DIG {
                 let d = cur[s.e + RATE + k];
-                let placed =
-                    (F::ONE - b) * (next[s.e + RATE + k] - d) + b * (next[s.e + RATE + DIG + k] - d);
+                let placed = (F::ONE - b) * (next[s.e + RATE + k] - d)
+                    + b * (next[s.e + RATE + DIG + k] - d);
                 result[idx + k] = fold * placed;
             }
             idx += DIG;
@@ -701,14 +720,15 @@ impl Air for BundleAir {
             rhs += cur[self.layout.output(j).val];
         }
 
-        for (bit_col, acc_col, total) in
-            [(bal.in_bit, bal.in_acc, lhs), (bal.out_bit, bal.out_acc, rhs)]
-        {
+        for (bit_col, acc_col, total) in [
+            (bal.in_bit, bal.in_acc, lhs),
+            (bal.out_bit, bal.out_acc, rhs),
+        ] {
             let bit = cur[bit_col];
             result[idx] = ra * (next[acc_col] - two * cur[acc_col] - bit)
                 + (F::ONE - ra) * (next[acc_col] - cur[acc_col]);
             result[idx + 1] = ra * (bit * bit - bit);
-            // Pinning each SIDE TOTAL to a 63-bit recomposition is what stops the
+            // Pinning each SIDE TOTAL to a 61-bit recomposition is what stops the
             // field wrapping: p is only ~2^64, and one spend plus vb can already
             // exceed it.
             result[idx + 2] = s63 * (cur[acc_col] - total);
@@ -724,27 +744,47 @@ impl Air for BundleAir {
         for i in 0..self.layout.spends {
             let s = self.layout.spend(i);
             a.push(Assertion::single(s.a, 0, BaseElement::new(NK_ELEMENTS)));
-            a.push(Assertion::single(s.a + 1, 0, BaseElement::new(DOMAIN_NULLIFIER_KEY)));
+            a.push(Assertion::single(
+                s.a + 1,
+                0,
+                BaseElement::new(DOMAIN_NULLIFIER_KEY),
+            ));
             a.push(Assertion::single(s.a + 2, 0, z));
             a.push(Assertion::single(s.a + 3, 0, z));
             for k in 0..DIG {
                 a.push(Assertion::single(s.a + RATE + DIG + k, 0, z));
             }
             a.push(Assertion::single(s.b, 0, BaseElement::new(PKD_ELEMENTS)));
-            a.push(Assertion::single(s.b + 1, 0, BaseElement::new(DOMAIN_DIVERSIFIED_KEY)));
+            a.push(Assertion::single(
+                s.b + 1,
+                0,
+                BaseElement::new(DOMAIN_DIVERSIFIED_KEY),
+            ));
             a.push(Assertion::single(s.b + 2, 0, z));
             a.push(Assertion::single(s.b + 3, 0, z));
-            a.push(Assertion::single(s.b + RATE + DIG, 0, BaseElement::new(DIVERSIFIER_LEN)));
+            a.push(Assertion::single(
+                s.b + RATE + DIG,
+                0,
+                BaseElement::new(DIVERSIFIER_LEN),
+            ));
             a.push(Assertion::single(s.b + RATE + 2 * DIG - 1, 0, z));
             a.push(Assertion::single(s.e, 0, BaseElement::new(NODE_ELEMENTS)));
             a.push(Assertion::single(s.e + 1, 0, BaseElement::new(DOMAIN_NODE)));
             a.push(Assertion::single(s.e + 2, 0, z));
             a.push(Assertion::single(s.e + 3, 0, z));
             for k in 0..DIG {
-                a.push(Assertion::single(s.e + RATE + k, ANCHOR_ROW, self.anchor[k]));
+                a.push(Assertion::single(
+                    s.e + RATE + k,
+                    ANCHOR_ROW,
+                    self.anchor[k],
+                ));
             }
             for k in 0..DIG {
-                a.push(Assertion::single(s.a + RATE + k, NF_ROW, self.nullifiers[i][k]));
+                a.push(Assertion::single(
+                    s.a + RATE + k,
+                    NF_ROW,
+                    self.nullifiers[i][k],
+                ));
             }
             a.push(Assertion::single(s.racc, 0, z));
         }
@@ -755,7 +795,11 @@ impl Air for BundleAir {
             a.push(Assertion::single(o.c + 2, 0, z));
             a.push(Assertion::single(o.c + 3, 0, z));
             for k in 0..DIG {
-                a.push(Assertion::single(o.c + RATE + k, OUT_CM_ROW, self.commitments[j][k]));
+                a.push(Assertion::single(
+                    o.c + RATE + k,
+                    OUT_CM_ROW,
+                    self.commitments[j][k],
+                ));
             }
             a.push(Assertion::single(o.racc, 0, z));
         }
@@ -813,7 +857,10 @@ struct BundleW {
 
 impl BundleW {
     fn layout(&self) -> Layout {
-        Layout { spends: self.spends.len(), outputs: self.outputs.len() }
+        Layout {
+            spends: self.spends.len(),
+            outputs: self.outputs.len(),
+        }
     }
 }
 
@@ -880,7 +927,11 @@ fn native_root(
 ) -> [BaseElement; DIG] {
     let mut cur = *leaf;
     for (sib, &bit) in siblings.iter().zip(bits) {
-        cur = if bit { node(sib, &cur) } else { node(&cur, sib) };
+        cur = if bit {
+            node(sib, &cur)
+        } else {
+            node(&cur, sib)
+        };
     }
     cur
 }
@@ -896,7 +947,10 @@ fn adjacent_paths(
     base: usize,
     leaves: &[[BaseElement; DIG]],
     empty: &[[BaseElement; DIG]],
-) -> ([BaseElement; DIG], Vec<(Vec<[BaseElement; DIG]>, Vec<bool>)>) {
+) -> (
+    [BaseElement; DIG],
+    Vec<(Vec<[BaseElement; DIG]>, Vec<bool>)>,
+) {
     let n = leaves.len();
     assert!(n.is_power_of_two(), "leaf run must be a power of two");
     assert_eq!(base % n, 0, "leaf run must be aligned");
@@ -944,7 +998,11 @@ fn start_node(
     }
     state[e] = BaseElement::new(NODE_ELEMENTS);
     state[e + 1] = BaseElement::new(DOMAIN_NODE);
-    let (l, r) = if bit { (sibling, digest) } else { (digest, sibling) };
+    let (l, r) = if bit {
+        (sibling, digest)
+    } else {
+        (digest, sibling)
+    };
     for i in 0..DIG {
         state[e + RATE + i] = l[i];
         state[e + RATE + DIG + i] = r[i];
@@ -1014,7 +1072,11 @@ fn build_trace(w: &BundleW) -> TraceTable<BaseElement> {
                     state[s.b + RATE + DIG + k] = sw.div[k];
                 }
                 start_node(s.e, &sw.leaf, &sw.siblings[0], sw.bits[0], state);
-                state[s.bit] = if sw.bits[0] { BaseElement::ONE } else { BaseElement::ZERO };
+                state[s.bit] = if sw.bits[0] {
+                    BaseElement::ONE
+                } else {
+                    BaseElement::ZERO
+                };
                 for k in 0..DIG {
                     state[s.cm + k] = sw.leaf[k];
                     state[s.rho + k] = sw.rho[k];
@@ -1089,7 +1151,11 @@ fn build_trace(w: &BundleW) -> TraceTable<BaseElement> {
                     state[s.e + RATE..s.e + RATE + DIG].try_into().unwrap();
                 let bit = sw.bits[level];
                 start_node(s.e, &digest, &sw.siblings[level], bit, state);
-                state[s.bit] = if bit { BaseElement::ONE } else { BaseElement::ZERO };
+                state[s.bit] = if bit {
+                    BaseElement::ONE
+                } else {
+                    BaseElement::ZERO
+                };
 
                 if step == CYCLE - 1 {
                     let nk: [BaseElement; DIG] =
@@ -1163,6 +1229,7 @@ struct PublicInputsTemplate {
     commitments: Vec<[BaseElement; DIG]>,
     vb_pos: BaseElement,
     vb_neg: BaseElement,
+    statement_binding: [BaseElement; STATEMENT_BINDING_ELEMENTS],
 }
 
 impl PublicInputsTemplate {
@@ -1176,6 +1243,7 @@ impl PublicInputsTemplate {
             commitments: self.commitments.clone(),
             vb_pos: self.vb_pos,
             vb_neg: self.vb_neg,
+            statement_binding: self.statement_binding,
         }
     }
 }
@@ -1230,21 +1298,41 @@ impl Prover for BundleProver {
 
 fn opts(queries: usize) -> ProofOptions {
     ProofOptions::new(
-        queries, 8, 0, FieldExtension::Cubic, 8, 31,
-        BatchingMethod::Linear, BatchingMethod::Linear,
+        queries,
+        8,
+        0,
+        FieldExtension::Cubic,
+        8,
+        31,
+        BatchingMethod::Linear,
+        BatchingMethod::Linear,
     )
 }
 
 fn verify_at(proof: Proof, pi: PublicInputs, bits: u32) -> bool {
     winterfell::verify::<BundleAir, Blake3, DefaultRandomCoin<Blake3>, MerkleTree<Blake3>>(
-        proof, pi, &AcceptableOptions::MinConjecturedSecurity(bits),
+        proof,
+        pi,
+        &AcceptableOptions::MinConjecturedSecurity(bits),
     )
     .is_ok()
 }
 
+#[path = "../ghost/complete_bundle_verifier.rs"]
+pub mod production;
+
+#[path = "../ghost/wallet.rs"]
+pub mod wallet;
+
+#[path = "../ghost/complete_bundle_fixture.rs"]
+pub mod fixture;
+
 fn accepts(w: &BundleW, t: &PublicInputsTemplate) -> bool {
     let built = panic::catch_unwind(AssertUnwindSafe(|| {
-        let prover = BundleProver { options: opts(43), pi: t.clone() };
+        let prover = BundleProver {
+            options: opts(43),
+            pi: t.clone(),
+        };
         prover.prove(build_trace(w))
     }));
     match built {
@@ -1270,7 +1358,10 @@ fn main() {
 
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.pop();
-    let path = p.join("tests").join("vectors").join("shielded_rescue-rp64-256.json");
+    let path = p
+        .join("tests")
+        .join("vectors")
+        .join("shielded_rescue-rp64-256.json");
     let j: Value =
         serde_json::from_str(&fs::read_to_string(&path).expect("read golden")).expect("json");
 
@@ -1329,7 +1420,10 @@ fn main() {
     let mut built: Vec<(usize, usize, BundleW, PublicInputsTemplate)> = Vec::new();
 
     for (s, o) in [(1usize, 2usize), (2, 2), (4, 2)] {
-        let lay = Layout { spends: s, outputs: o };
+        let lay = Layout {
+            spends: s,
+            outputs: o,
+        };
         assert!(lay.width() <= WIDTH_CAP, "layout exceeds the 254 cap");
 
         // one aligned run of adjacent leaves, so all spends share one anchor
@@ -1365,7 +1459,11 @@ fn main() {
         let mut outs: Vec<OutW> = Vec::new();
         let mut left = total;
         for k in 0..o {
-            let v = if k + 1 == o { left } else { total / 3 + 7 * (k as u64 + 1) };
+            let v = if k + 1 == o {
+                left
+            } else {
+                total / 3 + 7 * (k as u64 + 1)
+            };
             left -= v;
             outs.push(mk_out(v, 1_000 + k as u64));
         }
@@ -1388,6 +1486,7 @@ fn main() {
             commitments: cms,
             vb_pos: BaseElement::new(vb_pos),
             vb_neg: BaseElement::ZERO,
+            statement_binding: [BaseElement::ZERO; STATEMENT_BINDING_ELEMENTS],
         };
 
         // every derivation checked against the node before anything is proved
@@ -1404,7 +1503,11 @@ fn main() {
             assert_eq!(at(c.b + RATE, CM_ROW), w.spends[i].leaf, "spend {i} cm");
             assert_eq!(at(c.a + RATE, NF_ROW), t.nullifiers[i], "spend {i} nf");
             assert_eq!(at(c.e + RATE, ANCHOR_ROW), anchor, "spend {i} anchor");
-            assert_eq!(trace.get(c.racc, VALUE_BITS), w.spends[i].value, "spend {i} range");
+            assert_eq!(
+                trace.get(c.racc, VALUE_BITS),
+                w.spends[i].value,
+                "spend {i} range"
+            );
         }
         for k in 0..o {
             let c = lay.output(k);
@@ -1413,7 +1516,11 @@ fn main() {
                 d[q] = trace.get(c.c + RATE + q, OUT_CM_ROW);
             }
             assert_eq!(d, t.commitments[k], "output {k} commitment");
-            assert_eq!(trace.get(c.racc, VALUE_BITS), w.outputs[k].value, "output {k} range");
+            assert_eq!(
+                trace.get(c.racc, VALUE_BITS),
+                w.outputs[k].value,
+                "output {k} range"
+            );
         }
         let bal = lay.bal();
         assert_eq!(
@@ -1422,14 +1529,20 @@ fn main() {
             "balance sides disagree"
         );
 
-        let prover = BundleProver { options: opts(43), pi: t.clone() };
+        let prover = BundleProver {
+            options: opts(43),
+            pi: t.clone(),
+        };
         let t0 = Instant::now();
         let proof = prover.prove(trace).expect("prove failed");
         let prove_ms = t0.elapsed().as_secs_f64() * 1000.0;
         let size = proof.to_bytes().len();
         let t0 = Instant::now();
         for _ in 0..10 {
-            assert!(verify_at(proof.clone(), t.build(), 128), "honest bundle rejected");
+            assert!(
+                verify_at(proof.clone(), t.build(), 128),
+                "honest bundle rejected"
+            );
         }
         let verify_ms = t0.elapsed().as_secs_f64() * 1000.0 / 10.0;
 
@@ -1453,14 +1566,20 @@ fn main() {
         .expect("2x2 bundle");
 
     println!("\nbalance (2 spends + 2 outputs):");
-    println!("  honest bundle                            : {}", expect(w2, t2, true));
+    println!(
+        "  honest bundle                            : {}",
+        expect(w2, t2, true)
+    );
 
     // inflate one output: the sum no longer settles
     let mut w = w2.clone();
     w.outputs[0].value += BaseElement::ONE;
     let mut t = t2.clone();
     t.commitments[0] = w.outputs[0].commitment();
-    println!("  one output inflated by 1                 : {}", expect(&w, &t, false));
+    println!(
+        "  one output inflated by 1                 : {}",
+        expect(&w, &t, false)
+    );
 
     // move value between outputs: total unchanged, so this MUST still verify --
     // the circuit constrains the sum, not the split
@@ -1470,14 +1589,20 @@ fn main() {
     let mut t = t2.clone();
     t.commitments[0] = w.outputs[0].commitment();
     t.commitments[1] = w.outputs[1].commitment();
-    println!("  value moved between outputs (sum same)   : {}", expect(&w, &t, true));
+    println!(
+        "  value moved between outputs (sum same)   : {}",
+        expect(&w, &t, true)
+    );
 
     // claim a larger shielding than the outputs account for
     let mut t = t2.clone();
     t.vb_pos += BaseElement::ONE;
     let mut w = w2.clone();
     w.vb_pos += BaseElement::ONE;
-    println!("  value_balance inflated by 1              : {}", expect(&w, &t, false));
+    println!(
+        "  value_balance inflated by 1              : {}",
+        expect(&w, &t, false)
+    );
 
     // NOT a wrap: adding p-1 to one output and 1 to the other is subtracting 1
     // and adding 1 in the field. It moves a unit between outputs, which is the
@@ -1489,24 +1614,27 @@ fn main() {
     let mut t = t2.clone();
     t.commitments[0] = w.outputs[0].commitment();
     t.commitments[1] = w.outputs[1].commitment();
-    println!("  +(p-1) and +1 -- a unit moved, not a wrap: {}", expect(&w, &t, true));
+    println!(
+        "  +(p-1) and +1 -- a unit moved, not a wrap: {}",
+        expect(&w, &t, true)
+    );
 
     // a spend whose value is out of range (2.4 still holding inside the bundle)
     let mut w = w2.clone();
     w.spends[0].value = BaseElement::new(1u64 << 63);
     let mut e = vec![w.spends[0].value];
-    e.extend_from_slice(&h_dom(
-        DOMAIN_DIVERSIFIED_KEY,
-        &{
-            let mut v = w.spends[0].ask.to_vec();
-            v.extend_from_slice(&w.spends[0].div);
-            v
-        },
-    ));
+    e.extend_from_slice(&h_dom(DOMAIN_DIVERSIFIED_KEY, &{
+        let mut v = w.spends[0].ask.to_vec();
+        v.extend_from_slice(&w.spends[0].div);
+        v
+    }));
     e.extend_from_slice(&w.spends[0].rho);
     e.extend_from_slice(&w.spends[0].rcm);
     w.spends[0].leaf = h_dom(DOMAIN_NOTE, &e);
-    println!("  spend value 2^63 (self-consistent note)  : {}", expect(&w, t2, false));
+    println!(
+        "  spend value 2^63 (self-consistent note)  : {}",
+        expect(&w, t2, false)
+    );
 
     // ---- THE WRAP ----------------------------------------------------------
     // Two outputs at the OLD MAX_NOTE_VALUE. Each passes a 63-bit range check on
@@ -1543,13 +1671,17 @@ fn main() {
     // vb chosen so the FIELD equation is exact against the wrapped output sum
     let mint_vb = residue - spent_small;
     let mint_outs = vec![
-        OutW { value: BaseElement::new(old_max), ..mk_out(0, 2_000) },
-        OutW { value: BaseElement::new(old_max), ..mk_out(0, 3_000) },
+        OutW {
+            value: BaseElement::new(old_max),
+            ..mk_out(0, 2_000)
+        },
+        OutW {
+            value: BaseElement::new(old_max),
+            ..mk_out(0, 3_000)
+        },
     ];
     let mint_cms: Vec<[BaseElement; DIG]> = mint_outs.iter().map(|x| x.commitment()).collect();
-    println!(
-        "  spends {spent_small} + vb {mint_vb} = {residue}, which is what the field sees"
-    );
+    println!("  spends {spent_small} + vb {mint_vb} = {residue}, which is what the field sees");
 
     for bits in [63usize, 61] {
         let w = BundleW {
@@ -1568,6 +1700,7 @@ fn main() {
             commitments: mint_cms.clone(),
             vb_pos: BaseElement::new(mint_vb),
             vb_neg: BaseElement::ZERO,
+            statement_binding: [BaseElement::ZERO; STATEMENT_BINDING_ELEMENTS],
         };
         let ok = accepts(&w, &t);
         let terms = 3usize;
@@ -1592,11 +1725,18 @@ fn main() {
     println!("\ncolumn budget (256 rows, cap {WIDTH_CAP}):");
     println!("  per spend  {SPEND_COLS:>4}   per output {OUT_COLS:>4}   balance {BAL_COLS:>4}");
     for s in 1..=6usize {
-        let lay = Layout { spends: s, outputs: 2 };
+        let lay = Layout {
+            spends: s,
+            outputs: 2,
+        };
         println!(
             "  {s} spend(s) + 2 outputs = {:>4} columns   {}",
             lay.width(),
-            if lay.width() <= WIDTH_CAP { "fits" } else { "OVER" }
+            if lay.width() <= WIDTH_CAP {
+                "fits"
+            } else {
+                "OVER"
+            }
         );
     }
 }

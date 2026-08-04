@@ -372,7 +372,24 @@ def test_bundle_statement():
     check("digest binds the anchor", reanchored.statement_digest(sighash) != digest)
 
     print("\nBundle shape rules:")
+    check("shielded value width is frozen at 61 bits",
+          S.SHIELDED_VALUE_BITS == 61
+          and S.MAX_NOTE_VALUE == (1 << 61) - 1)
+    check("parallel bundle limits match the complete circuit",
+          S.MAX_SHIELDED_SPENDS == 4 and S.MAX_SHIELDED_OUTPUTS == 2)
     check("empty bundle rejected", raises(S.ShieldedBundle().check_shape))
+
+    max_shape = make_bundle(
+        anchor,
+        n_spends=S.MAX_SHIELDED_SPENDS,
+        n_outputs=S.MAX_SHIELDED_OUTPUTS,
+    )
+    check("maximum parallel bundle shape accepted",
+          not raises(max_shape.check_shape))
+    check("fifth spend rejected by circuit-width limit",
+          raises(make_bundle(anchor, n_spends=5, n_outputs=0).check_shape))
+    check("third output rejected by v1 bundle limit",
+          raises(make_bundle(anchor, n_spends=0, n_outputs=3).check_shape))
 
     nf = secrets.token_bytes(32)
     dup = S.ShieldedBundle(
@@ -433,16 +450,25 @@ def test_consensus_verification():
             return statement_digest == self.digest and proof == b"proof"
 
     good = make_bundle(anchor)
+    verifier = AcceptOnlyThisStatement(good.statement_digest(sighash))
     try:
-        S.register_verifier(AcceptOnlyThisStatement(good.statement_digest(sighash)))
+        S.register_verifier(verifier)
         ok, reason = S.verify_bundle(good, sighash, anchors, nfset)
-        check("registered verifier can accept a matching bundle", ok)
-        check("verifier_is_audited() reports True once registered",
+        check("unaudited verifier cannot accept a consensus proof", not ok)
+        check("registration alone does not claim an external audit",
+              S.verifier_is_audited() is False)
+
+        S.register_verifier(verifier, audit_approved=True)
+        check("explicit audit approval is reported",
               S.verifier_is_audited() is True)
+        ok, reason = S.verify_bundle(good, sighash, anchors, nfset)
+        check("audit-approved verifier can accept its matching proof", ok)
 
         ok, _ = S.verify_bundle(good, secrets.token_bytes(32), anchors, nfset)
         check("same proof rejected against a different sighash", not ok)
 
+        check("audit approval must be boolean",
+              raises(S.register_verifier, verifier, audit_approved="yes"))
         check("verifier without verify() rejected", raises(S.register_verifier, object()))
     finally:
         S.register_verifier(S.RejectAllVerifier())

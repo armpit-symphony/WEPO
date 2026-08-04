@@ -39,7 +39,7 @@ documented trade beats an assumed one.
 
 **This is now-or-never.** Changing the hash changes the tag constants in
 `shielded.py` and therefore **every note commitment and every Merkle root**. Free
-today, impossible once mainnet notes exist. Genesis is 2026-09-02.
+before activation, impossible once mainnet notes exist. No genesis date is set.
 
 ---
 

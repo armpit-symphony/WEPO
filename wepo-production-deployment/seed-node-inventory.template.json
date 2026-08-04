@@ -1,0 +1,75 @@
+{
+  "format": "wepo-seed-node-inventory-v1",
+  "network_profile": "test",
+  "mainnet_genesis_finalized": false,
+  "release_commit": "REPLACE_WITH_REVIEWED_COMMIT_SHA",
+  "domain": {
+    "registrable_domain": "wepocoin.org",
+    "registrar_account_owner": "REPLACE_WITH_ACCOUNT_OWNER",
+    "mfa_recovery_controls": "REPLACE_WITH_MFA_AND_RECOVERY_SUMMARY",
+    "dns_provider": "REPLACE_WITH_DNS_PROVIDER",
+    "operational_control_verified": false,
+    "api_fqdn": "api.wepocoin.org",
+    "seed_fqdns": [
+      "seed-a.wepocoin.org",
+      "seed-b.wepocoin.org",
+      "seed-c.wepocoin.org"
+    ]
+  },
+  "nodes": [
+    {
+      "role": "seed-a",
+      "provider": "DigitalOcean",
+      "failure_domain": "REPLACE_WITH_REGION_OR_DATACENTER",
+      "public_ip": "REPLACE_WITH_PUBLIC_IP",
+      "p2p_port": 22567,
+      "api_bind": "127.0.0.1:8122",
+      "firewall_allows_tcp_22567": false,
+      "static_peers": [
+        "REPLACE_WITH_SEED_B_PUBLIC_IP:22567",
+        "REPLACE_WITH_SEED_C_PUBLIC_IP:22567"
+      ],
+      "external_tcp_probe": {
+        "status": "REPLACE_WITH_pass",
+        "observed_from": "REPLACE_WITH_INDEPENDENT_OBSERVER_NETWORK",
+        "observed_at_utc": "REPLACE_WITH_UTC_TIMESTAMP"
+      }
+    },
+    {
+      "role": "seed-b",
+      "provider": "AWS",
+      "failure_domain": "REPLACE_WITH_REGION_OR_AZ",
+      "public_ip": "REPLACE_WITH_PUBLIC_IP",
+      "p2p_port": 22567,
+      "api_bind": "127.0.0.1:8122",
+      "firewall_allows_tcp_22567": false,
+      "static_peers": [
+        "REPLACE_WITH_SEED_A_PUBLIC_IP:22567",
+        "REPLACE_WITH_SEED_C_PUBLIC_IP:22567"
+      ],
+      "external_tcp_probe": {
+        "status": "REPLACE_WITH_pass",
+        "observed_from": "REPLACE_WITH_INDEPENDENT_OBSERVER_NETWORK",
+        "observed_at_utc": "REPLACE_WITH_UTC_TIMESTAMP"
+      }
+    },
+    {
+      "role": "seed-c",
+      "provider": "REPLACE_WITH_INDEPENDENT_PROVIDER_NOT_HOME_NAT",
+      "failure_domain": "REPLACE_WITH_REGION_OR_DATACENTER",
+      "public_ip": "REPLACE_WITH_PUBLIC_IP",
+      "p2p_port": 22567,
+      "api_bind": "127.0.0.1:8122",
+      "firewall_allows_tcp_22567": false,
+      "static_peers": [
+        "REPLACE_WITH_SEED_A_PUBLIC_IP:22567",
+        "REPLACE_WITH_SEED_B_PUBLIC_IP:22567"
+      ],
+      "external_tcp_probe": {
+        "status": "REPLACE_WITH_pass",
+        "observed_from": "REPLACE_WITH_INDEPENDENT_OBSERVER_NETWORK",
+        "observed_at_utc": "REPLACE_WITH_UTC_TIMESTAMP"
+      }
+    }
+  ]
+}

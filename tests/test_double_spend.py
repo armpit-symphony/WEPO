@@ -176,5 +176,9 @@ def main():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_regression_suite():
+    assert main() == 0
+
+
 if __name__ == "__main__":
     sys.exit(main())

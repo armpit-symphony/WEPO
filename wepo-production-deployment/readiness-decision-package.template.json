@@ -1,0 +1,58 @@
+{
+  "format": "wepo-mainnet-readiness-decision-package-v1",
+  "network": "mainnet",
+  "release_commit": "REPLACE_WITH_RELEASE_COMMIT",
+  "parameter_manifest_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+  "source_archive_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+  "signed_source_archive_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+  "genesis_construction_transcript_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+  "release_signing_public_key_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+  "signed_release_artifacts": false,
+  "automated_tests": {
+    "python_maintained_suite": {
+      "status": "REPLACE_WITH_pass",
+      "passed_count": 0,
+      "evidence_ref": "REPLACE_WITH_LOWERCASE_SHA256"
+    },
+    "rust_release_all_targets": {"status": "REPLACE_WITH_pass", "evidence_ref": "REPLACE_WITH_LOWERCASE_SHA256"},
+    "frontend_vitest": {"status": "REPLACE_WITH_pass", "evidence_ref": "REPLACE_WITH_LOWERCASE_SHA256"},
+    "frontend_production_build": {"status": "REPLACE_WITH_pass", "evidence_ref": "REPLACE_WITH_LOWERCASE_SHA256"},
+    "desktop_package_boundary": {"status": "REPLACE_WITH_pass", "evidence_ref": "REPLACE_WITH_LOWERCASE_SHA256"},
+    "github_actions_green": {"status": "REPLACE_WITH_pass", "evidence_ref": "REPLACE_WITH_LOWERCASE_SHA256"}
+  },
+  "seven_day_rehearsal": {
+    "status": "REPLACE_WITH_pass",
+    "duration_hours": 0,
+    "no_unexplained_consensus_divergence": false,
+    "evidence_sha256": "REPLACE_WITH_LOWERCASE_SHA256"
+  },
+  "external_audits": [
+    {"scope": "protocol", "independent": false, "critical_and_high_closed": false, "report_sha256": "REPLACE_WITH_LOWERCASE_SHA256"},
+    {"scope": "security", "independent": false, "critical_and_high_closed": false, "report_sha256": "REPLACE_WITH_LOWERCASE_SHA256"},
+    {"scope": "wallet", "independent": false, "critical_and_high_closed": false, "report_sha256": "REPLACE_WITH_LOWERCASE_SHA256"},
+    {"scope": "operations", "independent": false, "critical_and_high_closed": false, "report_sha256": "REPLACE_WITH_LOWERCASE_SHA256"}
+  ],
+  "evidence_hashes": {
+    "seed_node_inventory_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+    "redis_outage_evidence_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+    "monitoring_evidence_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+    "backup_restore_evidence_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+    "seven_day_rehearsal_evidence_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+    "external_audit_package_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+    "release_qualification_evidence_sha256": "REPLACE_WITH_LOWERCASE_SHA256"
+  },
+  "disabled_features": [
+    {
+      "feature": "REPLACE_WITH_DISABLED_FEATURE_NAME",
+      "enforcement_points": ["REPLACE_WITH_CODE_OR_CONFIG_GATE"],
+      "client_claims_absent": false
+    }
+  ],
+  "public_claims_match_enforcement": false,
+  "approvals": {
+    "protocol": {"decision": "REPLACE_WITH_GO", "approver": "REPLACE_WITH_NAME", "release_commit": "REPLACE_WITH_RELEASE_COMMIT", "parameter_manifest_sha256": "REPLACE_WITH_LOWERCASE_SHA256", "release_signing_public_key_sha256": "REPLACE_WITH_LOWERCASE_SHA256", "approved_at_utc": "REPLACE_WITH_UTC_TIMESTAMP"},
+    "security": {"decision": "REPLACE_WITH_GO", "approver": "REPLACE_WITH_NAME", "release_commit": "REPLACE_WITH_RELEASE_COMMIT", "parameter_manifest_sha256": "REPLACE_WITH_LOWERCASE_SHA256", "release_signing_public_key_sha256": "REPLACE_WITH_LOWERCASE_SHA256", "approved_at_utc": "REPLACE_WITH_UTC_TIMESTAMP"},
+    "wallet": {"decision": "REPLACE_WITH_GO", "approver": "REPLACE_WITH_NAME", "release_commit": "REPLACE_WITH_RELEASE_COMMIT", "parameter_manifest_sha256": "REPLACE_WITH_LOWERCASE_SHA256", "release_signing_public_key_sha256": "REPLACE_WITH_LOWERCASE_SHA256", "approved_at_utc": "REPLACE_WITH_UTC_TIMESTAMP"},
+    "operations": {"decision": "REPLACE_WITH_GO", "approver": "REPLACE_WITH_NAME", "release_commit": "REPLACE_WITH_RELEASE_COMMIT", "parameter_manifest_sha256": "REPLACE_WITH_LOWERCASE_SHA256", "release_signing_public_key_sha256": "REPLACE_WITH_LOWERCASE_SHA256", "approved_at_utc": "REPLACE_WITH_UTC_TIMESTAMP"}
+  }
+}

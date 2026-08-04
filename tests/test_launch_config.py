@@ -30,10 +30,11 @@ def main():
 
     print("Launch configuration:")
     check(
-        "mainnet genesis timestamp is 2026-09-02 18:00:00 UTC",
-        network_profile.MAINNET_GENESIS_TIMESTAMP == 1788372000
-        and blockchain.MAINNET_GENESIS_TIMESTAMP == 1788372000,
+        "mainnet genesis parameters remain explicitly unfinalized",
+        network_profile.MAINNET_GENESIS_FINALIZED is False
+        and network_profile.MAINNET_GENESIS_TIMESTAMP == blockchain.MAINNET_GENESIS_TIMESTAMP,
     )
+    check("mainnet genesis address is quantum-formatted", network_profile.MAINNET_GENESIS_ADDRESS.startswith("wepo1q"))
     check("core consensus module is in production mode", blockchain.PRODUCTION_MODE is True)
 
     mainnet_node = WepoP2PNode(port=0, network_profile="mainnet")
@@ -44,6 +45,10 @@ def main():
     check(
         "test profile keeps localhost static peers for smoke tests",
         ("127.0.0.1", 22567) in test_node.static_seed_addresses,
+    )
+    check(
+        "mainnet and testnet use different P2P framing",
+        mainnet_node.network_magic != test_node.network_magic,
     )
 
     os.environ["WEPO_STATIC_PEERS"] = "node-a.example:22567,node-b.example:22568"

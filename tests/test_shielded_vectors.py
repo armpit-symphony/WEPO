@@ -101,6 +101,9 @@ HASH_INDEPENDENT = (
     "hash_len",
     "merkle_depth",
     "max_note_value",
+    "shielded_value_bits",
+    "max_shielded_spends",
+    "max_shielded_outputs",
     "value_encoding",
     "field_encoding",
     "element_encoding",
@@ -171,7 +174,10 @@ def main():
     check("golden matches consensus parameters",
           golden.get("hash_len") == S.HASH_LEN
           and golden.get("merkle_depth") == S.MERKLE_DEPTH
-          and golden.get("max_note_value") == S.MAX_NOTE_VALUE)
+          and golden.get("max_note_value") == S.MAX_NOTE_VALUE
+          and golden.get("shielded_value_bits") == S.SHIELDED_VALUE_BITS
+          and golden.get("max_shielded_spends") == S.MAX_SHIELDED_SPENDS
+          and golden.get("max_shielded_outputs") == S.MAX_SHIELDED_OUTPUTS)
 
     rebuilt = V.build_vectors(S.POOL_HASH_ALGORITHM)
     mismatches = list(diff(golden, json.loads(json.dumps(rebuilt))))

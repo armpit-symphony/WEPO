@@ -21,10 +21,9 @@ use winterfell::{
     math::{fields::f64::BaseElement, FieldElement, ToElements},
     matrix::ColMatrix,
     AcceptableOptions, Air, AirContext, Assertion, AuxRandElements, BatchingMethod,
-    CompositionPoly, CompositionPolyTrace, DefaultConstraintCommitment,
-    DefaultConstraintEvaluator, DefaultTraceLde, EvaluationFrame, FieldExtension,
-    PartitionOptions, Proof, ProofOptions, Prover, StarkDomain, Trace, TraceInfo,
-    TracePolyTable, TraceTable, TransitionConstraintDegree,
+    CompositionPoly, CompositionPolyTrace, DefaultConstraintCommitment, DefaultConstraintEvaluator,
+    DefaultTraceLde, EvaluationFrame, FieldExtension, PartitionOptions, Proof, ProofOptions,
+    Prover, StarkDomain, Trace, TraceInfo, TracePolyTable, TraceTable, TransitionConstraintDegree,
 };
 
 type Blake3 = Blake3_256<BaseElement>;
@@ -260,7 +259,11 @@ fn sample_witness() -> Witness {
         })
         .collect();
     let bits = (0..MERKLE_DEPTH).map(|i| i % 3 == 0).collect();
-    Witness { leaf, siblings, bits }
+    Witness {
+        leaf,
+        siblings,
+        bits,
+    }
 }
 
 fn arrange(
@@ -272,7 +275,11 @@ fn arrange(
     for s in state.iter_mut().take(RATE_START) {
         *s = BaseElement::ZERO;
     }
-    let (l, r) = if bit { (sibling, digest) } else { (digest, sibling) };
+    let (l, r) = if bit {
+        (sibling, digest)
+    } else {
+        (digest, sibling)
+    };
     for i in 0..DIGEST_LEN {
         state[RATE_START + i] = l[i];
         state[RATE_START + DIGEST_LEN + i] = r[i];
@@ -284,25 +291,31 @@ fn build_trace(w: &Witness) -> TraceTable<BaseElement> {
     trace.fill(
         |state| {
             arrange(&w.leaf, &w.siblings[0], w.bits[0], state);
-            state[BIT_COL] = if w.bits[0] { BaseElement::ONE } else { BaseElement::ZERO };
+            state[BIT_COL] = if w.bits[0] {
+                BaseElement::ONE
+            } else {
+                BaseElement::ZERO
+            };
         },
         |step, state| {
             let pos = step % CYCLE_LEN;
             if pos < NUM_ROUNDS {
-                let mut s: [BaseElement; STATE_WIDTH] =
-                    state[..STATE_WIDTH].try_into().unwrap();
+                let mut s: [BaseElement; STATE_WIDTH] = state[..STATE_WIDTH].try_into().unwrap();
                 Rp64_256::apply_round(&mut s, pos);
                 state[..STATE_WIDTH].copy_from_slice(&s);
             } else {
                 // carry row: fold the digest into the next level
                 let level = step / CYCLE_LEN + 1;
-                let digest: [BaseElement; DIGEST_LEN] = state
-                    [RATE_START..RATE_START + DIGEST_LEN]
+                let digest: [BaseElement; DIGEST_LEN] = state[RATE_START..RATE_START + DIGEST_LEN]
                     .try_into()
                     .unwrap();
                 let bit = w.bits[level];
                 arrange(&digest, &w.siblings[level], bit, state);
-                state[BIT_COL] = if bit { BaseElement::ONE } else { BaseElement::ZERO };
+                state[BIT_COL] = if bit {
+                    BaseElement::ONE
+                } else {
+                    BaseElement::ZERO
+                };
             }
         },
     );
@@ -424,29 +437,53 @@ fn main() {
         Config {
             label: "96-bit  (32q, blowup 8, cubic)",
             opts: ProofOptions::new(
-                32, 8, 0, FieldExtension::Cubic, 8, 31,
-                BatchingMethod::Linear, BatchingMethod::Linear,
+                32,
+                8,
+                0,
+                FieldExtension::Cubic,
+                8,
+                31,
+                BatchingMethod::Linear,
+                BatchingMethod::Linear,
             ),
         },
         Config {
             label: "128-bit (43q, blowup 8, cubic)",
             opts: ProofOptions::new(
-                43, 8, 0, FieldExtension::Cubic, 8, 31,
-                BatchingMethod::Linear, BatchingMethod::Linear,
+                43,
+                8,
+                0,
+                FieldExtension::Cubic,
+                8,
+                31,
+                BatchingMethod::Linear,
+                BatchingMethod::Linear,
             ),
         },
         Config {
             label: "128-bit (32q, blowup 16, cubic)",
             opts: ProofOptions::new(
-                32, 16, 0, FieldExtension::Cubic, 8, 31,
-                BatchingMethod::Linear, BatchingMethod::Linear,
+                32,
+                16,
+                0,
+                FieldExtension::Cubic,
+                8,
+                31,
+                BatchingMethod::Linear,
+                BatchingMethod::Linear,
             ),
         },
         Config {
             label: "128-bit (28q, blowup 8, grind 16)",
             opts: ProofOptions::new(
-                28, 8, 16, FieldExtension::Cubic, 8, 31,
-                BatchingMethod::Linear, BatchingMethod::Linear,
+                28,
+                8,
+                16,
+                FieldExtension::Cubic,
+                8,
+                31,
+                BatchingMethod::Linear,
+                BatchingMethod::Linear,
             ),
         },
     ];
@@ -488,8 +525,14 @@ fn main() {
     // soundness spot-check: wrong root must be rejected
     let prover = MerkleProver {
         options: ProofOptions::new(
-            32, 8, 0, FieldExtension::Cubic, 8, 31,
-            BatchingMethod::Linear, BatchingMethod::Linear,
+            32,
+            8,
+            0,
+            FieldExtension::Cubic,
+            8,
+            31,
+            BatchingMethod::Linear,
+            BatchingMethod::Linear,
         ),
     };
     let proof = prover.prove(trace.clone()).unwrap();
@@ -497,6 +540,10 @@ fn main() {
     bad[0] += BaseElement::ONE;
     println!(
         "\nwrong anchor rejected: {}",
-        if verify_at(proof, bad, 95) { "NO -- UNSOUND" } else { "yes" }
+        if verify_at(proof, bad, 95) {
+            "NO -- UNSOUND"
+        } else {
+            "yes"
+        }
     );
 }
