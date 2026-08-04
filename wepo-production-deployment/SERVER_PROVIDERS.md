@@ -148,7 +148,7 @@ Name: api
 Value: YOUR_SERVER_IP
 TTL: 300 (5 minutes)
 
-# Result: api.wepo.network → YOUR_SERVER_IP
+# Launch target: api.wepocoin.org → YOUR_SERVER_IP (publish after DNS verification)
 ```
 
 ## 💡 Pro Tips
@@ -197,13 +197,9 @@ curl -sSL https://raw.githubusercontent.com/your-repo/wepo-deployment/main/quick
 
 ## 📊 Expected Performance
 
-**With 4GB RAM server:**
-- ✅ **Concurrent Users**: 100-500
-- ✅ **API Requests**: 1000/minute
-- ✅ **Bitcoin Transactions**: No limit (uses external APIs)
-- ✅ **Mining Operations**: CPU mining supported
-- ✅ **Database Operations**: SQLite handles 10K+ transactions
-- ✅ **Uptime**: 99.9% with proper monitoring
+No capacity, throughput, transaction-volume, or uptime claim is approved. Those
+values require retained load, soak, failure-injection, and external-observation
+evidence on the intended host class and canonical runtime.
 
 ## 🚀 Ready to Deploy?
 
@@ -211,12 +207,11 @@ curl -sSL https://raw.githubusercontent.com/your-repo/wepo-deployment/main/quick
 
 1. **✅ Pick a provider** (DigitalOcean recommended)
 2. **✅ Create server** (Ubuntu 22.04, 4GB RAM)
-3. **✅ Get domain** (api.wepo.network)
+3. **✅ Get a domain you own and control**
 4. **✅ Configure DNS** (point to server IP)
 5. **✅ Run deployment script** (upload-and-deploy.sh)
 6. **✅ Test everything** (curl your API)
 7. **✅ Launch wallets** (update backend URLs)
 
-**Total Time: 30 minutes**
-**Total Cost: ~$25/month**
-**Result: Live WEPO blockchain network! 🎉**
+This retired walkthrough does not establish a deployment time, cost, or launch
+claim. Use the canonical release-readiness policy and host-verification runbook.

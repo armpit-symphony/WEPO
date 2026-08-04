@@ -17,10 +17,13 @@ import os
 import sys
 import shutil
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import patch
 
 CORE = os.path.join(os.path.dirname(__file__), "..", "wepo-blockchain", "core")
 sys.path.insert(0, os.path.abspath(CORE))
 
+import blockchain as consensus  # noqa: E402
 from blockchain import (  # noqa: E402
     WepoBlockchain,
     Transaction,
@@ -121,6 +124,93 @@ def main():
         tx_mempool.sign_all_inputs(owner_kp.private_key, owner_kp.public_key)
         check("owner-signed spend is admitted to mempool",
               bc.add_transaction_to_mempool(tx_mempool) is True)
+        admitted_bytes = tx_mempool.canonical_wire_size()
+        check(
+            "mempool accounts canonical transaction bytes",
+            bc.mempool_bytes == admitted_bytes,
+        )
+
+        bounded_utxo = "b" * 64
+        insert_utxo(bc, bounded_utxo, 0, owner_addr, in_amount)
+        bounded_tx = build_spend(
+            owner_addr, recipient_addr, bounded_utxo, 0,
+            in_amount, send_amount, fee,
+        )
+        bounded_tx.sign_all_inputs(owner_kp.private_key, owner_kp.public_key)
+        with patch.object(
+            consensus, "MAX_MEMPOOL_TRANSACTIONS", len(bc.mempool)
+        ):
+            check(
+                "mempool count ceiling rejects further valid transactions",
+                bc.add_transaction_to_mempool(bounded_tx) is False,
+            )
+        with patch.object(consensus, "MAX_MEMPOOL_BYTES", bc.mempool_bytes):
+            check(
+                "mempool byte ceiling rejects further valid transactions",
+                bc.add_transaction_to_mempool(bounded_tx) is False,
+            )
+        check(
+            "capacity rejection leaves mempool accounting unchanged",
+            len(bc.mempool) == 1 and bc.mempool_bytes == admitted_bytes,
+        )
+        network_info = bc.get_network_info()
+        check(
+            "mempool capacity telemetry is exposed",
+            network_info["mempool_bytes"] == admitted_bytes
+            and network_info["mempool_max_transactions"]
+            == consensus.MAX_MEMPOOL_TRANSACTIONS
+            and network_info["mempool_max_bytes"] == consensus.MAX_MEMPOOL_BYTES,
+        )
+
+        mined = bc.mine_block(recipient_addr)
+        check("mempool transaction is mined", mined is not None)
+        check(
+            "confirmed transaction releases mempool byte accounting",
+            not bc.mempool and bc.mempool_bytes == 0,
+        )
+
+        concurrent_txs = []
+        for index in range(8):
+            concurrent_utxo = f"{index + 1:064x}"
+            insert_utxo(bc, concurrent_utxo, 0, owner_addr, in_amount)
+            concurrent_tx = build_spend(
+                owner_addr,
+                recipient_addr,
+                concurrent_utxo,
+                0,
+                in_amount,
+                send_amount,
+                fee,
+            )
+            concurrent_tx.sign_all_inputs(
+                owner_kp.private_key, owner_kp.public_key
+            )
+            concurrent_txs.append(concurrent_tx)
+
+        with patch.object(consensus, "MAX_MEMPOOL_TRANSACTIONS", 4):
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                concurrent_results = list(
+                    executor.map(bc.add_transaction_to_mempool, concurrent_txs)
+                )
+        admitted_concurrent = [
+            tx
+            for tx, accepted in zip(concurrent_txs, concurrent_results)
+            if accepted
+        ]
+        check(
+            "concurrent admission cannot exceed the transaction ceiling",
+            sum(concurrent_results) == 4 and len(bc.mempool) == 4,
+        )
+        check(
+            "concurrent admission preserves exact byte accounting",
+            bc.mempool_bytes
+            == sum(tx.canonical_wire_size() for tx in admitted_concurrent),
+        )
+        concurrency_block = bc.mine_block(recipient_addr)
+        check("concurrently admitted transactions are mineable",
+              concurrency_block is not None)
+        check("mining clears concurrent mempool accounting",
+              not bc.mempool and bc.mempool_bytes == 0)
 
         # 7. Forged coinbase cannot be injected into the mempool
         forged_cb = Transaction(
@@ -152,7 +242,8 @@ def main():
         insert_utxo(bc, col_txid, 0, mn_addr, required)
 
         mn_unsigned = bc.create_masternode(mn_addr, col_txid, 0, ip_address="127.0.0.1",
-                                           port=22567, return_unsigned=True)
+                                           port=22567, return_unsigned=True,
+                                           fee=0)
         # Wire path: serialize -> deserialize before signing
         mn_unsigned = Transaction.from_dict(mn_unsigned.to_dict())
         check("masternode build returns an unsigned tx (rejected before signing)",
@@ -165,7 +256,8 @@ def main():
         # Negative: someone else signs the operator's collateral spend -> rejected
         insert_utxo(bc, "c2" + "c" * 62, 0, mn_addr, required)
         mn_attack = bc.create_masternode(mn_addr, "c2" + "c" * 62, 0, ip_address="127.0.0.1",
-                                         port=22567, return_unsigned=True)
+                                         port=22567, return_unsigned=True,
+                                         fee=0)
         mn_attack.sign_all_inputs(attacker_kp.private_key, attacker_kp.public_key)
         check("non-operator-signed masternode registration is rejected",
               bc.validate_transaction(mn_attack) is False)
@@ -180,7 +272,12 @@ def main():
         stake_amount = MIN_STAKE_AMOUNT
         insert_utxo(bc, "d" * 64, 0, stk_addr, stake_amount + 5000)
 
-        stk_unsigned = bc.create_stake(stk_addr, stake_amount, return_unsigned=True)
+        stk_unsigned = bc.create_stake(
+            stk_addr,
+            stake_amount,
+            return_unsigned=True,
+            fee=5000,
+        )
         stk_unsigned = Transaction.from_dict(stk_unsigned.to_dict())
         check("stake build returns an unsigned tx (rejected before signing)",
               bc.validate_transaction(stk_unsigned) is False)
@@ -197,6 +294,10 @@ def main():
         return 0
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_regression_suite():
+    assert main() == 0
 
 
 if __name__ == "__main__":

@@ -1,0 +1,86 @@
+# Inert release template. Replace every example.invalid value and certificate
+# path, then run verify-production-host.sh. Do not install this while mainnet
+# genesis remains unfinalized.
+limit_req_zone $binary_remote_addr zone=wepo_api_per_ip:10m rate=30r/s;
+limit_conn_zone $binary_remote_addr zone=wepo_api_connections:10m;
+
+upstream wepo_backend_api {
+    server 127.0.0.1:8011;
+    keepalive 16;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name api.example.invalid;
+    return 308 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name api.example.invalid;
+    server_tokens off;
+
+    ssl_certificate /etc/wepo/tls/fullchain.pem;
+    ssl_certificate_key /etc/wepo/tls/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_tickets off;
+    ssl_session_cache shared:WEPO_TLS:10m;
+    ssl_session_timeout 1d;
+
+    client_max_body_size 2m;
+    client_body_timeout 15s;
+    client_header_timeout 15s;
+    keepalive_timeout 30s;
+    send_timeout 30s;
+    large_client_header_buffers 4 8k;
+
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+    add_header Content-Security-Policy "default-src 'none'; frame-ancestors 'none'; base-uri 'none'" always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options DENY always;
+    add_header Referrer-Policy no-referrer always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
+
+    location / {
+        limit_req zone=wepo_api_per_ip burst=60 nodelay;
+        proxy_hide_header Server;
+        limit_conn wepo_api_connections 20;
+
+        proxy_pass http://wepo_backend_api;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        # Overwrite, rather than append, attacker-supplied forwarding headers.
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Port 443;
+        proxy_request_buffering on;
+        proxy_buffering on;
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 30s;
+        proxy_read_timeout 30s;
+    }
+
+    # This is a dependency-aware health path: nginx returns 502 if the backend
+    # is unavailable. The production monitor separately checks the node and
+    # Redis; a static always-200 health response is deliberately forbidden.
+    location = /healthz {
+        access_log off;
+        proxy_hide_header Server;
+        limit_req zone=wepo_api_per_ip burst=10 nodelay;
+        proxy_pass http://wepo_backend_api/api/;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_connect_timeout 2s;
+        proxy_send_timeout 5s;
+        proxy_read_timeout 5s;
+    }
+}

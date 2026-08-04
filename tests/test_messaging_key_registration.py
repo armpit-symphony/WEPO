@@ -49,7 +49,7 @@ def make_owner():
 def main():
     tmp = tempfile.mkdtemp(prefix="wepo-msgkey-test-")
     try:
-        bc = WepoBlockchain(data_dir=tmp)
+        bc = WepoBlockchain(data_dir=tmp, network_profile="test")
         owner_kp, owner_addr = make_owner()
         attacker_kp, attacker_addr = make_owner()
         _, miner_addr = make_owner()
@@ -86,6 +86,27 @@ def main():
         bc._rebuild_canonical_state_from_blocks(list(bc.chain))
         check("registration survives a derived-state rebuild (reorg-safe)",
               bc.get_messaging_keys(owner_addr) is not None)
+
+        exact_kp, exact_addr = make_owner()
+        bc.conn.execute(
+            "INSERT INTO utxos (txid, vout, address, amount, script_pubkey, spent) "
+            "VALUES (?, ?, ?, ?, ?, FALSE)",
+            (
+                "d" * 64, 0, exact_addr, MSG_KEY_REGISTER_MIN_FEE,
+                b"output_script",
+            ),
+        )
+        bc.conn.commit()
+        exact_fee = bc.create_key_registration(
+            exact_addr, KEM, SIG, fee=MSG_KEY_REGISTER_MIN_FEE,
+            return_unsigned=True,
+        )
+        check("exact-fee key registration emits no zero-value change", exact_fee.outputs == [])
+        exact_fee.sign_all_inputs(exact_kp.private_key, exact_kp.public_key)
+        check(
+            "signed exact-fee key registration is accepted",
+            bc.add_transaction_to_mempool(exact_fee) is True,
+        )
 
         # Direct-insert a UTXO for rejection cases.
         bc.conn.execute(
@@ -128,6 +149,10 @@ def main():
         return 0
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_regression_suite():
+    assert main() == 0
 
 
 if __name__ == "__main__":

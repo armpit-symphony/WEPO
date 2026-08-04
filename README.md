@@ -14,8 +14,32 @@ This repo should not be the long-term home for wallet clients. Web, desktop, iOS
 
 ## Status
 
-This repository is not production ready yet, but the core consensus and backend
-security gaps from the 2026-06 audit are now closed. Mainnet still depends on
+> **Current decision (2026-07-27): WEPO is not production ready and has no
+> mainnet release date.** Readiness is evaluated first; the earliest genesis is
+> 30 full days after every gate in `MAINNET_READINESS_AND_RELEASE_POLICY.md` is
+> accepted. This policy supersedes older date and blocker language below.
+
+The full node deliberately refuses to start mainnet while
+`MAINNET_GENESIS_FINALIZED=False`. Current genesis values are deterministic
+rehearsal placeholders. The remaining critical path is:
+
+1. decide and audit the 400 WEPO genesis-bootstrap distribution;
+2. ship the production validator-signer executable/deployment, publish PoS
+   vectors, and complete independent review (canonical ML-DSA authorization
+   and branch-aware reorg tests now exist; mainnet PoS remains fail-closed);
+3. finish Ghost resource/fuzz testing and independent cryptographic review
+   (the complete Rust verifier, honest proof integration, 61-bit value bound,
+   4-spend/2-output v1 bundle layout, transaction-sighash STARK binding, and
+   inactive persistent/reorg-safe shielded consensus state are now implemented;
+   wallet note/prover integration and activation specification remain);
+4. independently reconcile the emission schedule and supply cap;
+5. provision three independent public seeds, production Redis, monitoring,
+   backups, and recovery runbooks; and
+6. complete an independent audit and production-like multi-node rehearsal.
+
+This repository is not production ready yet. Several core consensus and backend
+findings from the 2026-06 audit are closed, but independent audit, hostile
+rehearsal, wallet recovery, and production operations remain. Mainnet depends on
 launch decisions and production infrastructure (see the launch documents below).
 
 Release-blocker progress (June 2026):
@@ -37,18 +61,34 @@ Release-blocker progress (June 2026):
 
 Remaining gaps:
 
-- `WEPO-wallet` clients must implement client-side Dilithium keygen + signing
-  (mirror `wepo-blockchain/scripts/wepo_accelerated_simulation.py`).
-- Emission schedule must be corrected to sum to the fixed 69,000,003 cap
-  (reconciliation finding recorded in the parameter freeze).
+- Web-wallet client-side ML-DSA key generation/signing and Python vectors pass.
+  Local-first creation/recovery, exact encrypted-vault rollback, complete-vault
+  password rotation, offline restart, recovered-key signing, and canonical
+  Electron packaging now pass automated acceptance tests. The wallet/gateway
+  boundary now enforces canonical lowercase `wepo1q` addresses and carries
+  amount/fee as exact normalized decimal strings without binary-float
+  conversion. A controlled shipping-signer send through the real gateway/node
+  confirmed and survived node restart, with byte-identical web/Electron bundle
+  hashes and sanitized evidence retained under
+  `release-evidence/local/2026-07-29-wallet-live/`. An interactive clean
+  installed-app click-through, trusted release certificate, build-tool audit
+  closure, and independent acceptance evidence remain. Both shipped npm graphs
+  now audit with zero findings; the remaining frontend/desktop advisories are
+  confined to build-only dependency graphs and are still tracked as release
+  debt.
+- The fixed 69,000,003 cap is enforced by consensus clamping regardless of the
+  variable PoW/PoS mix; the schedule and cap still require independent
+  reconciliation before parameter freeze.
 - Genesis timestamp + `PRODUCTION_MODE` are set-at-launch; seed nodes/bootstrap
   not yet provisioned.
 - Production infrastructure, genesis rehearsal, and final signoff still pending.
+- `MAINNET_READINESS_AND_RELEASE_POLICY.md` - authoritative readiness gates and
+  30-day release-clock policy.
 
 ## Launch documents
 
 - `MAINNET_GENESIS_RELEASE_CHECKLIST.md` — the 10 launch blockers.
-- `MAINNET_V1_LAUNCH_SCOPE.md` — per-feature launch / disabled / post-launch scope (confirmed 2026-06-20).
+- `MAINNET_V1_LAUNCH_SCOPE.md` — current per-feature readiness / disabled / deferred scope.
 - `MAINNET_PARAMETER_FREEZE.md` — canonical mainnet parameters + recorded decisions.
 
 ## Intended Repo Boundary

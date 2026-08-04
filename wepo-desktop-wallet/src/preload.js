@@ -1,29 +1,14 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
-// Expose protected methods that allow the renderer process to use
-// the ipcRenderer without exposing the entire object
+// The canonical client receives one narrow, byte-only Ghost crypto operation.
+// No filesystem, shell, wallet export, or generic IPC capability is exposed.
 contextBridge.exposeInMainWorld('electronAPI', {
-  // App info
-  getAppVersion: () => ipcRenderer.invoke('get-app-version'),
-  getAppPath: () => ipcRenderer.invoke('get-app-path'),
-  
-  // Menu actions
-  onMenuAction: (callback) => {
-    ipcRenderer.on('menu-action', callback);
+  ghostWalletRequest: (request) => {
+    if (!(request instanceof Uint8Array)) {
+      throw new TypeError('Ghost wallet bridge request must be Uint8Array');
+    }
+    return ipcRenderer.invoke('ghost-wallet-request', request);
   },
-  
-  // Wallet operations
-  openWallet: () => ipcRenderer.invoke('open-wallet'),
-  saveWallet: (data) => ipcRenderer.invoke('save-wallet', data),
-  
-  // Security
   isElectron: true,
   platform: process.platform,
-  
-  // Remove listener
-  removeAllListeners: (channel) => {
-    ipcRenderer.removeAllListeners(channel);
-  }
 });
-
-console.log('🔐 WEPO Desktop Wallet preload script loaded');

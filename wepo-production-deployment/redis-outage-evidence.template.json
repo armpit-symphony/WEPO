@@ -1,0 +1,36 @@
+{
+  "format": "wepo-redis-outage-evidence-v1",
+  "network_profile": "test",
+  "mainnet_live_network": false,
+  "release_commit": "REPLACE_WITH_REVIEWED_COMMIT_SHA",
+  "backend_artifact_sha256": "REPLACE_WITH_BACKEND_ARTIFACT_SHA256",
+  "public_api_base_url": "https://api.wepocoin.org",
+  "redis": {
+    "identity_redacted": "REPLACE_WITH_REDACTED_REDIS_IDENTITY_OR_ALIAS",
+    "endpoint_visibility": "private-network",
+    "require_redis_rate_limit": true,
+    "startup_unavailable_fails_closed": false
+  },
+  "drill": {
+    "change_approval_recorded": false,
+    "redis_only_endpoint_disrupted": false,
+    "backend_remained_running": false,
+    "normal_requests_before_outage_passed": false,
+    "global_rate_limited_route_during_outage": {
+      "route": "REPLACE_WITH_RATE_LIMITED_ROUTE_NAME_ONLY",
+      "http_status": 0,
+      "returned_success": false,
+      "observed_at_utc": "REPLACE_WITH_UTC_TIMESTAMP"
+    },
+    "strict_endpoint_during_outage": {
+      "route": "REPLACE_WITH_STRICT_ENDPOINT_NAME_ONLY",
+      "http_status": 0,
+      "returned_success": false,
+      "observed_at_utc": "REPLACE_WITH_UTC_TIMESTAMP"
+    },
+    "no_successful_rate_limited_request_during_outage": false,
+    "recovery_after_restore_passed": false,
+    "unsafe_configuration_change_required": false,
+    "logs_redacted": false
+  }
+}

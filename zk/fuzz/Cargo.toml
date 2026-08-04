@@ -1,0 +1,28 @@
+[package]
+name = "wepo-zk-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.wepo-zk]
+path = ".."
+
+[[bin]]
+name = "ghost_protocol"
+path = "fuzz_targets/ghost_protocol.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ghost_verifier_request"
+path = "fuzz_targets/ghost_verifier_request.rs"
+test = false
+doc = false
+bench = false

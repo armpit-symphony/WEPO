@@ -1,0 +1,24 @@
+[Unit]
+Description=WEPO isolated three-host seed rehearsal node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wepo
+Group=wepo
+WorkingDirectory=/opt/wepo
+Environment=PYTHONDONTWRITEBYTECODE=1
+EnvironmentFile=/etc/wepo/seed-rehearsal.env
+ExecStart=/opt/wepo/.venv/bin/python /opt/wepo/wepo-blockchain/core/wepo_node.py --network-profile test --data-dir /var/lib/wepo/seed-rehearsal --p2p-port 22567 --api-host 127.0.0.1 --api-port 8122 --no-mining
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/wepo /var/log/wepo
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target

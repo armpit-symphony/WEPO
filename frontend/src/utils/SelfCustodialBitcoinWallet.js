@@ -10,7 +10,8 @@
  * - Full self-custodial capabilities
  */
 
-import * as bip39 from 'bip39';
+import { mnemonicToSeed, validateMnemonic } from '@scure/bip39';
+import { wordlist as englishWordlist } from '@scure/bip39/wordlists/english.js';
 import BIP32Factory from 'bip32';
 import * as ecc from 'tiny-secp256k1';
 import CryptoJS from 'crypto-js';
@@ -372,12 +373,12 @@ class SelfCustodialBitcoinWallet {
       console.log('🔐 Initializing Bitcoin wallet from seed...');
       
       // Validate seed phrase
-      if (!bip39.validateMnemonic(seedPhrase)) {
+      if (!validateMnemonic(seedPhrase, englishWordlist)) {
         throw new Error('Invalid seed phrase');
       }
 
       // Generate seed buffer from mnemonic
-      this.masterSeed = await bip39.mnemonicToSeed(seedPhrase, passphrase);
+      this.masterSeed = await mnemonicToSeed(seedPhrase, passphrase);
       
       // Create master node from seed
       this.masterNode = bip32.fromSeed(this.masterSeed, NETWORK);

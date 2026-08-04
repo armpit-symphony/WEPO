@@ -1,14 +1,18 @@
 # WEPO Web Wallet Frontend
 
-This frontend is the current web wallet/client surface used for local public-test validation.
+This is the canonical WEPO self-custodial web wallet and the frontend embedded
+in the desktop package. Mainnet remains deliberately unavailable while release
+readiness is incomplete.
 
-It is still transitional code that lives in the platform repo, but the main wallet flow has been validated locally against the accelerated test lab:
+The wallet flow has been validated locally against the accelerated test lab:
 
 - create account
 - refresh and restore the same session
 - login/logout
 - receive WEPO
 - authenticated send through the live backend
+- local ML-DSA key generation and transaction signing
+- recovery-phrase restore and atomic local-vault password rotation
 
 ## Current Public-Test Scope
 
@@ -20,22 +24,18 @@ Supported for the current public-test build:
 - receive address display
 - PoS / masternode / privacy / RWA surfaces backed by the accelerated test lab
 
-Explicitly not live self-custody in this build:
-
-- recovery phrase import/export
-- password-change flow
-- BTC custody
-
-BTC UI is preview-only and should not be described as live custody.
+Ghost privacy, RWA trading, browser mining, and production BTC custody are
+release-gated or preview-only and must not be described as live mainnet
+features.
 
 ## Runtime Modes
 
 ### Development UI
 
-Use CRACO dev mode when iterating on the React app:
+Use the loopback-only Vite development server when iterating on the React app:
 
 ```bash
-npm install
+npm ci
 npm start
 ```
 
@@ -46,13 +46,13 @@ That starts the development server.
 For the validated local public-test flow, the preferred operator path is:
 
 ```bash
-/home/sparky/WEPO/wepo-production-deployment/run-local-public-test-stack.sh start
+./wepo-production-deployment/run-local-public-test-stack.sh start
 ```
 
 For the next clean-chain validation round from genesis, use:
 
 ```bash
-/home/sparky/WEPO/wepo-production-deployment/run-local-public-test-stack.sh restart-clean
+./wepo-production-deployment/run-local-public-test-stack.sh restart-clean
 ```
 
 That launcher:
@@ -65,7 +65,7 @@ That launcher:
 If you only want the frontend locally while another backend/node is already running, the lower-level path is still:
 
 ```bash
-npm install
+npm ci
 npm run build
 PORT=3100 node secure-server.js
 ```
@@ -84,7 +84,6 @@ Example:
 
 ```env
 REACT_APP_BACKEND_URL=http://127.0.0.1:18021
-WDS_SOCKET_PORT=443
 ```
 
 ## Recommended Local Flow
@@ -92,7 +91,7 @@ WDS_SOCKET_PORT=443
 1. Start the local public-test stack:
 
 ```bash
-/home/sparky/WEPO/wepo-production-deployment/run-local-public-test-stack.sh start
+./wepo-production-deployment/run-local-public-test-stack.sh start
 ```
 
 Use `restart-clean` instead when you need the lab reset to genesis before the next end-to-end round.
@@ -110,24 +109,27 @@ Use `restart-clean` instead when you need the lab reset to genesis before the ne
 4. When finished:
 
 ```bash
-/home/sparky/WEPO/wepo-production-deployment/run-local-public-test-stack.sh stop
+./wepo-production-deployment/run-local-public-test-stack.sh stop
 ```
 
 ## Security Notes
 
 - The frontend CSP defaults now allow the validated local wallet-lab backend and node ports.
 - The backend must allow the frontend origin through `WEPO_ALLOWED_ORIGINS`.
-- The frontend assumes a backend-issued auth session token for send authorization.
+- Account APIs use a backend-issued session, but each spend is authorized by a
+  client-side ML-DSA signature and enforced by consensus; the server never
+  receives the recovery phrase or spend secret.
 
 ## Scripts
 
-- `npm start`: CRACO development server
-- `npm run build`: production build for the secure server path
-- `npm test`: CRACO test runner
+- `npm start`: loopback-only Vite development server
+- `npm run build`: optimized Vite build in `build/`
+- `npm test`: one-shot Vitest suite
+- `npm run test:watch`: interactive Vitest watch mode
 
 ## Related Docs
 
-- `/home/sparky/WEPO/README.md`
-- `/home/sparky/WEPO/wepo-production-deployment/PUBLIC_RELEASE_CHECKLIST.md`
-- `/home/sparky/WEPO/wepo-production-deployment/LOCAL_PUBLIC_TEST_CHECKLIST.md`
-- `/home/sparky/WEPO/wepo-production-deployment/PUBLIC_TEST_HANDOFF.md`
+- `../README.md`
+- `../wepo-production-deployment/PUBLIC_RELEASE_CHECKLIST.md`
+- `../wepo-production-deployment/LOCAL_PUBLIC_TEST_CHECKLIST.md`
+- `../wepo-production-deployment/PUBLIC_TEST_HANDOFF.md`

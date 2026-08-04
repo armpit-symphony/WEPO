@@ -21,7 +21,12 @@ const unsignedTx = {
   fee: 10000,
   tx_type: 'transfer',
   timestamp: 1700000000,
-  extra_data: {},
+  // Exercises recursive key ordering where JavaScript's default UTF-16 order
+  // differs from Python's Unicode code-point order.
+  extra_data: {
+    zeta: { '\u{1F600}': 2, '\uE000': 1 },
+    alpha: [null, true, 'café'],
+  },
   privacy_proof: null,
   ring_signature: null,
   inputs: [
@@ -34,14 +39,16 @@ const unsignedTx = {
   ],
 };
 
-const sighash = canonicalSighashHex(unsignedTx);
-const signed = signTransaction(unsignedTx, owner.secretKey, owner.publicKey, sighash);
+const network = 'test';
+const sighash = canonicalSighashHex(unsignedTx, network);
+const signed = signTransaction(unsignedTx, owner.secretKey, owner.publicKey, sighash, network);
 
 writeFileSync('/tmp/wepo_signer_fixture.json', JSON.stringify({
+  network,
   owner_address: owner.address,
   owner_pubkey: owner.publicKeyHex,
   sighash,
   signed_tx: signed,
-  js_self_verify: verifyTransactionInput(signed, 0),
+  js_self_verify: verifyTransactionInput(signed, 0, network),
 }));
-console.log('JS: owner', owner.address, '| self-verify', verifyTransactionInput(signed, 0));
+console.log('JS: owner', owner.address, '| self-verify', verifyTransactionInput(signed, 0, network));

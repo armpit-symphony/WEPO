@@ -24,6 +24,8 @@ import sys
 import shutil
 import tempfile
 
+os.environ.setdefault("WEPO_NETWORK_PROFILE", "test")
+
 CORE = os.path.join(os.path.dirname(__file__), "..", "wepo-blockchain", "core")
 sys.path.insert(0, os.path.abspath(CORE))
 
@@ -172,6 +174,10 @@ def main():
         return 0
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_regression_suite():
+    assert main() == 0
 
 
 if __name__ == "__main__":

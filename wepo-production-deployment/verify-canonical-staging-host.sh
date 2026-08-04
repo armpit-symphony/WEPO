@@ -23,6 +23,8 @@ NODE_API_URL_VALUE=""
 CANONICAL_FEES_VALUE=""
 SETTLEMENT_ADDRESS_VALUE=""
 ALLOWED_ORIGINS_VALUE=""
+REDIS_URL_VALUE=""
+REQUIRE_REDIS_RATE_LIMIT_VALUE=""
 
 print_step() {
     printf '[wepo-host-check] %s\n' "$1"
@@ -61,6 +63,8 @@ load_backend_env() {
     NODE_API_URL_VALUE="${WEPO_NODE_API_URL:-}"
     CANONICAL_FEES_VALUE="${WEPO_CANONICAL_APPLICATION_FEES_ENABLED:-}"
     SETTLEMENT_ADDRESS_VALUE="${WEPO_APP_FEE_SETTLEMENT_ADDRESS:-}"
+    REDIS_URL_VALUE="${REDIS_URL:-}"
+    REQUIRE_REDIS_RATE_LIMIT_VALUE="${WEPO_REQUIRE_REDIS_RATE_LIMIT:-}"
     ALLOWED_ORIGINS_VALUE="${WEPO_ALLOWED_ORIGINS:-}"
 }
 
@@ -68,6 +72,8 @@ validate_backend_env() {
     [[ -n "${MONGO_URL_VALUE}" ]] || fail "MONGO_URL is empty in ${BACKEND_ENV_PATH}"
     [[ -n "${DB_NAME_VALUE}" ]] || fail "DB_NAME is empty in ${BACKEND_ENV_PATH}"
     [[ -n "${NODE_API_URL_VALUE}" ]] || fail "WEPO_NODE_API_URL is empty in ${BACKEND_ENV_PATH}"
+    [[ -n "${REDIS_URL_VALUE}" ]] || fail "REDIS_URL is empty in ${BACKEND_ENV_PATH}"
+    [[ "${REQUIRE_REDIS_RATE_LIMIT_VALUE}" == "1" ]] || fail "WEPO_REQUIRE_REDIS_RATE_LIMIT must be 1 in ${BACKEND_ENV_PATH}"
     [[ "${CANONICAL_FEES_VALUE,,}" == "true" ]] || fail "WEPO_CANONICAL_APPLICATION_FEES_ENABLED must be true in ${BACKEND_ENV_PATH}"
     [[ -n "${SETTLEMENT_ADDRESS_VALUE}" ]] || fail "WEPO_APP_FEE_SETTLEMENT_ADDRESS is empty in ${BACKEND_ENV_PATH}"
     [[ "${SETTLEMENT_ADDRESS_VALUE}" != "wepo1replacewithfundedstagingaddress" ]] || fail "WEPO_APP_FEE_SETTLEMENT_ADDRESS still has the placeholder value"
@@ -97,6 +103,37 @@ check_local_http() {
     print_step "${label} reachable ${url}"
 }
 
+check_node_profile() {
+    [[ -x "${PYTHON_BIN}" ]] || fail "Python executable is not available at ${PYTHON_BIN}"
+    NODE_STATUS_URL="${NODE_BASE_URL}/api/network/status" "${PYTHON_BIN}" - <<'PY'
+import json
+import os
+from urllib.request import urlopen
+
+with urlopen(os.environ["NODE_STATUS_URL"], timeout=5) as response:
+    document = json.load(response)
+if document.get("network_profile") != "test":
+    raise SystemExit("canonical staging node is not using the test profile")
+if document.get("network") not in (None, "test"):
+    raise SystemExit("canonical staging node reports an inconsistent network")
+PY
+    print_step "Node is on the supported test profile"
+}
+
+check_redis() {
+    [[ -x "${PYTHON_BIN}" ]] || fail "Python executable is not available at ${PYTHON_BIN}"
+    REDIS_URL="${REDIS_URL_VALUE}" "${PYTHON_BIN}" -c '
+import os
+from redis import Redis
+
+client = Redis.from_url(os.environ["REDIS_URL"], socket_connect_timeout=5, socket_timeout=5)
+if not client.ping():
+    raise SystemExit(1)
+' || fail "Redis ping failed"
+    print_step "Redis required rate-limit backend reachable"
+}
+
+
 run_release_gate() {
     local gate_script="${INSTALL_ROOT}/wepo-production-deployment/run-canonical-release-gate.sh"
     [[ -x "${gate_script}" ]] || fail "Canonical release gate script missing or not executable at ${gate_script}"
@@ -120,11 +157,13 @@ require_command systemctl
 require_command nginx
 load_backend_env
 validate_backend_env
+check_redis
 check_systemd_unit "${NODE_SERVICE_NAME}"
 check_systemd_unit "${BACKEND_SERVICE_NAME}"
 check_nginx
 check_local_http "${BACKEND_BASE_URL}/api/" "backend"
 check_local_http "${NODE_BASE_URL}/api/network/status" "node"
+check_node_profile
 
 if [[ "${RUN_RELEASE_GATE}" == "true" ]]; then
     run_release_gate

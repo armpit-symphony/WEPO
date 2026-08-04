@@ -11,6 +11,7 @@ import re
 import time
 import logging
 from typing import Dict, Any
+from decimal import Decimal, InvalidOperation
 from fastapi import HTTPException, Request
 import redis
 import json
@@ -29,17 +30,33 @@ TRUST_PROXY_HEADERS = os.environ.get("WEPO_TRUST_PROXY_HEADERS", "").strip().low
 # Redis for rate limiting and session storage
 redis_client = None
 
-def init_redis(redis_url: str = "redis://localhost:6379"):
-    """Initialize Redis connection for rate limiting"""
+
+def redis_required_for_rate_limits() -> bool:
+    return os.environ.get("WEPO_REQUIRE_REDIS_RATE_LIMIT", "").strip().lower() in (
+        "1", "true", "yes", "on"
+    )
+
+
+def init_redis(redis_url: str | None = None):
+    """Initialize Redis connection for rate limiting.
+
+    Local/dev deployments may fall back to process memory. Public production can
+    set WEPO_REQUIRE_REDIS_RATE_LIMIT=1 to fail closed instead of silently losing
+    distributed rate limiting across workers or restarts.
+    """
     global redis_client
+    redis_url = redis_url or os.getenv("REDIS_URL", "redis://localhost:6379")
     try:
         redis_client = redis.Redis.from_url(redis_url, decode_responses=True)
         redis_client.ping()
         logger.info("Redis connection established for security features")
         return True
     except Exception as e:
+        redis_client = None  # Set to None so local/dev can use in-memory fallback.
+        if redis_required_for_rate_limits():
+            logger.critical(f"Redis connection failed while required for rate limiting: {e}")
+            raise RuntimeError("Redis is required for production rate limiting but is unavailable") from e
         logger.warning(f"Redis connection failed: {e}. Using in-memory fallback.")
-        redis_client = None  # Set to None so we use in-memory fallback
         return False
 
 # In-memory fallback for rate limiting when Redis is not available
@@ -142,32 +159,55 @@ class SecurityManager:
     
     @staticmethod
     def validate_wepo_address(address: str) -> bool:
-        """Validate WEPO address format"""
+        """Validate the canonical address format for the active profile."""
         if not address or not isinstance(address, str):
             return False
-        
-        # WEPO addresses should start with 'wepo1' followed by 32 hex characters
-        pattern = r'^wepo1[a-f0-9]{32}$'
-        return bool(re.match(pattern, address.lower()))
-    
+
+        profile = os.environ.get("WEPO_NETWORK_PROFILE", "mainnet").strip().lower()
+        if re.fullmatch(r"wepo1q[a-f0-9]{39}", address):
+            return True
+        if profile == "test" and re.fullmatch(r"wepo1[a-f0-9]{32}", address):
+            return True
+        return False
+
     @staticmethod
-    def validate_transaction_amount(amount: float) -> Dict[str, Any]:
-        """Validate transaction amount"""
+    def validate_transaction_amount(amount: Any) -> Dict[str, Any]:
+        """Validate a plain decimal and preserve it without float conversion."""
         issues = []
-        
-        if not isinstance(amount, (int, float)):
-            issues.append("Amount must be a number")
-        elif amount <= 0:
-            issues.append("Amount must be greater than 0")
-        elif amount > 1000000:  # Max transaction limit
-            issues.append("Amount exceeds maximum transaction limit (1,000,000 WEPO)")
-        elif str(amount).count('.') > 1:
-            issues.append("Invalid amount format")
-        
+        sanitized_amount = ""
+
+        if isinstance(amount, bool):
+            issues.append("Amount must be a decimal value")
+        elif not isinstance(amount, (str, int, Decimal)):
+            issues.append("Amount must be a decimal value")
+        else:
+            text = str(amount).strip()
+            if not re.fullmatch(r"(?:0|[1-9][0-9]*)(?:\.[0-9]{1,8})?", text):
+                issues.append("Amount must be a plain decimal with at most 8 fractional digits")
+            else:
+                try:
+                    value = Decimal(text)
+                except InvalidOperation:
+                    issues.append("Amount must be a valid decimal")
+                else:
+                    if value <= 0:
+                        issues.append("Amount must be greater than 0")
+                    elif value > Decimal("1000000"):
+                        issues.append("Amount exceeds maximum transaction limit (1,000,000 WEPO)")
+                    elif value.as_tuple().exponent < -8:
+                        issues.append("Amount cannot have more than 8 decimal places")
+                    else:
+                        normalized_amount = format(value, "f")
+                        sanitized_amount = (
+                            normalized_amount.rstrip("0").rstrip(".")
+                            if "." in normalized_amount
+                            else normalized_amount
+                        )
+
         return {
             "is_valid": len(issues) == 0,
             "issues": issues,
-            "sanitized_amount": max(0, float(amount)) if not issues else 0
+            "sanitized_amount": sanitized_amount,
         }
     
     @staticmethod
@@ -231,7 +271,7 @@ class SecurityManager:
         
         except Exception as e:
             logger.error(f"Rate limiting error: {e}")
-            return False  # Fail open for availability
+            return redis_required_for_rate_limits()
 
     @staticmethod
     def get_rate_limit_reset_seconds(client_id: str, endpoint: str) -> int:

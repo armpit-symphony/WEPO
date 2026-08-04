@@ -1,0 +1,129 @@
+{
+  "schema": "wepo-emission-schedule-v1",
+  "parameters": {
+    "unit_atomic": "100000000",
+    "hard_cap_atomic": "6900000300000000",
+    "genesis_bootstrap_atomic": "40000000000",
+    "pos_activation_height": 131400,
+    "pow_end_height": 1008000,
+    "blocks_per_year_longterm": 58440,
+    "pos_initial_base_reward_atomic": "2500000000",
+    "pos_second_tier_year": 2,
+    "pos_third_tier_year": 5,
+    "pos_recurring_halving_start_year": 10,
+    "pos_recurring_halving_interval_years": 5,
+    "pos_max_years_guard": 256,
+    "pow_phases": [
+      {
+        "name": "pre_pos",
+        "start_height": 1,
+        "end_height": 131400,
+        "reward_atomic": "5251141552"
+      },
+      {
+        "name": "phase_2a",
+        "start_height": 131401,
+        "end_height": 306720,
+        "reward_atomic": "3317000000"
+      },
+      {
+        "name": "phase_2b",
+        "start_height": 306721,
+        "end_height": 657360,
+        "reward_atomic": "1658000000"
+      },
+      {
+        "name": "phase_2c",
+        "start_height": 657361,
+        "end_height": 832680,
+        "reward_atomic": "829000000"
+      },
+      {
+        "name": "phase_2d",
+        "start_height": 832681,
+        "end_height": 1008000,
+        "reward_atomic": "415000000"
+      }
+    ]
+  },
+  "expected": {
+    "phase_totals": [
+      {
+        "name": "pre_pos",
+        "start_height": 1,
+        "end_height": 131400,
+        "block_count": 131400,
+        "reward_atomic": "5251141552",
+        "total_atomic": "689999999932800"
+      },
+      {
+        "name": "phase_2a",
+        "start_height": 131401,
+        "end_height": 306720,
+        "block_count": 175320,
+        "reward_atomic": "3317000000",
+        "total_atomic": "581536440000000"
+      },
+      {
+        "name": "phase_2b",
+        "start_height": 306721,
+        "end_height": 657360,
+        "block_count": 350640,
+        "reward_atomic": "1658000000",
+        "total_atomic": "581361120000000"
+      },
+      {
+        "name": "phase_2c",
+        "start_height": 657361,
+        "end_height": 832680,
+        "block_count": 175320,
+        "reward_atomic": "829000000",
+        "total_atomic": "145340280000000"
+      },
+      {
+        "name": "phase_2d",
+        "start_height": 832681,
+        "end_height": 1008000,
+        "block_count": 175320,
+        "reward_atomic": "415000000",
+        "total_atomic": "72757800000000"
+      }
+    ],
+    "pow_total_atomic": "2071035639932800",
+    "pos_total_atomic": "529611246785800",
+    "all_pos_after_activation_atomic": "1219651246718600",
+    "no_eligible_pos_recipients_atomic": "2071035639932800",
+    "maximum_qualifying_issuance_atomic": "2600646886718600",
+    "maximum_scheduled_before_cap_atomic": "2600646886718600",
+    "cap_shortfall_atomic": "4299353413281400",
+    "cap_reachable": false,
+    "clamp_triggered": false,
+    "last_nonzero_pos_height": 9189599,
+    "first_zero_pos_height": 9189600,
+    "boundary_rewards": [
+      {"height": 0, "pow_base_atomic": "40000000000", "pos_pool_atomic": "0"},
+      {"height": 1, "pow_base_atomic": "5251141552", "pos_pool_atomic": "0"},
+      {"height": 131400, "pow_base_atomic": "5251141552", "pos_pool_atomic": "0"},
+      {"height": 131401, "pow_base_atomic": "3317000000", "pos_pool_atomic": "1250000000"},
+      {"height": 248279, "pow_base_atomic": "3317000000", "pos_pool_atomic": "1250000000"},
+      {"height": 248280, "pow_base_atomic": "3317000000", "pos_pool_atomic": "625000000"},
+      {"height": 306720, "pow_base_atomic": "3317000000", "pos_pool_atomic": "625000000"},
+      {"height": 306721, "pow_base_atomic": "1658000000", "pos_pool_atomic": "625000000"},
+      {"height": 423599, "pow_base_atomic": "1658000000", "pos_pool_atomic": "625000000"},
+      {"height": 423600, "pow_base_atomic": "1658000000", "pos_pool_atomic": "312500000"},
+      {"height": 657360, "pow_base_atomic": "1658000000", "pos_pool_atomic": "312500000"},
+      {"height": 657361, "pow_base_atomic": "829000000", "pos_pool_atomic": "312500000"},
+      {"height": 832680, "pow_base_atomic": "829000000", "pos_pool_atomic": "312500000"},
+      {"height": 832681, "pow_base_atomic": "415000000", "pos_pool_atomic": "312500000"},
+      {"height": 1008000, "pow_base_atomic": "415000000", "pos_pool_atomic": "156250000"},
+      {"height": 1008001, "pow_base_atomic": "0", "pos_pool_atomic": "156250000"},
+      {"height": 9189599, "pow_base_atomic": "0", "pos_pool_atomic": "1"},
+      {"height": 9189600, "pow_base_atomic": "0", "pos_pool_atomic": "0"}
+    ]
+  },
+  "interpretation": {
+    "maximum_path": "Every post-activation block is PoW through height 1008000 and every scheduled PoS pool has an eligible recipient.",
+    "paused_pool_path": "Every scheduled PoW subsidy is paid but no PoS pool has an eligible recipient; unpaid pools consume no cap headroom.",
+    "finding": "The implemented schedule is cap-safe but cannot reach the advertised 69000003 WEPO cap. Replacement economics require explicit owner review."
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "format": "wepo-backup-restore-evidence-v1",
+  "network_profile": "release-candidate",
+  "mainnet_live_network": false,
+  "release_commit": "REPLACE_WITH_RELEASE_COMMIT",
+  "release_artifact_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+  "backup": {
+    "scope": ["node-chainstate", "backend-durable-state"],
+    "encrypted_at_rest": false,
+    "encrypted_in_transit": false,
+    "off_host_copy": false,
+    "encryption_key_separated": false,
+    "validator_private_keys_included": false,
+    "wallet_seed_phrases_included": false,
+    "created_at_utc": "REPLACE_WITH_UTC_TIMESTAMP",
+    "encrypted_artifact_sha256": "REPLACE_WITH_LOWERCASE_SHA256"
+  },
+  "restore_drill": {
+    "change_approval_recorded": false,
+    "isolated_environment": false,
+    "restored_from_off_host_copy": false,
+    "restore_completed": false,
+    "node_started": false,
+    "application_health_passed": false,
+    "peer_sync_resumed": false,
+    "destructive_live_restore_performed": false,
+    "expected_chain_height": 0,
+    "restored_chain_height": 0,
+    "expected_chain_tip_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+    "restored_chain_tip_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+    "rpo_target_minutes": 0,
+    "rpo_observed_minutes": 0,
+    "rto_target_minutes": 0,
+    "rto_observed_minutes": 0,
+    "completed_at_utc": "REPLACE_WITH_UTC_TIMESTAMP",
+    "evidence_log_sha256": "REPLACE_WITH_LOWERCASE_SHA256",
+    "logs_redacted": false
+  },
+  "retention": {
+    "independent_failure_domains": 0,
+    "retained_copies": 0,
+    "restore_drill_interval_days": 0
+  }
+}

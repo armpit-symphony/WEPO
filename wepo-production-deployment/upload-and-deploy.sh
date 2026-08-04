@@ -7,14 +7,21 @@
 # - This script still deploys the bridge-era `wepo-fast-test-bridge.py` path.
 # - It is not the current authoritative production deployment path.
 # - Verify the canonical local backend/node flow first with:
-#   /home/sparky/WEPO/wepo-blockchain/scripts/run_canonical_fee_smoke.sh
+#   wepo-blockchain/scripts/run_canonical_fee_smoke.sh
 
 set -e
 
-# Configuration - UPDATE THESE
-SERVER_IP="YOUR_SERVER_IP"           # e.g., "192.168.1.100" or "your-domain.com"
-SERVER_USER="root"                   # Usually "root" for initial setup
-DOMAIN="api.wepo.network"            # Your chosen domain
+LEGACY_DEPLOY_RETIRED=1
+if [[ "${WEPO_ALLOW_LEGACY_BRIDGE_DEPLOY:-}" != "I_UNDERSTAND_THIS_DEPLOYS_RETIRED_PLACEHOLDER_CODE" ]]; then
+    echo "ERROR: This legacy bridge deployment path is retired and must not be used for public launch."
+    echo "Use the canonical backend plus full-node deployment runbook instead."
+    exit 1
+fi
+
+# Configuration. Supply these explicitly; there are no public-network defaults.
+SERVER_IP="${WEPO_SERVER_IP:-}"
+SERVER_USER="${WEPO_SERVER_USER:-root}"
+DOMAIN="${WEPO_DOMAIN:-}"
 WEPO_DIR="/opt/wepo"
 
 # Colors
@@ -31,8 +38,15 @@ echo -e "${YELLOW}⚠️  Verify the canonical backend/node path first via run_c
 echo ""
 
 # Check if configuration is updated
-if [[ "$SERVER_IP" == "YOUR_SERVER_IP" ]]; then
-    echo -e "${RED}❌ Please update the configuration in this script first:${NC}"
+if [[ -z "${SERVER_IP}" || -z "${DOMAIN}" ]]; then
+    echo -e "${RED}❌ Explicit deployment configuration is required:${NC}"
+    echo -e "   - Export WEPO_SERVER_IP with the server IP or hostname"
+    echo -e "   - Export WEPO_DOMAIN with a domain you own and control"
+    echo -e "   - Optionally export WEPO_SERVER_USER (default: root)"
+    exit 1
+fi
+if [[ ! "${DOMAIN}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || [[ "${DOMAIN}" != *.* ]]; then
+    echo -e "${RED}❌ WEPO_DOMAIN is not a valid DNS hostname.${NC}"
     echo -e "   - Set SERVER_IP to your server's IP address"
     echo -e "   - Set DOMAIN to your domain name"
     echo -e "   - Set SERVER_USER (usually 'root' for initial setup)"
@@ -59,7 +73,7 @@ echo -e "${GREEN}✅ SSH connection successful${NC}"
 # Step 1: Run server deployment script
 echo -e "${YELLOW}📦 Step 1: Running server setup script...${NC}"
 scp deploy-server.sh "${SERVER_USER}@${SERVER_IP}:/tmp/"
-ssh "${SERVER_USER}@${SERVER_IP}" "chmod +x /tmp/deploy-server.sh && /tmp/deploy-server.sh"
+ssh "${SERVER_USER}@${SERVER_IP}" "chmod +x /tmp/deploy-server.sh && WEPO_DOMAIN='${DOMAIN}' /tmp/deploy-server.sh"
 echo -e "${GREEN}✅ Server setup complete${NC}"
 
 # Step 2: Upload WEPO backend files
@@ -202,10 +216,9 @@ EOF
 
 echo -e "${GREEN}✅ Wallet configuration files updated${NC}"
 echo ""
-echo -e "${BLUE}📦 Next Steps:${NC}"
-echo -e "   1. Test your wallets with the new backend URL"
-echo -e "   2. Rebuild desktop wallet: cd wepo-desktop-wallet && ./prepare-release.sh"
-echo -e "   3. Upload to GitHub for users to download"
-echo -e "   4. Announce your live WEPO network!"
+echo -e "${BLUE}📦 Historical walkthrough complete:${NC}"
+echo -e "   This retired bridge deployment is not mainnet release evidence."
+echo -e "   Run the canonical host verifier and release-readiness gates."
+echo -e "   Do not publish wallets or announce a public network from this result."
 echo ""
-echo -e "${GREEN}🚀 Your WEPO blockchain network is now LIVE!${NC}"
+echo -e "${YELLOW}⚠️  Mainnet remains closed.${NC}"

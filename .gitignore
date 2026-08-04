@@ -58,6 +58,15 @@ dump.rdb
 __pycache__/
 *pyc*
 venv/
+
+# Local WEPO qualification outputs; retain externally, never commit.
+/release-evidence/local/
+/wepo-desktop-wallet/dist-candidate-*/
+/zk/fuzz-*.log
+
+# Patch-tool leftovers are archived outside the repository when found.
+*.orig
+*.rej
 .venv/
 
 # Development tools

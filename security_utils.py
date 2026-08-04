@@ -337,3 +337,12 @@ def security_middleware_handler(request: Request, call_next):
     except Exception as e:
         logger.error(f"Security middleware error: {e}")
         raise HTTPException(status_code=500, detail="Security middleware error")
+
+# Compatibility import path. The maintained implementation lives under
+# backend/security_utils.py; alias this historical top-level module to that
+# exact module object so Redis state and deployment safety flags cannot diverge
+# based on the process working directory or sys.path order.
+import sys as _sys
+from backend import security_utils as _canonical_security_utils
+
+_sys.modules[__name__] = _canonical_security_utils

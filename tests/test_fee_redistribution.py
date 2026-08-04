@@ -161,13 +161,15 @@ def test_fees_paid_after_cap_exhausted():
     # redistributed in full — the network keeps paying its workers forever.
     bc, tmp = new_chain()
     orig_cap = bc_mod.SUPPLY_CAP
+    orig_genesis = bc_mod.GENESIS_BOOTSTRAP_REWARD
     try:
         # Exhaust the cap using a synthetic chain.
         reward = bc.calculate_block_reward(1)
         bc_mod.SUPPLY_CAP = reward * 2
+        bc_mod.GENESIS_BOOTSTRAP_REWARD = 0
         bc.chain = [types.SimpleNamespace(
             height=h, header=types.SimpleNamespace(is_pos_block=lambda: False)
-        ) for h in range(1, 4)]
+        ) for h in range(0, 4)]
         bc.get_active_masternodes = lambda: make_masternodes(2)
         bc.get_active_stakes = lambda: []
 
@@ -182,6 +184,7 @@ def test_fees_paid_after_cap_exhausted():
         check("cap exhausted: coinbase mints zero new supply (fees only)",
               out_sum - sum(fees) == 0)
     finally:
+        bc_mod.GENESIS_BOOTSTRAP_REWARD = orig_genesis
         bc_mod.SUPPLY_CAP = orig_cap
         shutil.rmtree(tmp, ignore_errors=True)
 

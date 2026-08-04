@@ -51,15 +51,17 @@ After the verifier passes, use:
 /home/sparky/WEPO/wepo-production-deployment/MULTI_WALLET_TEST_MATRIX.md
 ```
 
-## 🎯 Complete Deployment in 30 Minutes
+## Retired bridge-era walkthrough
 
-This guide will get your WEPO blockchain network live on the internet in about 30 minutes.
+The remaining material is historical context only. It does not qualify a host,
+create a production-ready network, or replace the canonical gates above. Do not
+use it for mainnet deployment. `.example` names are non-routable placeholders.
 
 ## 📋 Prerequisites
 
 **What You Need:**
 - ✅ A VPS/Cloud server (DigitalOcean, AWS, etc.)
-- ✅ A domain name (e.g., `api.wepo.network`)
+- ✅ The owned launch domain `wepocoin.org` (API target `api.wepocoin.org`, pending DNS verification)
 - ✅ SSH access to your server
 - ✅ Basic command line knowledge
 
@@ -96,8 +98,8 @@ This guide will get your WEPO blockchain network live on the internet in about 3
 **Point your domain to your server:**
 ```bash
 # Add these DNS records:
-A     api.wepo.network    →  YOUR_SERVER_IP
-AAAA  api.wepo.network    →  YOUR_SERVER_IPv6 (optional)
+A     api.wepocoin.org                 →  YOUR_SERVER_IP
+AAAA  api.wepocoin.org                 →  YOUR_SERVER_IPv6 (optional)
 ```
 
 ### **Step 3: Edit Deployment Script (1 minute)**
@@ -107,7 +109,7 @@ AAAA  api.wepo.network    →  YOUR_SERVER_IPv6 (optional)
 # Open the file and change these lines:
 SERVER_IP="192.168.1.100"        # → Your actual server IP
 SERVER_USER="root"               # → Usually "root" for initial setup
-DOMAIN="api.wepo.network"        # → Your actual domain
+DOMAIN="api.wepocoin.org" # Use only after DNS control and the live record are verified
 ```
 
 ### **Step 4: Set Up SSH Access (2 minutes)**
@@ -147,10 +149,10 @@ cd /app/wepo-production-deployment
 **The script automatically updates your wallet configs:**
 ```bash
 # Desktop wallet .env file updated to:
-REACT_APP_BACKEND_URL=https://api.wepo.network
+REACT_APP_BACKEND_URL=https://api.wepocoin.org
 
 # Web wallet .env file updated to:
-REACT_APP_BACKEND_URL=https://api.wepo.network
+REACT_APP_BACKEND_URL=https://api.wepocoin.org
 ```
 
 ### **Step 7: Test Everything (3 minutes)**
@@ -158,18 +160,18 @@ REACT_APP_BACKEND_URL=https://api.wepo.network
 **Test your live network:**
 ```bash
 # Test API health
-curl https://api.wepo.network/api/
+curl https://api.wepocoin.org/api/
 
 # Test wallet creation
-curl -X POST https://api.wepo.network/api/wallet/create \
+curl -X POST https://api.wepocoin.org/api/wallet/create \
   -H "Content-Type: application/json" \
   -d '{"username":"test","encrypted_seed":"test_seed"}'
 
 # Test Bitcoin integration
-curl https://api.wepo.network/api/bitcoin/network/status
+curl https://api.wepocoin.org/api/bitcoin/network/status
 
 # Test Quantum Vault
-curl -X POST https://api.wepo.network/api/vault/create \
+curl -X POST https://api.wepocoin.org/api/vault/create \
   -H "Content-Type: application/json" \
   -d '{"wallet_address":"wepo1test123"}'
 ```
@@ -178,7 +180,7 @@ curl -X POST https://api.wepo.network/api/vault/create \
 
 After deployment, verify these work:
 
-- [ ] **API Health**: `curl https://api.wepo.network/api/` returns success
+- [ ] **API Health**: `curl https://api.wepocoin.org/api/` returns success
 - [ ] **SSL Certificate**: HTTPS works without warnings
 - [ ] **CORS Headers**: No CORS errors in browser
 - [ ] **Service Status**: `systemctl status wepo-api` shows "active (running)"
@@ -204,7 +206,7 @@ scp wepo-fast-test-bridge.py root@YOUR_SERVER_IP:/opt/wepo/
 ssh root@YOUR_SERVER_IP 'systemctl restart wepo-api'
 
 # Check API health
-curl https://api.wepo.network/api/
+curl https://api.wepocoin.org/api/
 ```
 
 **Log Locations:**
@@ -269,10 +271,10 @@ systemctl status wepo-api     # Check status
 **SSL Certificate Fails:**
 ```bash
 # Make sure DNS is pointing to server
-dig api.wepo.network
+dig api.wepocoin.org
 
 # Retry certificate
-certbot --nginx -d api.wepo.network
+certbot --nginx -d api.wepocoin.org
 ```
 
 **API Not Accessible:**
@@ -292,15 +294,8 @@ pip3 install -r requirements.txt
 systemctl restart wepo-api
 ```
 
-## 🎉 Success!
+## Historical walkthrough endpoint
 
-When everything is working, you'll have:
-
-- **Live API**: `https://api.wepo.network/api/`
-- **Global Access**: Wallets connect from anywhere
-- **Professional Setup**: SSL, monitoring, logging
-- **Christmas Ready**: Genesis launch prepared
-
-**Your WEPO blockchain network is now LIVE! 🚀**
-
-Users can download your desktop wallet from GitHub and immediately start using the full WEPO ecosystem with real Bitcoin integration, privacy features, and network participation!
+Completing this walkthrough is not release evidence. Retain the canonical
+host-verifier output and satisfy every release-readiness gate before describing
+a deployment as public or production-ready.

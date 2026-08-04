@@ -1,0 +1,109 @@
+{
+  "coinbase_maturity": {
+    "candidate_time_envelope": {
+      "hybrid_fast_minutes": 300,
+      "hybrid_slow_minutes": 900,
+      "pre_pos_minutes": 600
+    },
+    "candidates": [
+      {
+        "blocks": 50,
+        "hybrid_fast_minutes_at_3m": 150,
+        "hybrid_slow_minutes_at_9m": 450,
+        "pre_pos_minutes_at_6m": 300
+      },
+      {
+        "blocks": 100,
+        "hybrid_fast_minutes_at_3m": 300,
+        "hybrid_slow_minutes_at_9m": 900,
+        "pre_pos_minutes_at_6m": 600
+      },
+      {
+        "blocks": 200,
+        "hybrid_fast_minutes_at_3m": 600,
+        "hybrid_slow_minutes_at_9m": 1800,
+        "pre_pos_minutes_at_6m": 1200
+      }
+    ],
+    "caveat": "Elapsed time is descriptive, not consensus; maturity is counted in canonical blocks and must be reviewed against reorg and pool behavior.",
+    "conservative_candidate_blocks": 100
+  },
+  "emission": {
+    "cap_reachable_under_current_schedule": false,
+    "exact_target_requirements": [
+      "scheduled qualifying issuance must be at least the hard cap",
+      "unpaid or ineligible reward treatment must be deterministic and reorg-safe",
+      "every valid continuing-chain path needs an eventually payable issuance recipient",
+      "the final payout must clamp exactly to remaining cap headroom",
+      "new cross-runtime vectors and independent review are required"
+    ],
+    "finding": "The current schedule cannot guarantee an exact terminal supply; even its maximum qualifying path ends below the hard cap.",
+    "hard_cap_atomic": "6900000300000000",
+    "hard_cap_wepo": "69000003.00000000",
+    "implemented_policy": "ceiling_only",
+    "last_nonzero_pos_height": 9189599,
+    "maximum_path_shortfall_atomic": "4299353413281400",
+    "maximum_path_shortfall_wepo": "42993534.13281400",
+    "maximum_qualifying_issuance_atomic": "2600646886718600",
+    "maximum_qualifying_issuance_wepo": "26006468.86718600",
+    "no_eligible_pos_issuance_atomic": "2071035639932800",
+    "no_eligible_pos_issuance_wepo": "20710356.39932800",
+    "no_eligible_pos_shortfall_atomic": "4828964660067200",
+    "no_eligible_pos_shortfall_wepo": "48289646.60067200",
+    "pow_total_atomic": "2071035639932800"
+  },
+  "relay_fee": {
+    "candidate_rates": [
+      {
+        "default_fee_headroom_atomic": 10000,
+        "default_fee_passes": true,
+        "rate_atomic_per_kb": 0,
+        "required_fee_atomic": 0,
+        "required_fee_wepo": "0.00000000"
+      },
+      {
+        "default_fee_headroom_atomic": 9184,
+        "default_fee_passes": true,
+        "rate_atomic_per_kb": 100,
+        "required_fee_atomic": 816,
+        "required_fee_wepo": "0.00000816"
+      },
+      {
+        "default_fee_headroom_atomic": 1840,
+        "default_fee_passes": true,
+        "rate_atomic_per_kb": 1000,
+        "required_fee_atomic": 8160,
+        "required_fee_wepo": "0.00008160"
+      },
+      {
+        "default_fee_headroom_atomic": 4,
+        "default_fee_passes": true,
+        "rate_atomic_per_kb": 1225,
+        "required_fee_atomic": 9996,
+        "required_fee_wepo": "0.00009996"
+      },
+      {
+        "default_fee_headroom_atomic": -5,
+        "default_fee_passes": false,
+        "rate_atomic_per_kb": 1226,
+        "required_fee_atomic": 10005,
+        "required_fee_wepo": "0.00010005"
+      }
+    ],
+    "caveat": "This vector proves compatibility for its exact shape only; wallets must calculate fees from final canonical bytes for larger inputs or metadata.",
+    "compatible_round_candidate_atomic_per_kb": 1000,
+    "representative_transaction": {
+      "canonical_bytes": 8160,
+      "default_fee_atomic": 10000,
+      "default_fee_wepo": "0.00010000",
+      "description": "committed one-input/two-output ML-DSA wallet vector",
+      "maximum_compatible_rate_atomic_per_kb": 1225,
+      "transparent_transactions_per_2mib_upper_bound": 257
+    }
+  },
+  "schema": "wepo-mainnet-parameter-decision-evidence-v1",
+  "source_vectors": {
+    "emission_schedule_v1_sha256": "57c3edd9d1f694ba52d5492f1e719101f7c435ef99215258961237b57f06f6cc",
+    "wallet_signing_v3_sha256": "9b2b92f5482721a4287ed224dc638297b8e8a42d098d5ba7b9a90b44fdf36704"
+  }
+}

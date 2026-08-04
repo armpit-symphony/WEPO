@@ -6,7 +6,10 @@ import {
   encryptMessage,
   decryptMessage,
   verifyEnvelope,
+  keyOwnerBindingDigest,
+  verifyOwnerBinding,
 } from '../frontend/src/utils/wepoMessaging.js';
+import { deriveWepoKeypair, signDigest } from '../frontend/src/utils/wepoSigner.js';
 
 const FAIL = [];
 const check = (name, cond) => {
@@ -59,6 +62,27 @@ check('tampered ciphertext refuses to decrypt', tamperBlocked);
 // 6) sender authenticity: altering 'from' invalidates the signature
 const spoofed = { ...env, from: 'wepo1qmallory' };
 check('altering the sender invalidates the signature', verifyEnvelope(spoofed) === false);
+
+// 7) spend-key OWNERSHIP binding (front-run prevention, sender-side trust check)
+// Bob owns his address via the spend key; his messaging bundle is owner-bound.
+const bobSpend = deriveWepoKeypair('bob wallet recovery phrase fixed for test');
+const bobKem = bob.publicBundle.kem;
+const bobSig = bob.publicBundle.sig;
+const bobOwnerSig = signDigest(
+  keyOwnerBindingDigest(bobSpend.address, bobKem, bobSig), bobSpend.secretKey);
+check('owner-bound bundle verifies for the address that owns it',
+  verifyOwnerBinding(bobSpend.address, bobKem, bobSig, bobSpend.publicKeyHex, bobOwnerSig) === true);
+
+// Mallory tries to publish keys for Bob's address, signed with HER spend key.
+const mallorySpend = deriveWepoKeypair('mallory wallet recovery phrase fixed for test');
+const malloryOwnerSig = signDigest(
+  keyOwnerBindingDigest(bobSpend.address, bobKem, bobSig), mallorySpend.secretKey);
+check('a non-owner spend key cannot bind another address (front-run blocked)',
+  verifyOwnerBinding(bobSpend.address, bobKem, bobSig, mallorySpend.publicKeyHex, malloryOwnerSig) === false);
+
+// Claiming Bob's address while presenting Mallory's own key is rejected by the hash check.
+check('owner binding whose pubkey does not hash to the address is rejected',
+  verifyOwnerBinding(bobSpend.address, bobKem, bobSig, mallorySpend.publicKeyHex, bobOwnerSig) === false);
 
 console.log('');
 if (FAIL.length) { console.log(`RESULT: FAILED (${FAIL.length}): ${FAIL}`); process.exit(1); }

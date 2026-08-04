@@ -1,0 +1,237 @@
+name: WEPO release qualification
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUTF8: "1"
+  WEPO_NETWORK_PROFILE: test
+
+jobs:
+  python-maintained:
+    name: Maintained Python suite
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements-test.txt
+            backend/requirements.txt
+            wepo-blockchain/requirements.txt
+      - name: Install pinned Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r wepo-blockchain/requirements.txt -r backend/requirements.txt -r requirements-test.txt
+      - name: Run maintained suite and retain log
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/release-evidence/logs"
+          python -m pytest -q 2>&1 | tee "$RUNNER_TEMP/release-evidence/logs/python-maintained.log"
+          passed="$(grep -Eo '[0-9]+ passed' "$RUNNER_TEMP/release-evidence/logs/python-maintained.log" | tail -1 | awk '{print $1}')"
+          test "${passed:-0}" -ge 243
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rq-python-log
+          path: ${{ runner.temp }}/release-evidence/logs/python-maintained.log
+          if-no-files-found: error
+
+  rust-native-wasm:
+    name: Rust tests and native/WASM artifacts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.1
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt
+      - name: Run locked Rust release tests and build targets
+        working-directory: zk
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/release-evidence/logs"
+          {
+            cargo fmt --all -- --check
+            cargo test --release --locked --all-targets
+            cargo build --release --locked --all-targets
+          } 2>&1 | tee "$RUNNER_TEMP/release-evidence/logs/rust-release-all-targets.log"
+      - name: Build and hash Ghost native/WASM artifacts
+        run: |
+          python wepo-production-deployment/build-ghost-artifacts.py \
+            --output-dir "$RUNNER_TEMP/ghost-artifacts"
+          mkdir -p "$RUNNER_TEMP/release-evidence/ghost"
+          cp -R "$RUNNER_TEMP/ghost-artifacts"/* "$RUNNER_TEMP/release-evidence/ghost/"
+          sha256sum "$RUNNER_TEMP/release-evidence/ghost/artifacts"/* \
+            > "$RUNNER_TEMP/release-evidence/ghost/artifacts.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rq-rust-ghost
+          path: |
+            ${{ runner.temp }}/release-evidence/logs/rust-release-all-targets.log
+            ${{ runner.temp }}/release-evidence/ghost
+          if-no-files-found: error
+
+  frontend:
+    name: Frontend Vitest and production build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.17.0"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pinned frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Run Vitest and retain log
+        working-directory: frontend
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/release-evidence/logs"
+          npm test -- --reporter=verbose 2>&1 | tee "$RUNNER_TEMP/release-evidence/logs/frontend-vitest.log"
+      - name: Build production frontend and retain log
+        working-directory: frontend
+        run: |
+          set -o pipefail
+          npm run build 2>&1 | tee "$RUNNER_TEMP/release-evidence/logs/frontend-production-build.log"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rq-frontend-logs
+          path: ${{ runner.temp }}/release-evidence/logs
+          if-no-files-found: error
+
+  desktop-windows:
+    name: Windows desktop package boundary
+    needs: [rust-native-wasm]
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      CI: "true"
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      WEPO_NETWORK_PROFILE: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.17.0"
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            wepo-desktop-wallet/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@1.85.1
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Install frontend and desktop dependencies
+        run: |
+          npm ci --prefix frontend
+          npm ci --prefix wepo-desktop-wallet
+      - name: Build Ghost artifacts on the Windows release runner
+        working-directory: wepo-desktop-wallet
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\release-evidence\logs" | Out-Null
+          npm run build-ghost-artifacts 2>&1 | Tee-Object "$env:RUNNER_TEMP\release-evidence\logs\ghost-windows-build.log"
+      - name: Build frontend and verify package boundary
+        working-directory: wepo-desktop-wallet
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          npm run build-frontend 2>&1 | Tee-Object "$env:RUNNER_TEMP\release-evidence\logs\frontend-windows-build.log"
+          npm run verify-builder-security
+          npm run verify-canonical-client 2>&1 | Tee-Object "$env:RUNNER_TEMP\release-evidence\logs\desktop-package.log"
+          npm run pack 2>&1 | Tee-Object -Append "$env:RUNNER_TEMP\release-evidence\logs\desktop-package.log"
+          npm run verify-packaged-desktop 2>&1 | Tee-Object -Append "$env:RUNNER_TEMP\release-evidence\logs\desktop-package.log"
+      - name: Hash Windows package inputs and outputs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = (Get-Location).Path
+          $evidence = "$env:RUNNER_TEMP\release-evidence"
+          New-Item -ItemType Directory -Force -Path "$evidence\desktop" | Out-Null
+          Get-ChildItem -LiteralPath "$root\release-artifacts\ghost" -File -Recurse |
+            Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { "{0}  {1}" -f $_.Hash.ToLowerInvariant(), $_.Path } |
+            Set-Content -Encoding ascii "$evidence\desktop\ghost-windows-artifacts.sha256"
+          Get-ChildItem -LiteralPath "$root\wepo-desktop-wallet\dist" -File -Recurse |
+            Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { "{0}  {1}" -f $_.Hash.ToLowerInvariant(), $_.Path } |
+            Set-Content -Encoding ascii "$evidence\desktop\desktop-package.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rq-desktop-windows
+          path: |
+            ${{ runner.temp }}\release-evidence\logs
+            ${{ runner.temp }}\release-evidence\desktop
+            wepo-desktop-wallet/dist
+            release-artifacts/ghost
+          if-no-files-found: error
+
+  qualification-bundle:
+    name: Assemble CI qualification bundle
+    needs: [python-maintained, rust-native-wasm, frontend, desktop-windows]
+    runs-on: ubuntu-24.04
+    if: ${{ always() && needs.python-maintained.result == 'success' && needs.rust-native-wasm.result == 'success' && needs.frontend.result == 'success' && needs.desktop-windows.result == 'success' }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rq-*
+          path: release-evidence/ci
+          merge-multiple: false
+      - name: Create hash-bound CI qualification summary
+        run: |
+          set -eu
+          mkdir -p release-evidence/summary
+          {
+            echo "format=wepo-ci-release-qualification-v1"
+            echo "repository=${GITHUB_REPOSITORY}"
+            echo "commit=${GITHUB_SHA}"
+            echo "workflow=${GITHUB_WORKFLOW}"
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "status=all_required_ci_jobs_passed"
+            echo "release_evidence_assembly=blocked_pending_signed_release_inputs"
+            echo "required_external_inputs=source_archive,signed_source_archive,SHA256SUMS,SHA256SUMS.sig,release_signing_public_key,genesis_transcript,parameter_manifest"
+          } | tee release-evidence/summary/github-actions-green.log
+          find release-evidence/ci -type f -print0 | sort -z | xargs -0 sha256sum > release-evidence/summary/ci-artifacts.sha256
+          cp wepo-production-deployment/release-qualification-evidence.template.json release-evidence/summary/release-qualification-evidence.template.json
+      - name: Verify CI bundle contains required retained logs
+        run: |
+          set -eu
+          test -n "$(find release-evidence/ci -name python-maintained.log -print -quit)"
+          test -n "$(find release-evidence/ci -name rust-release-all-targets.log -print -quit)"
+          test -n "$(find release-evidence/ci -name frontend-vitest.log -print -quit)"
+          test -n "$(find release-evidence/ci -name frontend-production-build.log -print -quit)"
+          test -n "$(find release-evidence/ci -name desktop-package.log -print -quit)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wepo-ci-release-qualification-${{ github.sha }}
+          path: release-evidence
+          if-no-files-found: error

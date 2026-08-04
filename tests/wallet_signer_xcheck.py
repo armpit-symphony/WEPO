@@ -39,14 +39,18 @@ def main():
 
     tx = Transaction.from_dict(fx["signed_tx"])
     check("JS canonical sighash matches Python",
-          tx.get_canonical_sighash().hex() == fx["sighash"])
+          tx.get_canonical_sighash(fx["network"]).hex() == fx["sighash"])
     check("JS self-verify reported true", fx["js_self_verify"] is True)
     check("JS signature verifies under Python (owner binding)",
-          tx.verify_quantum_signature(0, expected_address=fx["owner_address"]) is True)
+          tx.verify_quantum_signature(
+              0,
+              expected_address=fx["owner_address"],
+              network=fx["network"],
+          ) is True)
 
     tmp = tempfile.mkdtemp(prefix="wepo-signer-xcheck-")
     try:
-        bc = WepoBlockchain(data_dir=tmp)
+        bc = WepoBlockchain(data_dir=tmp, network_profile=fx["network"])
         bc.conn.execute(
             "INSERT INTO utxos (txid, vout, address, amount, script_pubkey, spent) "
             "VALUES (?, ?, ?, ?, ?, FALSE)",

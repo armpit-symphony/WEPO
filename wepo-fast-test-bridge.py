@@ -173,25 +173,25 @@ class FastTestBlockchain:
         
         # PHASE 1: Pre-PoS Mining (Months 1-18) - 10% of total supply
         PRE_POS_DURATION_BLOCKS = 131400    # 18 months in 6-minute blocks
-        PRE_POS_REWARD = int(6900000 * COIN / PRE_POS_DURATION_BLOCKS)  # 52.51 WEPO per block
+        PRE_POS_REWARD = 6900000 * COIN // PRE_POS_DURATION_BLOCKS  # 52.51 WEPO per block
         
         # Long-term PoW phases (alongside PoS/Masternodes)
-        BLOCKS_PER_YEAR_LONGTERM = int(365.25 * 24 * 60 / 9)  # 58,400 blocks per year (9-min blocks)
+        BLOCKS_PER_YEAR_LONGTERM = 36525 * 24 * 60 // (100 * 9)  # 58,440 blocks/year
         
         # PHASE 2A: Post-PoS Years 1-3 (Months 19-54)
-        PHASE_2A_REWARD = int(33.17 * COIN)  # 33.17 WEPO per block
+        PHASE_2A_REWARD = 33 * COIN + 17000000  # 33.17 WEPO per block
         PHASE_2A_END_HEIGHT = PRE_POS_DURATION_BLOCKS + (3 * BLOCKS_PER_YEAR_LONGTERM)
         
         # PHASE 2B: Post-PoS Years 4-9 (Months 55-126) - First Halving
-        PHASE_2B_REWARD = int(16.58 * COIN)  # 16.58 WEPO per block
+        PHASE_2B_REWARD = 16 * COIN + 58000000  # 16.58 WEPO per block
         PHASE_2B_END_HEIGHT = PHASE_2A_END_HEIGHT + (6 * BLOCKS_PER_YEAR_LONGTERM)
         
         # PHASE 2C: Post-PoS Years 10-12 (Months 127-162) - Second Halving
-        PHASE_2C_REWARD = int(8.29 * COIN)  # 8.29 WEPO per block
+        PHASE_2C_REWARD = 8 * COIN + 29000000  # 8.29 WEPO per block
         PHASE_2C_END_HEIGHT = PHASE_2B_END_HEIGHT + (3 * BLOCKS_PER_YEAR_LONGTERM)
         
         # PHASE 2D: Post-PoS Years 13-15 (Months 163-198) - Final Halving
-        PHASE_2D_REWARD = int(4.15 * COIN)  # 4.15 WEPO per block
+        PHASE_2D_REWARD = 4 * COIN + 15000000  # 4.15 WEPO per block
         PHASE_2D_END_HEIGHT = PHASE_2C_END_HEIGHT + (3 * BLOCKS_PER_YEAR_LONGTERM)
         
         # Calculate reward based on height
@@ -211,7 +211,7 @@ class FastTestBlockchain:
             # Phase 2D: 4.15 WEPO per block (9-minute blocks)
             return PHASE_2D_REWARD
         else:
-            # PoW ends at block 1,007,400 (Month 198)
+            # PoW ends at block 1,008,000 (nominal Month 198)
             # Miners continue earning through 25% fee redistribution
             return 0
     

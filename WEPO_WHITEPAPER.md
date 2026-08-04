@@ -3,10 +3,12 @@
 *A decentralized, post-quantum, privacy-centric freedom coin — self-custodied money,
 private messaging, and on-chain real-world assets.*
 
-Status legend: **✅ Live** (in consensus/code now) · **🔒 Built but gated** (needs
-independent audit before enabling) · **🕒 Planned** (placeholder / future track).
+Status legend: **✅ Implemented and locally tested** (not a mainnet-readiness
+claim) · **🔒 Built but gated** (needs independent audit before enabling) ·
+**🕒 Planned** (placeholder / future track).
 
-Confirmed genesis: **2026-09-02, 18:00:00 UTC** (Unix epoch `1788372000`).
+Genesis date: **not set**. Mainnet remains deliberately unavailable until every
+readiness gate passes; the earliest proposed genesis is 30 full days afterward.
 
 ---
 
@@ -17,7 +19,7 @@ hybrid Proof-of-Work → Proof-of-Stake Layer-1. Three pillars:
 
 1. **Private value transfer** — self-custodied money with a post-quantum shielded layer.
 2. **Private messaging** — end-to-end, post-quantum encrypted, blind-relay chat.
-3. **Real-world assets (RWA)** — on-chain issuance of asset records anchored to the chain.
+3. **Real-world assets (RWA)** — on-chain issuance of asset records anchored to the chain ✅.
 
 ## 2. Consensus & blockchain technology ✅
 
@@ -28,6 +30,10 @@ hybrid Proof-of-Work → Proof-of-Stake Layer-1. Three pillars:
 - **Proof-of-Work:** **Argon2id** (memory-hard) — `time_cost=3, memory=4 MB,
   parallelism=1, 32-byte hash`. Memory-hardness resists ASIC dominance and keeps mining
   **CPU-friendly** (in-wallet mining is viable).
+  The consensus preimage encodes version, previous hash, Merkle root, an
+  unsigned 64-bit timestamp, difficulty, nonce, and `pow`; numeric fields are
+  little-endian. The independently replayed byte contract is recorded in
+  `MAINNET_PARAMETER_FREEZE.md`.
 - **Post-quantum signatures:** consensus spend authorization uses **ML-DSA-44 (NIST
   FIPS 204)** — not ECDSA. Addresses are `wepo1q…`, bound to the public-key hash.
   Spend authorization is enforced at the consensus layer (client-side signing).
@@ -49,7 +55,7 @@ hybrid Proof-of-Work → Proof-of-Stake Layer-1. Three pillars:
 | Parameter | Value |
 |---|---|
 | Name / ticker | **WEPO** |
-| Max supply | **69,000,003 WEPO** (hard cap, consensus-enforced clamp) |
+| Supply ceiling | **69,000,003 WEPO** (cap-safe; emission reachability under review) |
 | Smallest unit | 1 WEPO = 100,000,000 base units (8 decimals) |
 | Genesis bootstrap | 400 WEPO |
 | Block time — PoW Phase 1 | 6 min (360 s) |
@@ -72,6 +78,14 @@ hybrid Proof-of-Work → Proof-of-Stake Layer-1. Three pillars:
 
 Rewards halve across 2A→2B→2C→2D. Supply split: **~20.7 M (30%) to PoW**,
 **~48.3 M (70%) to PoS** (fill-to-cap remainder = 48,299,603 WEPO).
+**Pre-freeze audit correction (2026-08-01):** the 30%/70% split above is a
+nominal target, not the implemented terminal allocation. The complete current
+schedule can issue at most **26,006,468.86718600 WEPO**, including only
+**5,296,112.46785800 WEPO** from the full paid PoS tail. It stops
+**42,993,534.13281400 WEPO** below the cap. Tokenomics are therefore not frozen
+and no release candidate may publish the nominal split as achieved. See
+`docs/EMISSION_SCHEDULE_AUDIT.md`.
+
 
 ### Fee distribution
 
@@ -88,18 +102,27 @@ Rewards halve across 2A→2B→2C→2D. Supply split: **~20.7 M (30%) to PoW**,
 ## 4. Wallet & functions ✅
 
 Self-custody wallet (web + desktop). **BIP39 12-word recovery phrase**, client-side key
-derivation and transaction signing (the server never holds keys). Functions: send /
-receive, in-wallet mining, staking, masternode setup, RWA creation, private messaging, and
-(gated) Ghost transfers + Quantum Vault. Recovery/restore on any device from the phrase.
+derivation and transaction signing (the server never holds keys). Core release candidates
+are send / receive, in-wallet mining, and the block explorer. Staking / masternode setup is
+a separate launch-readiness gate and activates only under the frozen consensus profile.
+Private messaging and on-chain RWA creation are optional and disabled by default until
+their own acceptance. Ghost transfers, Quantum Vault, RWA trading, and BTC integration
+remain gated. Recovery/restore on any device from the phrase still requires release
+acceptance.
 
-## 5. Private chat technology ✅
+## 5. Private chat technology 🔒
 
 End-to-end **post-quantum** encrypted messaging. Per-message **ML-KEM-768 (FIPS 203)** key
 encapsulation → **AES-256-GCM**, signed with **ML-DSA-44**. The server is a **blind relay**
-(stores only opaque ciphertext, never keys, cannot read content). **Click-and-use**
-(device-local messaging key, no password). Trustless key discovery via **on-chain key
-anchoring**; optional **Tor** routing for metadata privacy. Live and tested (two-wallet
-E2E succeeded).
+(stores only opaque ciphertext, never keys, cannot read content). **Click-and-use**: sending
+and reading use a device-local messaging key with no password. **Trustless key discovery** —
+a recipient's messaging keys are cryptographically **bound to their address by their wallet's
+spend key** (the same key that controls funds), so no one can front-run or spoof another
+address's keys; the sender verifies this binding before encrypting. The ownership proof is
+produced automatically when the wallet is opened (no extra step, no fee, no on-chain
+transaction required), with an **on-chain key anchor** available as an even-stronger option.
+Optional **Tor** routing for metadata privacy. The messaging implementation has regression
+coverage but is disabled in the default release profile pending final acceptance.
 
 ## 6. Mining ✅ / 🕒
 
@@ -107,7 +130,7 @@ E2E succeeded).
 node/wallet miner (`getwork` / `submit` endpoints). **Mining pools: 🕒 placeholder** — none
 at launch, to be added post-launch.
 
-## 7. Staking & masternodes ✅
+## 7. Staking & masternodes 🔒
 
 - **Staking:** minimum **1,000 WEPO**; activates at block 131,400; stakers earn **15%** of
   network fees post-PoS.
@@ -131,8 +154,9 @@ at launch, to be added post-launch.
   (confidential amounts + unlinkability). **Built in design, gated OFF, verifier not yet
   audited** — ships after external audit.
 - **Quantum Vault** = shielded holding, same track.
-- **Live privacy today:** metadata privacy via **Dandelion++** transaction relay + optional
-  **Tor**, and end-to-end private messaging.
+- **Implemented metadata privacy:** **Dandelion++** transaction relay + optional
+  **Tor**. End-to-end private messaging is implemented but remains disabled in the default
+  release profile pending its own acceptance.
 - **Approved framing:** *"Ghost transfers & Vault — post-quantum private transactions,
   launching after independent audit."* (Do not imply they are live on day one.)
 
@@ -145,18 +169,24 @@ governance — on the roadmap."*
 ## 11. Ecosystem 🕒 / 🔒
 
 - **DEX / exchange:** 🕒 planned (BTC swaps + RWA trading tracks) — placeholder at launch.
-- **RWA issuance:** ✅ on-chain asset *creation* is built (gated at launch); *trading* is later.
-- **Block explorer:** 🕒 not built — placeholder (worth prioritizing; users expect one at launch).
+- **RWA issuance:** 🔒 on-chain asset *creation* is implemented, consensus-validated,
+  owner-bound (only the address that controls the funds can issue), and self-custody
+  signed, but it is optional and disabled by default pending acceptance.
+  *Trading* is 🕒 later (it depends on the swap/DEX track).
+- **Block explorer:** ✅ built — privacy-aware in-wallet explorer (blocks, transactions,
+  addresses, search) served by the gateway; shielded transactions expose shape only, never
+  amounts or parties. A standalone external explorer can be pointed to via config later.
 - **dApp platform:** 🕒 placeholder.
 
 ## 12. Roadmap & milestones
 
-- **Now → September 2026:** genesis rehearsal, seed-node deploy (AWS + VPS + optional this
-  server), parameter freeze, security signoff.
-- **Genesis:** **2026-09-02, 18:00:00 UTC** (epoch `1788372000`).
+- **Readiness phase:** regression closure, independent audit, seed-node deployment across
+  independent failure domains, parameter freeze, operational rehearsal, and security
+  signoff.
+- **Genesis:** date not set; no earlier than 30 full days after readiness acceptance.
 - **~Month 18 (block 131,400):** PoS + staking + masternode rewards activate.
-- **Post-launch, audited tracks (in order):** Ghost transfers + Quantum Vault → block
-  explorer → RWA trading / DEX → governance → mobile.
+- **Post-launch, audited tracks (in order):** Ghost transfers + Quantum Vault → RWA
+  creation/trading → private messaging → DEX → governance → mobile.
 - **Block 1,008,000:** PoW emission ends; PoS-only issuance continues to the 69,000,003 cap.
 
 ---
@@ -164,4 +194,5 @@ governance — on the roadmap."*
 *This document is derived from the canonical consensus source
 (`wepo-blockchain/core/blockchain.py`, `network_profile.py`, `p2p_network.py`). Where a
 feature is marked 🔒 or 🕒, public/marketing copy must not present it as live. Figures are
-consensus-frozen for the v1 mainnet launch.*
+release-candidate values only until the parameter-freeze and genesis checklists are
+formally accepted.*

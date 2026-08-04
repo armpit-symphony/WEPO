@@ -18,6 +18,7 @@ from typing import List, Optional, Dict, Any, Tuple
 import uuid
 import hashlib
 import time
+from contextlib import asynccontextmanager
 import requests
 from datetime import datetime
 from enum import Enum
@@ -33,6 +34,7 @@ sys.path.append(str(ROOT_DIR))
 CORE_DIR = ROOT_DIR.parent / "wepo-blockchain" / "core"
 if str(CORE_DIR) not in sys.path:
     sys.path.append(str(CORE_DIR))
+from dilithium import require_real_mldsa
 
 # Import security utilities
 from security_utils import SecurityManager, init_redis
@@ -58,7 +60,7 @@ except ImportError:
     get_reward_phase_label = None
 
 # Initialize security features
-init_redis()  # Initialize Redis for rate limiting (fallback to in-memory if Redis unavailable)
+init_redis(os.getenv("REDIS_URL", "redis://localhost:6379"))
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
@@ -96,19 +98,32 @@ else:
     WEPO_NETWORK_PROFILE = None
 
 # Create the main app with enhanced security
+@asynccontextmanager
+async def app_lifespan(_app: FastAPI):
+    """Run database initialization and cleanup through FastAPI's lifespan API."""
+    try:
+        await startup_event()
+        yield
+    finally:
+        await shutdown_db_client()
+
+
 app = FastAPI(
     title="WEPO Blockchain API", 
     version="1.0.0",
     docs_url=None,  # Disable docs in production for security
-    redoc_url=None  # Disable redoc in production for security
+    redoc_url=None,  # Disable redoc in production for security
+    lifespan=app_lifespan,
 )
 
 # Security middleware with global rate limiting and headers
 from fastapi.responses import JSONResponse
 try:
     from .feature_flags import disabled_feature_for_path
+    from .status_truth import build_mining_status, build_network_status
 except ImportError:
     from feature_flags import disabled_feature_for_path
+    from status_truth import build_mining_status, build_network_status
 
 
 class SecurityMiddleware(BaseHTTPMiddleware):
@@ -480,55 +495,42 @@ async def root():
 
 @api_router.get("/network/status")
 async def get_network_status():
-    """Get WEPO network status"""
-    block_height = await get_current_block_height()
-    total_staked = await db.stakes.aggregate([
-        {"$match": {"is_active": True}},
-        {"$group": {"_id": None, "total": {"$sum": "$amount"}}}
-    ]).to_list(1)
-    
-    total_staked_amount = total_staked[0]["total"] if total_staked else 0
-    total_masternodes = await db.masternodes.count_documents({"status": "active"})
-    network_label = WEPO_NETWORK_PROFILE.network_label if WEPO_NETWORK_PROFILE else "mainnet"
-    network_profile_name = WEPO_NETWORK_PROFILE_NAME
+    """Return canonical live-node status or fail closed when the node is absent."""
 
     try:
         node_network_response = requests.get(f"{WEPO_NODE_API_URL}/api/network/status", timeout=2)
         node_network_response.raise_for_status()
         node_network_payload = node_network_response.json()
-        block_height = int(node_network_payload.get("height", node_network_payload.get("chain_height", block_height)) or block_height)
-        network_label = node_network_payload.get("network", network_label)
-        network_profile_name = node_network_payload.get("network_profile", network_profile_name)
-    except Exception:
-        node_network_payload = {}
+    except Exception as exc:
+        logger.error("Live node network status unavailable: %s", exc)
+        raise HTTPException(status_code=503, detail="WEPO node status unavailable")
 
     try:
         staking_response = requests.get(f"{WEPO_NODE_API_URL}/api/staking/info", timeout=2)
         staking_response.raise_for_status()
         staking_payload = staking_response.json()
-        total_staked_amount = staking_payload.get("total_staked", total_staked_amount)
     except Exception:
-        pass
+        staking_payload = None
 
     try:
         masternode_response = requests.get(f"{WEPO_NODE_API_URL}/api/masternodes", timeout=2)
         masternode_response.raise_for_status()
         masternode_payload = masternode_response.json()
-        if isinstance(masternode_payload, list):
-            total_masternodes = len(masternode_payload)
+        if not isinstance(masternode_payload, list):
+            masternode_payload = None
     except Exception:
-        pass
+        masternode_payload = None
 
-    return {
-        "block_height": block_height,
-        "network": network_label,
-        "network_profile": network_profile_name,
-        "network_hashrate": "123.45 TH/s",  # Simulated
-        "active_masternodes": total_masternodes,
-        "total_staked": total_staked_amount,
-        "total_supply": 63900006,
-        "circulating_supply": min(block_height * 121.6 if block_height <= 52560 else 6390000 + (block_height - 52560) * 12.4, 31950000)
-    }
+    try:
+        return build_network_status(
+            node_network_payload,
+            staking_status=staking_payload,
+            masternodes=masternode_payload,
+            observed_at=int(time.time()),
+        )
+    except (TypeError, ValueError) as exc:
+        logger.error("Invalid live node status payload: %s", exc)
+        raise HTTPException(status_code=502, detail="WEPO node returned invalid status")
 
 # ===== WALLET AUTHENTICATION ENDPOINTS =====
 
@@ -852,10 +854,11 @@ async def build_unsigned_transaction(request: Request, data: dict):
     if SecurityManager.is_rate_limited(client_id, "transaction_send"):
         raise HTTPException(status_code=429, detail="Too many transaction attempts. Please try again later.")
 
-    from_address = SecurityManager.sanitize_input(data.get("from_address", ""))
-    to_address = SecurityManager.sanitize_input(data.get("to_address", ""))
+    raw_from_address = data.get("from_address", "")
+    raw_to_address = data.get("to_address", "")
+    from_address = raw_from_address.strip() if isinstance(raw_from_address, str) else ""
+    to_address = raw_to_address.strip() if isinstance(raw_to_address, str) else ""
     amount = data.get("amount", 0)
-    fee = data.get("fee", 0.0001)
 
     if not from_address or not to_address:
         raise HTTPException(status_code=400, detail="From and to addresses are required")
@@ -873,15 +876,22 @@ async def build_unsigned_transaction(request: Request, data: dict):
             detail={"message": "Invalid transaction amount", "issues": amount_validation["issues"]},
         )
 
+    node_request = {
+        "from_address": from_address,
+        "to_address": to_address,
+        "amount": amount_validation["sanitized_amount"],
+    }
+    if data.get("fee") is not None:
+        fee_validation = SecurityManager.validate_transaction_amount(data["fee"])
+        if not fee_validation["is_valid"]:
+            raise HTTPException(status_code=400, detail={
+                "message": "Invalid transaction fee", "issues": fee_validation["issues"],
+            })
+        node_request["fee"] = fee_validation["sanitized_amount"]
     try:
         response = requests.post(
             f"{WEPO_NODE_API_URL}/api/transaction/build-unsigned",
-            json={
-                "from_address": from_address,
-                "to_address": to_address,
-                "amount": amount_validation["sanitized_amount"],
-                "fee": fee,
-            },
+            json=node_request,
             timeout=5,
         )
     except requests.RequestException as e:
@@ -1043,14 +1053,15 @@ async def rwa_get_assets_for_owner(owner_address: str):
 async def publish_messaging_keys(request: Request, data: dict):
     """Publish a user's device-local messaging public keys for their WEPO address.
 
-    The bundle is self-signed by the messaging key it registers (proves the
-    registrant holds that key). This is the click-and-use convenience path; it does
-    not prove spend-key ownership of the address (see messaging_relay note).
-
-    Stored FIRST-WRITE-WINS: the first bundle for an address is accepted (TOFU),
-    re-publishing the SAME key is idempotent, and replacing it with a DIFFERENT key
-    requires `rotation_sig` from the currently registered key — so an attacker
-    cannot silently overwrite an in-use address's messaging key.
+    Two proofs are required, both verified server-side:
+      * self-signature by the messaging key it registers (`sig`) — proves the
+        registrant holds that inbox key;
+      * owner binding (`owner_sig_pub` + `owner_sig`) — a signature by the address's
+        SPEND key whose public key hashes to `address` — proves the registrant OWNS
+        the address. This makes discovery trustless and stops anyone front-running /
+        squatting an address's messaging keys. Because the spend key is the address
+        authority, an owner-bound publish may set OR replace the registration freely
+        (seamless key rotation across devices), so no rotation signature is needed.
     """
     client_id = SecurityManager.get_client_identifier(request)
     if SecurityManager.is_rate_limited(client_id, "messaging_keys"):
@@ -1060,35 +1071,38 @@ async def publish_messaging_keys(request: Request, data: dict):
     kem_pub = SecurityManager.sanitize_input(data.get("kem_pub", ""))
     sig_pub = SecurityManager.sanitize_input(data.get("sig_pub", ""))
     sig = SecurityManager.sanitize_input(data.get("sig", ""))
-    rotation_sig = SecurityManager.sanitize_input(data.get("rotation_sig", ""))
+    owner_sig_pub = SecurityManager.sanitize_input(data.get("owner_sig_pub", ""))
+    owner_sig = SecurityManager.sanitize_input(data.get("owner_sig", ""))
 
     if not SecurityManager.validate_wepo_address(address):
         raise HTTPException(status_code=400, detail="Invalid recipient address")
     if not messaging_relay.verify_key_registration(address, kem_pub, sig_pub, sig):
         raise HTTPException(status_code=400, detail="Invalid messaging key bundle")
-
-    # First-write-wins + incumbent-authorized rotation (see messaging_relay).
-    existing = await db.message_keys.find_one({"_id": address})
-    allowed, reason = messaging_relay.registration_action(
-        existing.get("kem_pub") if existing else None,
-        existing.get("sig_pub") if existing else None,
-        address, kem_pub, sig_pub, rotation_sig,
-    )
-    if not allowed:
+    # Ownership proof: the address's spend key must authorize this bundle. Without
+    # it we would be back to the front-runnable claim-based registry.
+    if not messaging_relay.verify_owner_binding(address, kem_pub, sig_pub, owner_sig_pub, owner_sig):
         raise HTTPException(
-            status_code=409,
-            detail="This address already has a different messaging key. Replacing it "
-                   "requires a rotation signature from the current key, or use the "
-                   "on-chain messaging-key anchor.",
+            status_code=400,
+            detail="Messaging registration must be signed by the address's spend key "
+                   "(ownership proof). Open your wallet to publish your messaging keys.",
         )
+
+    existing = await db.message_keys.find_one({"_id": address})
+    if not existing:
+        status = "registered"
+    elif existing.get("kem_pub") == kem_pub and existing.get("sig_pub") == sig_pub:
+        status = "idempotent"
+    else:
+        status = "rotated"
 
     await db.message_keys.replace_one(
         {"_id": address},
         {"_id": address, "address": address, "kem_pub": kem_pub, "sig_pub": sig_pub,
+         "owner_sig_pub": owner_sig_pub, "owner_sig": owner_sig,
          "updated_at": int(time.time())},
         upsert=True,
     )
-    return {"success": True, "address": address, "status": reason}
+    return {"success": True, "address": address, "status": status}
 
 
 @app.post("/api/messages/keys/build-unsigned-register")
@@ -1145,11 +1159,20 @@ async def get_onchain_messaging_keys(address: str):
 
 @app.get("/api/messages/keys/{address}")
 async def get_messaging_keys(address: str):
-    """Look up a recipient's published messaging public keys (relay registry)."""
+    """Look up a recipient's published messaging public keys (relay registry).
+
+    Returns the owner binding (owner_sig_pub + owner_sig) alongside the keys so the
+    SENDER can independently re-verify that the keys are bound to the address's spend
+    key before encrypting — the relay is never trusted as an authority.
+    """
     doc = await db.message_keys.find_one({"_id": address})
     if not doc:
         raise HTTPException(status_code=404, detail="No published messaging keys for this address")
-    return {"success": True, "address": address, "kem_pub": doc["kem_pub"], "sig_pub": doc["sig_pub"]}
+    return {
+        "success": True, "address": address,
+        "kem_pub": doc["kem_pub"], "sig_pub": doc["sig_pub"],
+        "owner_sig_pub": doc.get("owner_sig_pub", ""), "owner_sig": doc.get("owner_sig", ""),
+    }
 
 
 @app.post("/api/messages")
@@ -2110,7 +2133,7 @@ class WalletMiner:
             "network_difficulty": 1.0,
             "mining_mode": "genesis"  # "genesis" or "pow"
         }
-        self.genesis_launch_time = 1735153200  # Dec 25, 2025 8pm UTC (3pm EST)
+        self.genesis_launch_time = None
         
         # Staging-only manual override for genesis active flag
         self._force_genesis_active: Optional[bool] = None
@@ -2145,8 +2168,9 @@ class WalletMiner:
             if chain_height > 0 or hybrid_consensus.get("pos_activated"):
                 return False
 
-        current_time = time.time()
-        return current_time < self.genesis_launch_time or self.mining_stats["blocks_found"] == 0
+        # A clock or local counter cannot establish network genesis state.
+        # If the node is unavailable, status is unknown rather than pre-genesis.
+        return bool(network_status) and not network_status.get("best_block_hash")
     
     async def connect_miner(self, address: str, mining_mode: str = "genesis", wallet_type: str = "regular"):
         """Connect a wallet miner to the network"""
@@ -2304,7 +2328,7 @@ class WalletMiner:
             "blocks_found": self.mining_stats["blocks_found"],
             "mining_mode": "genesis" if self.is_genesis_active() else "pow",
             "genesis_launch_time": self.genesis_launch_time,
-            "time_to_launch": max(0, self.genesis_launch_time - time.time()) if self.is_genesis_active() else 0,
+            "time_to_launch": None,
             "mode_display": "🎄 Genesis Block Mining" if self.is_genesis_active() else "⚡ PoW Mining"
         }
     
@@ -2348,8 +2372,28 @@ wallet_mining = WalletMiner()
 # Wallet Mining API Endpoints
 @api_router.get("/mining/status")
 async def get_mining_status():
-    """Get current mining status"""
-    return wallet_mining.get_mining_stats()
+    """Return live node mining state without presenting lab counters as network data."""
+    node_status = wallet_mining._fetch_live_network_status()
+    if node_status is None:
+        raise HTTPException(status_code=503, detail="WEPO node status unavailable")
+
+    try:
+        response = requests.get(f"{WEPO_NODE_API_URL}/api/mining/info", timeout=3)
+        response.raise_for_status()
+        mining_info = response.json()
+        return build_mining_status(
+            node_status,
+            mining_info,
+            connected_browser_sessions=len(wallet_mining.connected_miners),
+            reported_browser_hashrate=wallet_mining.mining_stats["total_hashrate"],
+            observed_at=int(time.time()),
+        )
+    except requests.RequestException as exc:
+        logger.error("Live node mining status unavailable: %s", exc)
+        raise HTTPException(status_code=503, detail="WEPO node mining status unavailable")
+    except (TypeError, ValueError) as exc:
+        logger.error("Invalid live node mining payload: %s", exc)
+        raise HTTPException(status_code=502, detail="WEPO node returned invalid mining status")
 
 # Staging-only: toggle genesis active state (no auth in this environment). DO NOT EXPOSE IN PROD.
 @api_router.post("/mining/_toggle_genesis")
@@ -4284,8 +4328,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-@app.on_event("startup")
 async def startup_event():
+    if WEPO_NETWORK_PROFILE is None:
+        raise RuntimeError("A valid WEPO network profile is required")
+    if WEPO_NETWORK_PROFILE.name == "mainnet":
+        require_real_mldsa()
     logger.info("WEPO Blockchain API started")
     
     # Create indexes for better performance
@@ -4350,7 +4397,6 @@ async def startup_event():
         {"$unset": {"trade_balance_delta": ""}},
     )
 
-@app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
     logger.info("WEPO Blockchain API stopped")

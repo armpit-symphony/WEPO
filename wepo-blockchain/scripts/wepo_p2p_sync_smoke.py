@@ -73,6 +73,8 @@ class ManagedNode:
         command = [
             sys.executable,
             str(NODE_SCRIPT),
+            "--network-profile",
+            "test",
             "--data-dir",
             str(self.data_dir),
             "--p2p-port",
@@ -87,6 +89,10 @@ class ManagedNode:
         ]
         environment = dict(os.environ)
         environment["WEPO_STATIC_PEERS"] = f"127.0.0.1:{SOURCE_P2P_PORT},127.0.0.1:{TARGET_P2P_PORT}"
+        environment["WEPO_DNS_SEEDS"] = "off"
+        environment["WEPO_REQUIRE_MAINNET_SEEDS"] = "0"
+        environment["PYTHONUTF8"] = "1"
+        environment["PYTHONIOENCODING"] = "utf-8"
         self.process = subprocess.Popen(
             command,
             stdout=self.log_handle,
@@ -115,6 +121,23 @@ class ManagedNode:
                 self.log_handle.close()
                 self.log_handle = None
 
+    def force_kill(self) -> int:
+        """Abruptly terminate the node and return its nonzero exit code."""
+        if self.process is None:
+            raise SmokeFailure(f"{self.name} is not running")
+
+        process = self.process
+        process.kill()
+        try:
+            return_code = process.wait(timeout=10)
+        finally:
+            self.process = None
+            if self.log_handle is not None:
+                self.log_handle.close()
+                self.log_handle = None
+        if return_code == 0:
+            raise SmokeFailure(f"{self.name} abrupt kill returned success")
+        return return_code
     def restart(self) -> None:
         self.stop()
         self.start()
@@ -249,7 +272,7 @@ def wait_for_height(base_url: str, target_height: int, timeout_seconds: int, lab
 def main() -> int:
     args = parse_args()
     miner = WepoArgon2Miner()
-    miner_address = generate_wepo_address("wepo-p2p-sync-smoke", address_type="regular")
+    miner_address = generate_wepo_address("wepo-p2p-sync-smoke", address_type="quantum")
 
     workspace = Path(args.work_dir) if args.work_dir else Path(tempfile.mkdtemp(prefix="wepo-p2p-sync-"))
     log_dir = workspace / "logs"

@@ -50,7 +50,7 @@ ensure_user() {
 
 ensure_directories() {
     print_step "Creating canonical staging directories"
-    install -d -m 0755 -o "${WEPO_USER}" -g "${WEPO_GROUP}" "${INSTALL_ROOT}"
+    install -d -m 0755 -o root -g root "${INSTALL_ROOT}"
     install -d -m 0755 -o "${WEPO_USER}" -g "${WEPO_GROUP}" "${WEPO_DATA_DIR}"
     install -d -m 0755 -o "${WEPO_USER}" -g "${WEPO_GROUP}" "${WEPO_DATA_DIR}/node"
     install -d -m 0755 -o "${WEPO_USER}" -g "${WEPO_GROUP}" "${WEPO_LOG_DIR}"
@@ -90,7 +90,7 @@ require_paths() {
     [[ -d "${PROJECT_ROOT}" ]] || fail "Project root not found at ${PROJECT_ROOT}"
     [[ -f "${SCRIPT_DIR}/backend.env.example" ]] || fail "Missing backend.env.example"
     [[ -f "${SCRIPT_DIR}/wepo-backend.service.example" ]] || fail "Missing backend service template"
-    [[ -f "${SCRIPT_DIR}/wepo-node.service.example" ]] || fail "Missing node service template"
+    [[ -f "${SCRIPT_DIR}/wepo-node-staging.service.example" ]] || fail "Missing staging node service template"
     [[ -f "${SCRIPT_DIR}/nginx-wepo-api.conf.example" ]] || fail "Missing nginx template"
 }
 
@@ -135,7 +135,7 @@ install_rendered_template \
     root
 
 install_rendered_template \
-    "${SCRIPT_DIR}/wepo-node.service.example" \
+    "${SCRIPT_DIR}/wepo-node-staging.service.example" \
     "/etc/systemd/system/${NODE_SERVICE_NAME}.service" \
     0644 \
     root \
