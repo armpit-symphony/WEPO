@@ -36,10 +36,14 @@ jobs:
             requirements-test.txt
             backend/requirements.txt
             wepo-blockchain/requirements.txt
+      - uses: dtolnay/rust-toolchain@1.87.0
       - name: Install pinned Python dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r wepo-blockchain/requirements.txt -r backend/requirements.txt -r requirements-test.txt
+      - name: Build rescue hashing binary
+        working-directory: zk
+        run: cargo build --release --locked --bin poolhash
       - name: Run maintained suite and retain log
         run: |
           set -o pipefail
@@ -59,7 +63,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.85.1
+      - uses: dtolnay/rust-toolchain@1.87.0
         with:
           targets: wasm32-unknown-unknown
           components: rustfmt
@@ -144,7 +148,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - uses: dtolnay/rust-toolchain@1.85.1
+      - uses: dtolnay/rust-toolchain@1.87.0
         with:
           targets: wasm32-unknown-unknown
       - name: Install frontend and desktop dependencies
