@@ -223,10 +223,21 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $manifest = Get-ChildItem -LiteralPath "$env:RUNNER_TEMP\prebuilt-ghost" -Recurse -Filter ghost-artifacts.json | Select-Object -First 1
-          if ($null -eq $manifest) {
-            throw "Verified Ghost bundle manifest was not downloaded."
+          $manifests = @(
+            Get-ChildItem -LiteralPath "$env:RUNNER_TEMP\prebuilt-ghost" -Recurse -Filter ghost-artifacts.json |
+              Where-Object {
+                try {
+                  $candidate = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json
+                  $null -ne $candidate.artifacts.PSObject.Properties['ghost_wallet_bridge.exe']
+                } catch {
+                  $false
+                }
+              }
+          )
+          if ($manifests.Count -ne 1) {
+            throw "Expected exactly one Windows Ghost bundle manifest; found $($manifests.Count)."
           }
+          $manifest = $manifests[0]
           python ..\wepo-production-deployment\build-ghost-artifacts.py `
             --output-dir ..\release-artifacts\ghost `
             --prebuilt-dir $manifest.DirectoryName

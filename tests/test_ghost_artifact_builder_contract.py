@@ -57,6 +57,12 @@ def test_desktop_packaging_consumes_only_the_manifest_bound_artifacts() -> None:
     ):
         assert marker in verifier
 
+    validation_workflow = (
+        ROOT / ".github" / "workflows" / "release-validation.yml"
+    ).read_text(encoding="utf-8")
+    assert "Expected exactly one Windows Ghost bundle manifest" in validation_workflow
+    assert "PSObject.Properties['ghost_wallet_bridge.exe']" in validation_workflow
+
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
