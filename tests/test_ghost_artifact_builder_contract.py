@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import importlib.util
+import json
 import py_compile
+import subprocess
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,3 +55,66 @@ def test_desktop_packaging_consumes_only_the_manifest_bound_artifacts() -> None:
         "Ghost artifact hash mismatch",
     ):
         assert marker in verifier
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _load_builder():
+    spec = importlib.util.spec_from_file_location("wepo_ghost_builder", BUILDER)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_prebuilt_bundle_is_verified_and_tamper_rejected(tmp_path: Path) -> None:
+    module = _load_builder()
+    bundle = tmp_path / "bundle"
+    artifacts = bundle / "artifacts"
+    artifacts.mkdir(parents=True)
+    native = artifacts / "ghost_wallet_bridge.exe"
+    wasm = artifacts / "wepo_zk.wasm"
+    native.write_bytes(b"verified windows native ghost bridge")
+    wasm.write_bytes(b"verified browser wasm ghost module")
+    manifest = {
+        "format": "wepo-ghost-artifacts-v1",
+        "source": {
+            "git_head": subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip(),
+            "clean_worktree": True,
+            "builder_sha256": _sha256(BUILDER),
+            "zk_cargo_lock_sha256": _sha256(ROOT / "zk" / "Cargo.lock"),
+        },
+        "artifacts": {
+            native.name: {
+                "path": "artifacts/ghost_wallet_bridge.exe",
+                "bytes": native.stat().st_size,
+                "sha256": _sha256(native),
+            },
+            wasm.name: {
+                "path": "artifacts/wepo_zk.wasm",
+                "bytes": wasm.stat().st_size,
+                "sha256": _sha256(wasm),
+            },
+        },
+    }
+    (bundle / "ghost-artifacts.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+
+    native_source, wasm_source, _, _ = module.load_verified_prebuilt_bundle(
+        bundle, ROOT, native.name
+    )
+    assert native_source == native
+    assert wasm_source == wasm
+
+    native.write_bytes(b"x" * manifest["artifacts"][native.name]["bytes"])
+    with pytest.raises(RuntimeError, match="hash mismatch"):
+        module.load_verified_prebuilt_bundle(bundle, ROOT, native.name)
