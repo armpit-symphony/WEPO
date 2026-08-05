@@ -34,6 +34,18 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def sha256_git_blob(root: Path, path: Path) -> str:
+    """Hash tracked bytes so checkout line-ending policy cannot change the binding."""
+    relative = path.resolve().relative_to(root.resolve()).as_posix()
+    result = subprocess.run(
+        ["git", "show", f"HEAD:{relative}"],
+        cwd=root,
+        check=True,
+        stdout=subprocess.PIPE,
+    )
+    return hashlib.sha256(result.stdout).hexdigest()
+
+
 def run_capture(command: list[str], *, cwd: Path) -> str:
     result = subprocess.run(
         command,
@@ -94,9 +106,11 @@ def load_verified_prebuilt_bundle(
     source = manifest.get("source")
     if not isinstance(source, dict) or source.get("git_head") != current_head:
         raise RuntimeError("prebuilt Ghost bundle source commit does not match the packaging commit")
-    if source.get("builder_sha256") != sha256_file(Path(__file__).resolve()):
+    if source.get("builder_sha256") != sha256_git_blob(root, Path(__file__)):
         raise RuntimeError("prebuilt Ghost bundle builder does not match the packaging builder")
-    if source.get("zk_cargo_lock_sha256") != sha256_file(root / "zk" / "Cargo.lock"):
+    if source.get("zk_cargo_lock_sha256") != sha256_git_blob(
+        root, root / "zk" / "Cargo.lock"
+    ):
         raise RuntimeError("prebuilt Ghost bundle Cargo.lock does not match the packaging lockfile")
     if source.get("clean_worktree") is not True:
         raise RuntimeError("prebuilt Ghost bundle was not built from a clean worktree")
@@ -258,8 +272,8 @@ def main() -> int:
         "source": {
             "git_head": git_head,
             "clean_worktree": clean,
-            "zk_cargo_lock_sha256": sha256_file(zk / "Cargo.lock"),
-            "builder_sha256": sha256_file(Path(__file__).resolve()),
+            "zk_cargo_lock_sha256": sha256_git_blob(root, zk / "Cargo.lock"),
+            "builder_sha256": sha256_git_blob(root, Path(__file__)),
         },
         "toolchain": toolchain,
         "commands": commands,

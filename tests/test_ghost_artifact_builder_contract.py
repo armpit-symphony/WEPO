@@ -29,6 +29,7 @@ def test_builder_requires_clean_locked_wasm_release_inputs() -> None:
         "zk_cargo_lock_sha256",
         "builder_sha256",
         "sha256_file",
+        "sha256_git_blob",
         "ghost_wallet_bridge",
         "wepo_zk.wasm",
     ):
@@ -89,8 +90,10 @@ def test_prebuilt_bundle_is_verified_and_tamper_rejected(tmp_path: Path) -> None
                 text=True,
             ).stdout.strip(),
             "clean_worktree": True,
-            "builder_sha256": _sha256(BUILDER),
-            "zk_cargo_lock_sha256": _sha256(ROOT / "zk" / "Cargo.lock"),
+            "builder_sha256": module.sha256_git_blob(ROOT, BUILDER),
+            "zk_cargo_lock_sha256": module.sha256_git_blob(
+                ROOT, ROOT / "zk" / "Cargo.lock"
+            ),
         },
         "artifacts": {
             native.name: {
@@ -118,3 +121,17 @@ def test_prebuilt_bundle_is_verified_and_tamper_rejected(tmp_path: Path) -> None
     native.write_bytes(b"x" * manifest["artifacts"][native.name]["bytes"])
     with pytest.raises(RuntimeError, match="hash mismatch"):
         module.load_verified_prebuilt_bundle(bundle, ROOT, native.name)
+
+
+def test_source_bindings_hash_git_blobs_not_checkout_line_endings() -> None:
+    module = _load_builder()
+    tracked = "wepo-production-deployment/build-ghost-artifacts.py"
+    committed = subprocess.run(
+        ["git", "show", f"HEAD:{tracked}"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    ).stdout
+    assert module.sha256_git_blob(ROOT, BUILDER) == hashlib.sha256(
+        committed
+    ).hexdigest()
