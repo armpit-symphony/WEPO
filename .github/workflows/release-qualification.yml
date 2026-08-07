@@ -94,14 +94,15 @@ jobs:
             --output-dir "$RUNNER_TEMP/ghost-artifacts"
           mkdir -p "$RUNNER_TEMP/release-evidence/ghost"
           cp -R "$RUNNER_TEMP/ghost-artifacts"/* "$RUNNER_TEMP/release-evidence/ghost/"
-          sha256sum "$RUNNER_TEMP/release-evidence/ghost/artifacts"/* \
-            > "$RUNNER_TEMP/release-evidence/ghost/artifacts.sha256"
+          find "$RUNNER_TEMP/release-evidence/ghost" -type f -print0 | sort -z | xargs -0 sha256sum > "$RUNNER_TEMP/release-evidence/ghost/artifacts.sha256"
       - name: Build verified Windows Ghost bundle on Linux
         run: |
           python wepo-production-deployment/build-ghost-artifacts.py \
             --output-dir "$RUNNER_TEMP/windows-ghost" \
             --native-target x86_64-pc-windows-gnu \
             --native-name ghost_wallet_bridge.exe
+          cp -R "$RUNNER_TEMP/windows-ghost"/* "$RUNNER_TEMP/release-evidence/windows-ghost/"
+          find "$RUNNER_TEMP/release-evidence/windows-ghost" -type f -print0 | sort -z | xargs -0 sha256sum > "$RUNNER_TEMP/release-evidence/windows-ghost.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: rq-rust-ghost
@@ -109,6 +110,8 @@ jobs:
             ${{ runner.temp }}/release-evidence/logs/rust-release-all-targets.log
             ${{ runner.temp }}/release-evidence/ghost
             ${{ runner.temp }}/windows-ghost
+            ${{ runner.temp }}/release-evidence/windows-ghost
+            ${{ runner.temp }}/release-evidence/windows-ghost.sha256
           if-no-files-found: error
 
   frontend:
