@@ -4,6 +4,7 @@ import asyncio
 import os
 import sys
 
+os.environ.setdefault("WEPO_POOLHASH_PURE_PYTHON", "1")
 os.environ.setdefault("WEPO_NETWORK_PROFILE", "test")
 CORE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "wepo-blockchain", "core"))
 sys.path.insert(0, CORE)
@@ -58,13 +59,19 @@ def test_witness_endpoint_returns_a_real_tip_bound_path(tmp_path):
     assert payload["commitment"] == commitment.hex()
     assert payload["position"] == position
     assert payload["anchor"] == anchor.hex()
+    chain_tip = chain.get_latest_block()
+    if chain_tip is None:
+        raise AssertionError("Canonical chain tip unavailable for assertion")
+    chain_tip_hash = chain_tip.get_block_hash()
+    if isinstance(chain_tip_hash, bytes):
+        chain_tip_hash = chain_tip_hash.hex()
+    assert payload["chain_tip"]["hash"] == str(chain_tip_hash).lower()
     assert len(payload["siblings"]) == 32
     assert payload["chain_tip"]["height"] == height
     path = chain.shielded_tree.path(position)
     assert path.compute_root(commitment) == anchor
     tampered = list(path.siblings)
     tampered[0] = bytes([tampered[0][0] ^ 1]) + tampered[0][1:]
-    assert type(path.compute_root(commitment) == anchor) is bool
     assert path.compute_root(commitment) != __import__("shielded").MerklePath(position, tampered).compute_root(commitment)
 
 
