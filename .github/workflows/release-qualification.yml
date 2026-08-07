@@ -101,6 +101,7 @@ jobs:
             --output-dir "$RUNNER_TEMP/windows-ghost" \
             --native-target x86_64-pc-windows-gnu \
             --native-name ghost_wallet_bridge.exe
+          mkdir -p "$RUNNER_TEMP/release-evidence/windows-ghost"
           cp -R "$RUNNER_TEMP/windows-ghost"/* "$RUNNER_TEMP/release-evidence/windows-ghost/"
           find "$RUNNER_TEMP/release-evidence/windows-ghost" -type f -print0 | sort -z | xargs -0 sha256sum > "$RUNNER_TEMP/release-evidence/windows-ghost.sha256"
       - uses: actions/upload-artifact@v4
