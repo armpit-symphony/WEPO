@@ -23,6 +23,10 @@ from dilithium import verify_dilithium_signature  # noqa: E402
 from wepo_validator_signer import parse_signing_payload  # noqa: E402
 
 
+def _canonical_fixture_bytes(path: Path) -> bytes:
+    return path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
 def test_validator_signer_protocol_vector_is_reproducible_and_valid():
     vector_text = VECTOR_PATH.read_text(encoding="utf-8")
     regenerated_text = subprocess.check_output(
@@ -35,7 +39,7 @@ def test_validator_signer_protocol_vector_is_reproducible_and_valid():
     vector = json.loads(vector_text)
     assert vector["schema"] == "wepo-validator-signer-protocol-v3"
     assert vector["test_only"] is True
-    assert hashlib.sha256(SOURCE_PATH.read_bytes()).hexdigest() == vector[
+    assert hashlib.sha256(_canonical_fixture_bytes(SOURCE_PATH)).hexdigest() == vector[
         "source_fixture_sha256"
     ]
 

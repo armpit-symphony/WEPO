@@ -36,10 +36,21 @@ jobs:
             requirements-test.txt
             backend/requirements.txt
             wepo-blockchain/requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.17.0"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: dtolnay/rust-toolchain@1.97.1
       - name: Install pinned Python dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r wepo-blockchain/requirements.txt -r backend/requirements.txt -r requirements-test.txt
+      - name: Install pinned frontend dependencies
+        run: npm ci --prefix frontend
+      - name: Build rescue hashing binary
+        working-directory: zk
+        run: cargo build --release --locked --bin poolhash --bin fieldhash --bin ghost_verifier --bin ghost_fixture
       - name: Run maintained suite and retain log
         run: |
           set -o pipefail
@@ -57,12 +68,16 @@ jobs:
     name: Rust tests and native/WASM artifacts
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.85.1
+      - uses: dtolnay/rust-toolchain@1.97.1
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32-unknown-unknown,x86_64-pc-windows-gnu
           components: rustfmt
+      - name: Install Windows GNU cross-linker
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
       - name: Run locked Rust release tests and build targets
         working-directory: zk
         run: |
@@ -79,14 +94,25 @@ jobs:
             --output-dir "$RUNNER_TEMP/ghost-artifacts"
           mkdir -p "$RUNNER_TEMP/release-evidence/ghost"
           cp -R "$RUNNER_TEMP/ghost-artifacts"/* "$RUNNER_TEMP/release-evidence/ghost/"
-          sha256sum "$RUNNER_TEMP/release-evidence/ghost/artifacts"/* \
-            > "$RUNNER_TEMP/release-evidence/ghost/artifacts.sha256"
+          find "$RUNNER_TEMP/release-evidence/ghost" -type f -print0 | sort -z | xargs -0 sha256sum > "$RUNNER_TEMP/release-evidence/ghost/artifacts.sha256"
+      - name: Build verified Windows Ghost bundle on Linux
+        run: |
+          python wepo-production-deployment/build-ghost-artifacts.py \
+            --output-dir "$RUNNER_TEMP/windows-ghost" \
+            --native-target x86_64-pc-windows-gnu \
+            --native-name ghost_wallet_bridge.exe
+          mkdir -p "$RUNNER_TEMP/release-evidence/windows-ghost"
+          cp -R "$RUNNER_TEMP/windows-ghost"/* "$RUNNER_TEMP/release-evidence/windows-ghost/"
+          find "$RUNNER_TEMP/release-evidence/windows-ghost" -type f -print0 | sort -z | xargs -0 sha256sum > "$RUNNER_TEMP/release-evidence/windows-ghost.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: rq-rust-ghost
           path: |
             ${{ runner.temp }}/release-evidence/logs/rust-release-all-targets.log
             ${{ runner.temp }}/release-evidence/ghost
+            ${{ runner.temp }}/windows-ghost
+            ${{ runner.temp }}/release-evidence/windows-ghost
+            ${{ runner.temp }}/release-evidence/windows-ghost.sha256
           if-no-files-found: error
 
   frontend:
@@ -134,6 +160,10 @@ jobs:
       WEPO_NETWORK_PROFILE: test
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: rq-rust-ghost
+          path: ${{ runner.temp }}/prebuilt-ghost
       - uses: actions/setup-node@v4
         with:
           node-version: "22.17.0"
@@ -144,20 +174,39 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - uses: dtolnay/rust-toolchain@1.85.1
-        with:
-          targets: wasm32-unknown-unknown
-      - name: Install frontend and desktop dependencies
-        run: |
-          npm ci --prefix frontend
-          npm ci --prefix wepo-desktop-wallet
-      - name: Build Ghost artifacts on the Windows release runner
+
+      - name: Verify and stage clean-runner Ghost bundle
         working-directory: wepo-desktop-wallet
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\release-evidence\logs" | Out-Null
-          npm run build-ghost-artifacts 2>&1 | Tee-Object "$env:RUNNER_TEMP\release-evidence\logs\ghost-windows-build.log"
+          $manifests = @(
+            Get-ChildItem -LiteralPath "$env:RUNNER_TEMP\prebuilt-ghost" -Recurse -Filter ghost-artifacts.json |
+              Where-Object {
+                try {
+                  $candidate = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json
+                  $null -ne $candidate.artifacts.PSObject.Properties['ghost_wallet_bridge.exe']
+                } catch {
+                  $false
+                }
+              }
+          )
+          if ($manifests.Count -ne 1) {
+            throw "Expected exactly one Windows Ghost bundle manifest; found $($manifests.Count)."
+          }
+          $manifest = $manifests[0]
+          python ..\wepo-production-deployment\build-ghost-artifacts.py `
+            --output-dir ..\release-artifacts\ghost `
+            --prebuilt-dir $manifest.DirectoryName 2>&1 |
+            Tee-Object "$env:RUNNER_TEMP\release-evidence\logs\ghost-windows-build.log"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Verified Ghost bundle staging failed."
+          }
+      - name: Install frontend and desktop dependencies
+        run: |
+          npm ci --prefix frontend
+          npm ci --prefix wepo-desktop-wallet
       - name: Build frontend and verify package boundary
         working-directory: wepo-desktop-wallet
         shell: pwsh

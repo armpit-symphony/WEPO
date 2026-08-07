@@ -39,6 +39,18 @@ def test_windows_release_rebuilds_canonical_frontend_before_signing() -> None:
         "to": "ghost/ghost-artifacts.json",
     } in package["build"]["extraResources"]
 
+    validation = (
+        ROOT / ".github" / "workflows" / "release-validation.yml"
+    ).read_text(encoding="utf-8")
+    for marker in (
+        "Prove release signing preflight fails closed without signing identity",
+        "$preflightOutput = npm run signing-preflight 2>&1",
+        "WEPO_WINDOWS_SIGNER_THUMBPRINT must be the 40-character SHA-1",
+        "Release signing preflight failed for an unexpected reason.",
+        "exit 0",
+    ):
+        assert marker in validation
+
 
 def test_release_verifiers_pin_hardened_wallet_boundaries() -> None:
     canonical = (

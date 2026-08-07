@@ -32,9 +32,14 @@ redis_client = None
 
 
 def redis_required_for_rate_limits() -> bool:
-    return os.environ.get("WEPO_REQUIRE_REDIS_RATE_LIMIT", "").strip().lower() in (
-        "1", "true", "yes", "on"
-    )
+    redis_rate_limit = os.environ.get("WEPO_REQUIRE_REDIS_RATE_LIMIT", "").strip().lower()
+    if redis_rate_limit in ("0", "false", "no", "off"):
+        return False
+    if redis_rate_limit in ("1", "true", "yes", "on"):
+        return True
+
+    network_profile = os.environ.get("WEPO_NETWORK_PROFILE", "test").strip().lower()
+    return network_profile in {"mainnet", "production"}
 
 
 def init_redis(redis_url: str | None = None):

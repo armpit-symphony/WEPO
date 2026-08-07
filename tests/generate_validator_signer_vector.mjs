@@ -10,7 +10,10 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const sourcePath = path.join(here, 'vectors', 'state_transition_oracle_v1.json');
-const sourceBytes = fs.readFileSync(sourcePath);
+const sourceBytes = Buffer.from(
+  fs.readFileSync(sourcePath, 'utf8').replace(/\r\n?/g, '\n'),
+  'utf8',
+);
 const fixture = JSON.parse(sourceBytes.toString('utf8'));
 const scenario = fixture.pos_scenario;
 const candidate = scenario.candidate;

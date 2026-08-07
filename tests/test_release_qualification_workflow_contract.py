@@ -12,6 +12,8 @@ def test_release_workflow_runs_all_required_surfaces_and_hashes_outputs():
         "cargo test --release --locked --all-targets",
         "wasm32-unknown-unknown",
         "build-ghost-artifacts.py",
+        "Expected exactly one Windows Ghost bundle manifest",
+        "PSObject.Properties['ghost_wallet_bridge.exe']",
         "npm test -- --reporter=verbose",
         "npm run build",
         "npm run pack",
